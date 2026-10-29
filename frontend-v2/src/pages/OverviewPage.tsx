@@ -6,6 +6,8 @@ import { createPortal } from "react-dom";
 import { ArrowRight, CloudFog, Flame, Gauge, House, Leaf, Power, Snowflake, Wind, X, Zap } from "lucide-react";
 import { Hch5UnitDiagram } from "../components/Hch5UnitDiagram";
 import { AfterheatThermostat } from "../components/AfterheatThermostat";
+import { hasAfterheat } from "../lib/afterheat";
+import { roomSourceLabel } from "../lib/roomTemperature";
 import { describeControl } from "../lib/control";
 import { HistoryChart, type HistorySeries } from "../components/HistoryChart";
 import { postJson, requestJson } from "../lib/api";
@@ -195,7 +197,9 @@ export function OverviewPage() {
   const outdoor = first(unit, "outdoor_temp", "outdoor_temperature");
   const extract = first(unit, "extract_temp", "extract_temperature");
   const exhaust = first(unit, "exhaust_temp", "exhaust_temperature");
-  const afterHeater = first(controller, "actual_supply_air_temperature") ?? first(unit, "heating_coil_after_temperature");
+  // Without HAC1 there is no T2AH; the supply air is the unit's own T2.
+  const afterHeater = first(controller, "actual_supply_air_temperature") ?? first(unit, "heating_coil_after_temperature")
+    ?? (hasAfterheat(unit) ? null : first(unit, "supply_temperature", "supply_temp"));
   const frost = first(controller, "actual_afterheat_frost_temperature") ?? first(unit, "heating_coil_frost_temperature");
   const flowWater = first(unit, "flow_temperature");
   const returnWater = first(unit, "return_temperature");
@@ -288,6 +292,9 @@ export function OverviewPage() {
   const haInfo = haLinkText(haLink);
   const haWarning = haLink.required && haLink.state !== null && haLink.state !== "online" && haLink.state !== "waiting";
 
+  const afterheat = hasAfterheat(unit);
+  const sensorHistory = afterheat ? SENSOR_HISTORY
+    : { ...SENSOR_HISTORY, afterHeater: { title: "Indblæsning · T2", key: "supply_temp", color: "green" as const } };
   const afterheatCard = (
     <article className="surface afterheat-setpoint-card">
       <AfterheatThermostat value={shownAfterheat} onChange={setAfterheatTarget} heating={heating} lockout={afterheatLockout}
@@ -332,7 +339,8 @@ export function OverviewPage() {
               frost={frost} flowWater={flowWater} returnWater={returnWater}
               supplyRpm={supplyRpm} extractRpm={extractRpm} supplyPercent={supplyPercent} extractPercent={extractPercent}
               bypassActual={bypassActual} bypassRequest={bypassRequest} heating={heating} recovery={recovery} supplyRecovery={t2Recovery}
-              busActive={busHealthy} bypassRaw={bypassRaw} afterheatLockout={afterheatLockout} afterheatCoil={controller.afterheat_coil === "water" ? "water" : "electric"}
+              busActive={busHealthy} bypassRaw={bypassRaw} afterheat={afterheat} afterheatLockout={afterheatLockout} afterheatCoil={controller.afterheat_coil === "water" ? "water" : "electric"}
+              room={{ temperature: number(controller.afterheat_room_temperature), source: roomSourceLabel(controller.afterheat_room_source_used, "da", true) }}
               bypassTravelDirection={bypassTravelDirection} bypassTravelSeconds={bypassTravelSeconds} bypassTravelTotal={bypassTravelTotal}
               control={online ? describeControl(controller) : null}
             />
@@ -340,10 +348,10 @@ export function OverviewPage() {
           <article className="surface climate-panel">
             <div className="pro-card-head compact"><div><h2>Indeklimadata</h2><p>Aktuelle værdier</p></div></div>
             <div className="climate-metrics">
-              <div className="climate-metric green"><Leaf size={21}/><span>CO₂</span><strong>{whole(co2)} <small>ppm</small></strong><em>{co2 === null ? "Ukendt" : co2 < 800 ? "God" : co2 < 1200 ? "Moderat" : "Høj"}</em><i style={{ width: `${co2 === null ? 0 : Math.min(100, Math.max(5, co2 / 16))}%` }}/></div>
+              {(co2 !== null || unit.hac1_presence !== "absent") && <div className="climate-metric green"><Leaf size={21}/><span>CO₂</span><strong>{whole(co2)} <small>ppm</small></strong><em>{co2 === null ? "Ukendt" : co2 < 800 ? "God" : co2 < 1200 ? "Moderat" : "Høj"}</em><i style={{ width: `${co2 === null ? 0 : Math.min(100, Math.max(5, co2 / 16))}%` }}/></div>}
               <div className="climate-metric blue"><span className="metric-drop">●</span><span>Luftfugtighed</span><strong>{whole(humidity)} <small>%</small></strong><em>{humidity === null ? "Ukendt" : humidity < 60 ? "Normal" : "Høj"}</em><i style={{ width: `${humidity ?? 0}%` }}/></div>
               <div className="climate-metric cyan"><span className="metric-filter">▧</span><span>Filter</span><strong>{whole(filterLife)} <small>%</small></strong><em title={filterHours === null ? undefined : `Skiftet for ${Math.floor(filterHours / 24)} dage siden (anlæggets tæller, nulstilles med knappen på anlægget)`}>{filterLife === null ? "Ukendt" : controller.filter_status === "overskredet" ? "Skift filter" : controller.filter_status === "skift_snart" ? `Snart skift · ${filterDays ?? "—"} dage` : filterDays !== null ? `OK · ${filterDays} dage tilbage` : filterLife > 40 ? "OK" : filterLife > 15 ? "Snart skift" : "Skift filter"}</em><i style={{ width: `${Math.max(0, Math.min(100, filterLife ?? 0))}%` }}/></div>
-              <div className="climate-metric neutral"><span className="metric-heat">≋</span><span>Eftervarme setpunkt</span><strong>{shownAfterheat === "off" ? "OFF" : temp(shownAfterheat)}</strong><em>{afterheatStatus}</em><i style={{ width: `${shownAfterheat === "off" ? 0 : ((shownAfterheat - 10) / 25) * 100}%` }}/></div>
+              {afterheat && <div className="climate-metric neutral"><span className="metric-heat">≋</span><span>Eftervarme setpunkt</span><strong>{shownAfterheat === "off" ? "OFF" : temp(shownAfterheat)}</strong><em>{afterheatStatus}</em><i style={{ width: `${shownAfterheat === "off" ? 0 : ((shownAfterheat - 10) / 25) * 100}%` }}/></div>}
             </div>
             <div className="pro-card-head compact air-calc-head"><div><h2>Diagnose og energi i dag</h2><p>{controller.diagnostics_status === "ok" || !controller.diagnostics_status ? "Ingen advarsler" : `${controller.diagnostics_alarm_count} advarsel${controller.diagnostics_alarm_count === 1 ? "" : "er"}`}</p></div></div>
             <div className="climate-metrics metrics-5">
@@ -351,7 +359,7 @@ export function OverviewPage() {
               <div className="climate-metric neutral"><Gauge size={21}/><span>Filter · strøm</span><strong>{filterChange === null ? "—" : `${filterChange > 0 ? "+" : ""}${filterChange.toLocaleString("da-DK", { maximumFractionDigits: 1 })} %`}</strong><em title="Effekten ved samme ventilatorgear sammenlignet med de første 72 timer efter filterskift. Ventilatorerne holder omdrejningerne, så tilstopning ses som ændret strøm.">{number(controller.unit_power_w) === null ? "Kræver effektmåler" : filterLearning ? "Lærer rene filtre (72 t efter skift)" : controller.filter_reference_gears ? `ved gear ${String(controller.filter_reference_gears)} mod rene filtre` : "Ingen reference for disse gear endnu"}</em><i style={{ width: `${Math.min(100, Math.abs(filterChange ?? 0) / 15 * 100)}%` }}/></div>
               <div className="climate-metric green"><Leaf size={21}/><span>Genvundet i dag</span><strong>{energy(number(controller.recovered_energy_today_kwh))} <small>kWh</small></strong><em>Teoretisk varmeværdi ca. {cost(number(controller.recovered_energy_today_kwh), number(controller.heat_price_dkk_kwh))}</em><i style={{ width: `${Math.min(100, (number(controller.recovered_energy_today_kwh) ?? 0) * 5)}%` }}/></div>
               <div className="climate-metric neutral"><Zap size={21}/><span>Strøm i dag{number(controller.unit_energy_measured_today_kwh) !== null ? " · målt" : " · anslået"}</span><strong>{energy(number(controller.unit_energy_measured_today_kwh) ?? number(controller.unit_energy_today_kwh))} <small>kWh</small></strong><em>Ca. {cost(number(controller.unit_energy_measured_today_kwh) ?? number(controller.unit_energy_today_kwh), number(controller.electricity_price_dkk_kwh))} ved aktuel elpris</em><i style={{ width: `${Math.min(100, (number(controller.unit_energy_measured_today_kwh) ?? number(controller.unit_energy_today_kwh) ?? 0) * 50)}%` }}/></div>
-              <div className="climate-metric neutral"><Flame size={21}/><span>Eftervarme i dag · anslået</span><strong>{energy(number(controller.afterheat_energy_today_kwh))} <small>kWh</small></strong><em>Ca. {cost(number(controller.afterheat_energy_today_kwh), number(controller.heat_price_dkk_kwh))} ved aktuel varmepris</em><i style={{ width: `${Math.min(100, (number(controller.afterheat_energy_today_kwh) ?? 0) * 50)}%` }}/></div>
+              {afterheat && <div className="climate-metric neutral"><Flame size={21}/><span>Eftervarme i dag · anslået</span><strong>{energy(number(controller.afterheat_energy_today_kwh))} <small>kWh</small></strong><em>Ca. {cost(number(controller.afterheat_energy_today_kwh), number(controller.heat_price_dkk_kwh))} ved aktuel varmepris</em><i style={{ width: `${Math.min(100, (number(controller.afterheat_energy_today_kwh) ?? 0) * 50)}%` }}/></div>}
             </div>
             {/* Only with a measured T2 before the afterheat coil (1-Wire role "t2"). */}
             {number(controller.actual_supply_before_heater_temperature) !== null && <>
@@ -447,7 +455,7 @@ export function OverviewPage() {
               </div>
             </article>
           </aside>
-          {unit.unit_generation === "mk2" ? null : afterheatCard}
+          {afterheat ? afterheatCard : null}
         </div>
       </div>
       {standbyDialog && createPortal(<div className="sensor-history-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setStandbyDialog(false); }}>
@@ -474,10 +482,10 @@ export function OverviewPage() {
           {coolActive && <button type="button" className="standby-on-action" disabled={busy !== null} onClick={() => { setCoolDialog(false); void command("cool-stop", { cool_boost_minutes: 0 }, "Køl stoppet."); }}>Stop køl</button>}
         </section>
       </div>, document.body)}
-      {activeSensor && SENSOR_HISTORY[activeSensor] && createPortal(<div className="sensor-history-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setActiveSensor(null); }}>
+      {activeSensor && sensorHistory[activeSensor] && createPortal(<div className="sensor-history-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setActiveSensor(null); }}>
         <section className="sensor-history-dialog surface" role="dialog" aria-modal="true" aria-labelledby="sensor-history-title">
-          <div className="sensor-history-heading"><div><span className="eyebrow">SENESTE 24 TIMER</span><h2 id="sensor-history-title">{SENSOR_HISTORY[activeSensor].title}</h2></div><button ref={closeHistoryRef} type="button" aria-label="Luk temperaturgraf" onClick={() => setActiveSensor(null)}><X size={20}/></button></div>
-          {historyError ? <p className="sensor-history-message" role="alert">{historyError}</p> : historyLoading ? <div className="history-chart-empty" style={{ height: 230 }}>Henter historik…</div> : <HistoryChart height={230} unit={SENSOR_HISTORY[activeSensor].unit ?? "°C"} samples={historySamples} series={[{ key: SENSOR_HISTORY[activeSensor].key, label: SENSOR_HISTORY[activeSensor].title, color: SENSOR_HISTORY[activeSensor].color }]}/>}
+          <div className="sensor-history-heading"><div><span className="eyebrow">SENESTE 24 TIMER</span><h2 id="sensor-history-title">{sensorHistory[activeSensor].title}</h2></div><button ref={closeHistoryRef} type="button" aria-label="Luk temperaturgraf" onClick={() => setActiveSensor(null)}><X size={20}/></button></div>
+          {historyError ? <p className="sensor-history-message" role="alert">{historyError}</p> : historyLoading ? <div className="history-chart-empty" style={{ height: 230 }}>Henter historik…</div> : <HistoryChart height={230} unit={sensorHistory[activeSensor].unit ?? "°C"} samples={historySamples} series={[{ key: sensorHistory[activeSensor].key, label: sensorHistory[activeSensor].title, color: sensorHistory[activeSensor].color }]}/>}
         </section>
       </div>, document.body)}
     </section>

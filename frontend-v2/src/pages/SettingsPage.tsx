@@ -9,6 +9,8 @@ import { useSession, type Permission } from "../lib/session";
 import { AccountPanel } from "../components/AccountPanel";
 import { MailPanel } from "../components/MailPanel";
 import { UsersPanel } from "../components/UsersPanel";
+import { hasAfterheat } from "../lib/afterheat";
+import { roomSourceLabel } from "../lib/roomTemperature";
 import "../styles/panels.css";import "../styles/management.css";
 
 type Data = Record<string, unknown>;
@@ -86,6 +88,10 @@ export function sectionAllowed(id: SectionId, can: (permission: Permission) => b
   if (OPEN_SECTIONS.includes(id)) return true;
   return can(SECTION_PERMISSION[id] ?? "configure");
 }
+/** Sections in the menu: those the user may open, minus afterheat on a unit without one. */
+export function visibleSections(can: (permission: Permission) => boolean, unit: Record<string, unknown>) {
+  return SECTIONS.filter(item => sectionAllowed(item.id, can) && (item.id !== "afterheat" || hasAfterheat(unit)));
+}
 
 function Card({ title, lead, icon: Icon, children }: { title: string; lead?: string; icon?: LucideIcon; children: ReactNode }) {
   return <article className="surface panel-card settings-card"><div className="pro-card-head compact"><div><h2>{title}</h2>{lead && <p>{lead}</p>}</div>{Icon && <Icon size={20}/>}</div>{children}</article>;
@@ -98,6 +104,20 @@ function initialSection(): SectionId {
 }
 
 function Help({ children }: { children: ReactNode }) { return <small className="settings-field-help">{children}</small>; }
+
+/** Where the room temperature comes from: one setting shared by free cooling and the afterheat.
+ *  Full width, so its long help does not stretch the field beside it. */
+function RoomSourceField({ lang, value, rooms, onChange }: { lang: Lang; value: unknown; rooms: ReactNode; onChange: (value: string) => void }) {
+  return <label className="settings-wide">{lang === "da" ? "Rumtemperatur fra" : "Room temperature from"}<select value={s(value, "auto")} onChange={e => onChange(e.target.value)}><option value="auto">{lang === "da" ? "Automatisk: HA-rum, ellers T3" : "Automatic: HA rooms, else T3"}</option><option value="t3">{lang === "da" ? "Udsugningsluft T3" : "Extract air T3"}</option><option value="t5">{lang === "da" ? "HRC2-rumføler T5 (upålidelig uden HCP4)" : "HRC2 room sensor T5 (unreliable without HCP4)"}</option><option value="ha_average">{lang === "da" ? "Gennemsnit af HA-rum" : "Average of HA rooms"}</option>{rooms}</select><Help>{lang === "da" ? "Frikøling og eftervarme styrer efter den samme rumtemperatur. Automatisk bruger gennemsnittet af dine HA-rum med temperatur (badeværelser og brændeovns- og udeluftsfølere tæller ikke med). Tilføj rummene med dine egne temperaturfølere i HCH5 Control-integrationen under Smart Auto-rum, gerne med styring slået fra. Findes der ingen, bruges T3, som er udsugningsluft og også indeholder luft fra køkken og bad. T5 sidder i HRC2-fjernbetjeningen og opdateres ikke, når Pi'en har erstattet HCP4." : "Free cooling and the afterheat steer by the same room temperature. Automatic uses the average of your HA rooms with a temperature (bathrooms and stove or outdoor sensors are left out). Add rooms with your own temperature sensors in the HCH5 Control integration under Smart Auto rooms, ideally with control turned off. Without any, T3 is used, which is extract air and includes kitchen and bathroom air. T5 sits in the HRC2 remote and is not updated once the Pi has replaced HCP4."}</Help></label>;
+}
+
+/** The room temperature in use right now and its source. */
+function RoomTemperatureSummary({ lang, controller }: { lang: Lang; controller: Data }) {
+  return <>
+    <span>{lang === "da" ? "Rumtemperatur" : "Room temperature"}<strong>{fmt(controller.afterheat_room_temperature, lang, 1, " °C")}</strong></span>
+    <span>{lang === "da" ? "Kilde lige nu" : "Source right now"}<strong>{roomSourceLabel(controller.afterheat_room_source_used, lang)}</strong></span>
+  </>;
+}
 
 
 type BathroomRoom = { type?: "auto" | "bathroom" | "normal"; rh_setpoint?: number; rh_hysteresis?: number; max_level?: number };
@@ -174,6 +194,7 @@ export function SettingsPage() {
   const { can } = useSession();
   const t = (text: Text) => text[lang];
   const [controller, setController] = useState<Data>({});
+  const [unit, setUnit] = useState<Data>({});
   const [auth, setAuth] = useState<Auth>({});
   const [csrf, setCsrf] = useState("");
   const [form, setForm] = useState<Data>({});
@@ -188,6 +209,8 @@ export function SettingsPage() {
   const [sixEdits, setSixEdits] = useState<Record<string, { extract?: number; supply?: number }>>({});
 
   const refresh = useCallback(async () => {
+    // The live unit state only decides which sections exist; without it, show them all.
+    void requestJson<Data>("/state.json").then(setUnit, () => undefined);
     const [c, a] = await Promise.all([requestJson<Data>("/api/controller/state?compact=1"), requestJson<Auth>("/api/auth/status")]);
     setController(c); setForm(c); setAuth(a); setCsrf(a.csrf ?? "");
   }, []);
@@ -548,7 +571,7 @@ export function SettingsPage() {
         <div className="settings-grid">
           <label className="check-row"><input type="checkbox" checked={form.afterheat_room_enabled === true} onChange={check("afterheat_room_enabled")}/> {lang === "da" ? "Flyt setpunktet efter rumtemperaturen" : "Move the setpoint with the room temperature"}</label>
           <Help>{lang === "da" ? "Setpunkt = grundsetpunkt + forstærkning × (ønsket rum − målt rum). Det flyttes én grad ad gangen og holdes mellem laveste og højeste værdi. Mangler rumtemperaturen, bruges grundsetpunktet. Ventilationsluften giver kun få hundrede watt, så det er komfort og ikke opvarmning." : "Setpoint = base setpoint + gain × (wanted room − measured room). It moves one degree at a time and stays between the lowest and highest value. Without a room temperature the base setpoint is used. Ventilation air carries only a few hundred watts, so this is comfort, not heating."}</Help>
-          <label>{lang === "da" ? "Rumtemperatur fra" : "Room temperature from"}<select value={s(form.afterheat_room_source, "auto")} onChange={e => set("afterheat_room_source", e.target.value)}><option value="auto">{lang === "da" ? "Automatisk: HA-rum, ellers T3" : "Automatic: HA rooms, else T3"}</option><option value="t3">{lang === "da" ? "Udsugningsluft T3" : "Extract air T3"}</option><option value="t5">{lang === "da" ? "HRC2-rumføler T5 (upålidelig uden HCP4)" : "HRC2 room sensor T5 (unreliable without HCP4)"}</option><option value="ha_average">{lang === "da" ? "Gennemsnit af HA-rum" : "Average of HA rooms"}</option>{roomOptions(form.afterheat_room_source)}</select><Help>{lang === "da" ? "Automatisk bruger gennemsnittet af dine HA-rum med temperatur (badeværelser og brændeovns- og udeluftsfølere tæller ikke med). Tilføj rummene med dine egne temperaturfølere i HCH5 Control-integrationen under Smart Auto-rum, gerne med styring slået fra. Findes der ingen, bruges T3, som er udsugningsluft og også indeholder luft fra køkken og bad. T5 sidder i HRC2-fjernbetjeningen og opdateres ikke, når Pi'en har erstattet HCP4." : "Automatic uses the average of your HA rooms with a temperature (bathrooms and stove or outdoor sensors are left out). Add rooms with your own temperature sensors in the HCH5 Control integration under Smart Auto rooms, ideally with control turned off. Without any, T3 is used, which is extract air and includes kitchen and bathroom air. T5 sits in the HRC2 remote and is not updated once the Pi has replaced HCP4."}</Help></label>
+          <RoomSourceField lang={lang} value={form.afterheat_room_source} rooms={roomOptions(form.afterheat_room_source)} onChange={value => set("afterheat_room_source", value)}/>
           <label>{lang === "da" ? "Ønsket rumtemperatur" : "Wanted room temperature"}<input type="number" min="15" max="26" step="0.5" value={n(form.afterheat_room_target, 21)} onChange={num("afterheat_room_target")}/><span>°C</span><Help>{lang === "da" ? "Sæt den lidt under radiatorernes eller gulvvarmens, så de ikke modarbejder hinanden." : "Set it slightly below the radiators or floor heating so they do not work against each other."}</Help></label>
           <label>{lang === "da" ? "Forstærkning" : "Gain"}<input type="number" min="0.5" max="5" step="0.5" value={n(form.afterheat_room_gain, 1.5)} onChange={num("afterheat_room_gain")}/><span>°C/°C</span><Help>{lang === "da" ? "Grader indblæsning pr. grad rummet afviger." : "Degrees of supply air per degree of room deviation."}</Help></label>
           <label>{lang === "da" ? "Laveste indblæsning" : "Lowest supply"}<input type="number" min="10" max="35" value={n(form.afterheat_room_min, 17)} onChange={num("afterheat_room_min")}/><span>°C</span><Help>{lang === "da" ? "Under ca. 17 °C kan indblæsningen føles som træk." : "Below about 17 °C the supply air can feel draughty."}</Help></label>
@@ -556,8 +579,7 @@ export function SettingsPage() {
           <label>{lang === "da" ? "Minutter pr. grad" : "Minutes per degree"}<input type="number" min="2" max="60" value={n(form.afterheat_room_step_minutes, 10)} onChange={num("afterheat_room_step_minutes")}/><span>min</span><Help>{lang === "da" ? "Hvor ofte setpunktet må flyttes én grad. Længere tid giver roligere regulering." : "How often the setpoint may move one degree. Longer gives calmer control."}</Help></label>
         </div>
         <div className="settings-summary">
-          <span>{lang === "da" ? "Rumtemperatur" : "Room temperature"}<strong>{fmt(controller.afterheat_room_temperature, lang, 1, " °C")}</strong></span>
-          <span>{lang === "da" ? "Kilde lige nu" : "Source right now"}<strong>{(() => { const used = s(controller.afterheat_room_source_used); if (!used) return "—"; if (used === "ha_average") return lang === "da" ? "Gennemsnit af HA-rum" : "Average of HA rooms"; if (used.startsWith("room:")) return used.slice(5); return used.toUpperCase(); })()}</strong></span>
+          <RoomTemperatureSummary lang={lang} controller={controller}/>
           <span>{lang === "da" ? "Aktuelt setpunkt" : "Current setpoint"}<strong>{fmt(controller.afterheat_effective_setpoint, lang, 0, " °C")}</strong></span>
         </div>
         <p className="settings-help">{s(controller.afterheat_room_reason)}</p>
@@ -567,6 +589,8 @@ export function SettingsPage() {
       <div className="settings-grid">
         <label className="check-row"><input type="checkbox" checked={form.cooling_enabled === true} onChange={check("cooling_enabled")}/> {lang === "da" ? "Frikøling" : "Free cooling"}</label>
         <Help>{lang === "da" ? "Er det for varmt inde og køligere ude, åbnes bypass, så udeluften går uden om varmeveksleren. Bypass-spjældet er langsomt (ca. 3 minutter), derfor venter controlleren og holder minimumstider." : "If it is too warm inside and cooler outside, the bypass opens so outdoor air skips the heat exchanger. The damper is slow (about 3 minutes), so the controller waits and keeps minimum times."}</Help>
+        {/* Without afterheat its section is hidden, so the shared source is chosen here. */}
+        {!hasAfterheat(unit) && <RoomSourceField lang={lang} value={form.afterheat_room_source} rooms={roomOptions(form.afterheat_room_source)} onChange={value => set("afterheat_room_source", value)}/>}
         <label>{lang === "da" ? "Start ved rumtemperatur" : "Start at room temperature"}<input type="number" min="18" max="30" step="0.5" value={n(form.cooling_room_setpoint, 23)} onChange={num("cooling_room_setpoint")}/><span>°C</span></label>
         <label>{lang === "da" ? "Hysterese" : "Hysteresis"}<input type="number" min="0.2" max="3" step="0.1" value={n(form.cooling_hysteresis, 0.5)} onChange={num("cooling_hysteresis")}/><span>°C</span></label>
         <label>{lang === "da" ? "Laveste udetemperatur" : "Lowest outdoor temperature"}<input type="number" min="-10" max="25" step="0.5" value={n(form.cooling_outdoor_min, 12)} onChange={num("cooling_outdoor_min")}/><span>°C</span><Help>{lang === "da" ? "Koldere udeluft end dette blæses ikke ind uden varmegenvinding." : "Outdoor air colder than this is never blown in without heat recovery."}</Help></label>
@@ -575,6 +599,9 @@ export function SettingsPage() {
         <label>{lang === "da" ? "Vent før start" : "Wait before start"}<input type="number" min="0" max="1800" step="30" value={n(form.cooling_start_delay_seconds, 180)} onChange={num("cooling_start_delay_seconds")}/><span>s</span></label>
         <label>{lang === "da" ? "Mindste tid tændt" : "Minimum on time"}<input type="number" min="0" max="3600" step="60" value={n(form.cooling_min_on_seconds, 600)} onChange={num("cooling_min_on_seconds")}/><span>s</span></label>
         <label>{lang === "da" ? "Mindste tid slukket" : "Minimum off time"}<input type="number" min="0" max="3600" step="60" value={n(form.cooling_min_off_seconds, 300)} onChange={num("cooling_min_off_seconds")}/><span>s</span></label>
+      </div>
+      <div className="settings-summary">
+        <RoomTemperatureSummary lang={lang} controller={controller}/>
       </div>
     </Card>,
     fireplace: <Card title={t(SECTIONS[6].title)} lead={lang === "da" ? "Holder anlæggets pejsefunktion, så længe der fyres" : "Holds the unit's fireplace mode while the stove burns"} icon={Flame}>
@@ -617,7 +644,7 @@ export function SettingsPage() {
     </Card>,
   };
 
-  const visible = SECTIONS.filter(item => sectionAllowed(item.id, can));
+  const visible = visibleSections(can, unit);
   const active = visible.find(item => item.id === section) ?? visible[0];
   return <section className="dashboard-overview page-enter">
     <header className="overview-heading-row"><div><span className="eyebrow">{t(T.eyebrow)}</span><h1>{t(T.title)}</h1><p>{t(T.intro)}</p></div></header>
