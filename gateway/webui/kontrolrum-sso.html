@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Login fra Kontrolrum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/kontrolrum-sso.css">
+</head>
+<body>
+<main>
+  <p><a href="/">Tilbage</a></p>
+  <h1>Login fra Kontrolrum</h1>
+  <p class="muted">Kontrolrum logger ind med en nøgle i stedet for en adgangskode. Det virker kun fra Kontrolrums egen adresse og kun for de brugere, der har fluebenet.</p>
+  <p id="message" role="status" hidden></p>
+
+  <section>
+    <h2>Status</h2>
+    <p id="state">Henter …</p>
+    <p id="used" class="muted"></p>
+    <p id="rejected" class="warn" hidden></p>
+    <div class="row">
+      <button id="make-key" type="button">Lav SSO-nøgle</button>
+      <button id="turn-off" type="button" class="quiet" hidden>Slå fra</button>
+    </div>
+    <div id="key-box" hidden>
+      <p class="warn">Kopiér nøglen nu. Den vises kun denne ene gang.</p>
+      <code id="key"></code>
+    </div>
+  </section>
+
+  <section>
+    <h2>Kontrolrums IP-adresse</h2>
+    <form id="peers-form">
+      <label for="ips">Den eller de præcise adresser, Kontrolrum kalder fra</label>
+      <input id="ips" autocomplete="off" spellcheck="false" maxlength="400" placeholder="fx 10.0.0.28">
+      <button type="submit">Gem adresse</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Brugere</h2>
+    <p class="muted">Sæt kun fluebenet på den bruger, Kontrolrum skal logge ind som.</p>
+    <div id="users"></div>
+  </section>
+</main>
+<script src="/assets/kontrolrum-sso.js"></script>
+</body>
+</html>

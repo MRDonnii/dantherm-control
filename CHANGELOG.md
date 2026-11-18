@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.0
+
+- **Sign in from Kontrolrum without a stored password:** `POST /api/auth/kontrolrum` accepts a signed one-time assertion (HMAC-SHA256, at most 120 seconds, single-use). It works only from the configured Kontrolrum address and only for users who have opted in, and the session stops working from any other address.
+- New page `/kontrolrum-sso` for administrators: make, replace or delete the key, set the address, tick the users, and see the last refused attempt.
+- New command `kontrolrum_sso.py kontrolrum-sso <user>` makes the key and prints only the key.
+- The sign-in code runs in the web layer only. A fault in it refuses that one sign-in and leaves the ventilation control alone.
+- Changes by Claude AI.
+
 ## 1.6.1
 
 - **Fewer false "afterheat calls but the air does not get warmer" warnings:** the alarm is no longer raised while the air after the coil is already within 1 K of the afterheat setpoint (HAC1 keeps its call flag on in its duty cycle, so no lift is wanted or possible then). Real faults with cold air still raise it after 30 minutes.
