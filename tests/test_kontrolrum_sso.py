@@ -224,6 +224,32 @@ class KontrolrumSsoTests(unittest.TestCase):
             self.assertEqual((self.files / name).stat().st_mode & 0o777, 0o600, name)
 
 
+class FaultIsolationTests(unittest.TestCase):
+    def test_a_broken_module_does_not_stop_the_web_server_from_loading(self):
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "kontrolrum_sso.py").write_text("raise RuntimeError('broken')\n")
+            env = dict(os.environ, PYTHONPATH=os.pathsep.join([folder, str(ROOT / "gateway"), os.environ.get("PYTHONPATH", "")]))
+            done = subprocess.run(
+                [sys.executable, "-c", "import controller_dashboard_server as c; assert c.KontrolrumSso is None; print('loaded')"],
+                capture_output=True, text=True, env=env, timeout=60, check=False, cwd=folder,
+            )
+            self.assertEqual((done.returncode, done.stdout.strip()), (0, "loaded"), done.stderr[-400:])
+
+    def test_a_fault_in_the_session_check_refuses_only_that_session(self):
+        from webui_auth import AuthManager
+        with tempfile.TemporaryDirectory() as folder:
+            auth = AuthManager(Path(folder) / "auth.json")
+            auth.save("kontrolrum", "long-test-password", True)
+            sid, _ = auth.session_kontrolrum("kontrolrum", {"p": KONTROLRUM_IP, "k": "abcd1234"})
+            def broken(*args):
+                raise RuntimeError("boom")
+            auth.session_guard = broken
+            self.assertIsNone(auth.authenticate_cookie(f"dantherm_session={sid}", KONTROLRUM_IP))
+            auth.session_guard = lambda *args: ""
+            self.assertIsNotNone(auth.authenticate_cookie(f"dantherm_session={sid}", KONTROLRUM_IP))
+            self.assertIsNone(auth.authenticate_cookie(f"dantherm_session={sid}"), "no address: refused")
+
+
 class CommandLineTests(unittest.TestCase):
     def run_cli(self, folder, *args):
         env = dict(os.environ, DANTHERM_WEBUI_AUTH_FILE=str(Path(folder) / "webui-auth.json"))
