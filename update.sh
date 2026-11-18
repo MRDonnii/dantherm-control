@@ -16,6 +16,7 @@ required_source=(
   gateway/controller_dashboard_server.py
   gateway/dashboard_server.py
   gateway/webui_auth.py
+  gateway/kontrolrum_sso.py
   gateway/webui_mail.py
   gateway/webui_permissions.py
   gateway/week_schedule.py
