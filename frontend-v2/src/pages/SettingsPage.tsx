@@ -43,6 +43,8 @@ export const CONTROLLER_KEYS = [
   "balance_enabled", "balance_extract_excess_percent", "balance_ratio_mode", "balance_duct_ratio", "fan_settings",
   "humidity_smart_enabled", "outdoor_humidity_source", "humidity_margin_gm3", "duct_extract_source", "duct_rooms_offset_k", "duct_t3_offset_k", "t2_offset_k",
   "dry_protection_enabled", "dry_rh_limit", "dry_max_level",
+  "winter_dry_enabled", "winter_outdoor_max", "winter_outdoor_hysteresis", "winter_rh_limit", "winter_rh_hysteresis",
+  "winter_rh_basis", "winter_level", "winter_hold_minutes",
   "fireplace_auto_enabled", "fireplace_auto_source", "fireplace_auto_on_temp", "fireplace_auto_off_temp",
   "fireplace_afterrun_minutes", "fireplace_max_hours", "onewire_roles",
   "pm25_enabled", "pm25_setpoint", "pm25_step", "pm25_hysteresis", "pm25_max_level", "pm25_ignored_rooms",
@@ -522,6 +524,23 @@ export function SettingsPage() {
           <Help>{lang === "da" ? "Når luften inde er tørrere end grænsen, og CO₂ er under sin grænse i alle rum, går anlægget højst op på det valgte trin. Stiger CO₂, slipper begrænsningen straks." : "When indoor air is drier than the limit and CO₂ is below its limit in every room, the unit runs at most at the chosen level. If CO₂ rises, the limit is lifted at once."}</Help>
           <label>{lang === "da" ? "Tør luft under" : "Dry air below"}<input type="number" min="15" max="45" value={n(form.dry_rh_limit, 30)} onChange={num("dry_rh_limit")}/><span>% RH</span><Help>{lang === "da" ? "Under ca. 30 % RH giver tørre øjne, statisk elektricitet og revner i trægulve." : "Below about 30 % RH causes dry eyes, static and cracks in wooden floors."}</Help></label>
           <label>{lang === "da" ? "Maks. trin ved tør luft" : "Maximum level in dry air"}<input type="number" min="1" max={maxLevel} value={n(form.dry_max_level, 2)} onChange={num("dry_max_level")}/><Help>{lang === "da" ? "Styres grundtrinnet af husets størrelse, går det aldrig under det reducerede minimum." : "If the base level follows the house size, it never goes below the reduced minimum."}</Help></label>
+        </div>
+      </Card>
+      <Card title={lang === "da" ? "Vinter: tør luft" : "Winter: dry air"} lead={lang === "da" ? "Lavere grundtrin, når det fryser og huset er tørt" : "A lower base level when it freezes and the house is dry"} icon={Droplets}>
+        <div className="settings-grid">
+          <label className="check-row"><input type="checkbox" checked={form.winter_dry_enabled === true} onChange={check("winter_dry_enabled")}/> {lang === "da" ? "Sænk grundtrinnet i koldt, tørt vejr" : "Lower the base level in cold, dry weather"}</label>
+          <Help>{lang === "da" ? "Kold udeluft indeholder næsten ingen fugt. Når T1 er under grænsen og luften inde er tørrere end grænsen, kører Auto på grundtrinnet herunder. CO₂ og fugt løfter stadig trinnet; høj CO₂, badeværelse der tørres ud, høj fugt, Quick Boost, manuel styring og husets minimum vinder altid." : "Cold outdoor air holds almost no moisture. When T1 is below the limit and indoor air is drier than the limit, Auto runs at the base level below. CO₂ and humidity still lift the level; high CO₂, bathroom drying, high humidity, Quick Boost, manual control and the house minimum always win."}</Help>
+          <label>{lang === "da" ? "Koldt ude under (T1)" : "Cold outside below (T1)"}<input type="number" min="-25" max="15" step="0.5" value={n(form.winter_outdoor_max, 3)} onChange={num("winter_outdoor_max")}/><span>°C</span></label>
+          <label>{lang === "da" ? "Tør luft inde under" : "Dry indoor air below"}<input type="number" min="20" max="55" value={n(form.winter_rh_limit, 38)} onChange={num("winter_rh_limit")}/><span>% RH</span></label>
+          <label>{lang === "da" ? "Grundtrin om vinteren" : "Winter base level"}<input type="number" min="1" max={maxLevel} value={n(form.winter_level, 2)} onChange={num("winter_level")}/></label>
+          <label>{lang === "da" ? "Indendørs fugt" : "Indoor humidity"}<select value={s(form.winter_rh_basis, "average")} onChange={e => set("winter_rh_basis", e.target.value)}><option value="average">{lang === "da" ? "Gennemsnit af rummene" : "Average of the rooms"}</option><option value="lowest">{lang === "da" ? "Tørreste rum" : "Driest room"}</option></select><Help>{lang === "da" ? "Rummene fra Home Assistant uden badeværelser og rum med styring slået fra. Uden rum bruges anlæggets egen fugtføler." : "The Home Assistant rooms without bathrooms and rooms with control off. Without rooms the unit's own humidity sensor is used."}</Help></label>
+          <label>{lang === "da" ? "Hysterese ude" : "Outdoor hysteresis"}<input type="number" min="0.5" max="10" step="0.5" value={n(form.winter_outdoor_hysteresis, 2)} onChange={num("winter_outdoor_hysteresis")}/><span>°C</span></label>
+          <label>{lang === "da" ? "Hysterese fugt" : "Humidity hysteresis"}<input type="number" min="1" max="10" value={n(form.winter_rh_hysteresis, 3)} onChange={num("winter_rh_hysteresis")}/><span>%</span></label>
+          <label>{lang === "da" ? "Mindste tid før skift" : "Minimum time between changes"}<input type="number" min="5" max="240" value={n(form.winter_hold_minutes, 30)} onChange={num("winter_hold_minutes")}/><span>min</span><Help>{lang === "da" ? "Også hvor længe en pause for CO₂ eller fugt varer, efter at årsagen er væk." : "Also how long a pause for CO₂ or humidity lasts after the cause is gone."}</Help></label>
+        </div>
+        <div className="settings-summary">
+          <span>{lang === "da" ? "Status" : "Status"}<strong>{controller.winter_dry_active === true ? (lang === "da" ? "Aktiv" : "Active") : controller.winter_dry_state === "paused" ? (lang === "da" ? "På pause" : "Paused") : (lang === "da" ? "Ikke aktiv" : "Not active")}</strong></span>
+          <span>{lang === "da" ? "Fugt inde" : "Indoor humidity"}<strong>{fmt(controller.winter_indoor_rh, lang, 0, " %")}</strong></span>
         </div>
       </Card>
       <BathroomCards lang={lang} form={form} controller={controller} set={set} maxLevel={maxLevel}/>
