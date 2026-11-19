@@ -248,3 +248,6 @@
 /* Appens gamle mobilregler skjuler .nav-item-teksten (den gamle menu blev en ikonrække); Mere-arket viser den. */
 :root[data-skin] .fd-sheet .fd-nav .fd-nav-label, :root[data-skin] .fd-navbar .fd-nav .fd-nav-label { display: inline; }
 :root[data-skin] .fd-app[data-collapsed] .fd-navbar .fd-nav .fd-nav-label { display: none; }
+/* Ingen accentstreger: badeværelsesrækken markeres med rækkens baggrund i stedet for en blå venstrestreg. */
+:root[data-skin] .bathroom-table tr.is-bathroom td:first-child { box-shadow: none; }
+:root[data-skin] .bathroom-table tr.is-bathroom td { background: color-mix(in srgb, var(--primary) 7%, transparent); }
