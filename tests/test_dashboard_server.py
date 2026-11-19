@@ -189,8 +189,8 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("<small>I HAC1</small>", thermostat)
         self.assertIn('heating ? "Varmer"', thermostat)
         # Technician pages carry the permission that shows them in the menu.
-        self.assertIn('["/technique", "Teknik", Gauge, "diagnostics"]', shell)
-        self.assertIn('["/updates", "Opdateringer", RefreshCw, "system"]', shell)
+        self.assertIn('["/technique", "Teknik", "gauge", "diagnostics", "Teknik og drift"]', shell)
+        self.assertIn('["/updates", "Opdateringer", "refresh", "system", "Teknik og drift"]', shell)
         self.assertIn('availableUpdate && session.can("system") && <NavLink className="topbar-update-tab" to="/updates"', shell)
         self.assertIn('guarded("/technique"', app)
         self.assertIn('guarded("/updates"', app)
