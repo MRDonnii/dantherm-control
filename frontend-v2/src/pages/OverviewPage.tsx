@@ -7,7 +7,7 @@ import { ArrowRight, CloudFog, Flame, Gauge, House, Leaf, Power, Snowflake, Wind
 import { Hch5UnitDiagram } from "../components/Hch5UnitDiagram";
 import { AfterheatThermostat } from "../components/AfterheatThermostat";
 import { describeControl } from "../lib/control";
-import { HistoryChart, type HistorySeries } from "../components/HistoryChart";
+import { SENSOR_HISTORY, SensorHistoryDialog } from "../components/SensorHistoryDialog";
 import { postJson, requestJson } from "../lib/api";
 import { usePollHealth, useSinglePoll } from "../lib/connection";
 import { bypassTravel, formatRemaining } from "../lib/bypass";
@@ -16,23 +16,10 @@ import { LEVEL_NAMES, MAX_LEVEL_HOURS, levelList, stepCount } from "../lib/fanSt
 import { OverviewSide } from "../components/OverviewSide";
 import { useSkin } from "../lib/appearance";
 import "../styles/overview.css";
-import "../styles/history.css";
 
 type Data = Record<string, unknown>;
 type AfterheatValue = number | "off";
 type AuthState = { csrf?: string | null };
-const SENSOR_HISTORY: Record<string, { title: string; key: string; color: HistorySeries["color"]; unit?: string }> = {
-  outdoor: { title: "Udeluft · T1", key: "outdoor_temp", color: "blue" },
-  extract: { title: "Udsugning · T3", key: "extract_temp", color: "orange" },
-  exhaust: { title: "Afkast · T4", key: "exhaust_temp", color: "red" },
-  afterHeater: { title: "T2AH efter eftervarme", key: "heating_coil_after_temperature", color: "green" },
-  frost: { title: "Frostsensor", key: "heating_coil_frost_temperature", color: "blue" },
-  flowWater: { title: "Eftervarmevand · Frem", key: "flow_temperature", color: "orange" },
-  returnWater: { title: "Eftervarmevand · Retur", key: "return_temperature", color: "blue" },
-  waterDelta: { title: "Eftervarmevand · Afkøl", key: "water_delta", color: "green" },
-  recovery: { title: "Genvinding · udsugningsside (T3/T4)", key: "heat_recovery_efficiency", color: "green", unit: "%" },
-};
-type HistorySample = Record<string, number | null>;
 
 function number(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
@@ -129,12 +116,9 @@ export function OverviewPage() {
   // Setpoint to return to when the power button turns the afterheat back on.
   const lastAfterheatOn = useRef(20);
   const [activeSensor, setActiveSensor] = useState<string | null>(null);
+  const closeSensor = useCallback(() => setActiveSensor(null), []);
   const [standbyDialog, setStandbyDialog] = useState(false);
   const [coolDialog, setCoolDialog] = useState(false);
-  const [historySamples, setHistorySamples] = useState<HistorySample[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyError, setHistoryError] = useState("");
-  const closeHistoryRef = useRef<HTMLButtonElement>(null);
 
   const refresh = useSinglePoll(useCallback(async () => {
     const [unitResult, controllerResult, authResult] = await Promise.allSettled([
@@ -153,30 +137,6 @@ export function OverviewPage() {
     const timer = window.setInterval(() => void refresh(), 2000);
     return () => window.clearInterval(timer);
   }, [refresh]);
-
-  useEffect(() => {
-    if (!activeSensor) return;
-    let cancelled = false;
-    const loadHistory = async () => {
-      try {
-        const result = await requestJson<{ samples: HistorySample[] }>("/history.json?range=24h", { timeoutMs: 6000 });
-        if (!cancelled) { setHistorySamples(Array.isArray(result.samples) ? result.samples.map(sample => ({ ...sample, water_delta: typeof sample.flow_temperature === "number" && typeof sample.return_temperature === "number" ? sample.flow_temperature - sample.return_temperature : null })) : []); setHistoryError(""); }
-      } catch {
-        if (!cancelled) setHistoryError("Historikken kunne ikke hentes. Prøv igen senere.");
-      } finally {
-        if (!cancelled) setHistoryLoading(false);
-      }
-    };
-    setHistorySamples([]);
-    setHistoryError("");
-    setHistoryLoading(true);
-    void loadHistory();
-    const timer = window.setInterval(() => void loadHistory(), 60000);
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setActiveSensor(null); };
-    window.addEventListener("keydown", onKeyDown);
-    closeHistoryRef.current?.focus();
-    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("keydown", onKeyDown); };
-  }, [activeSensor]);
 
   const command = useCallback(async (name: string, patch: Data, success: string) => {
     if (!csrf) {
@@ -488,12 +448,7 @@ export function OverviewPage() {
           {coolActive && <button type="button" className="standby-on-action" disabled={busy !== null} onClick={() => { setCoolDialog(false); void command("cool-stop", { cool_boost_minutes: 0 }, "Køl stoppet."); }}>Stop køl</button>}
         </section>
       </div>, document.body)}
-      {activeSensor && SENSOR_HISTORY[activeSensor] && createPortal(<div className="sensor-history-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setActiveSensor(null); }}>
-        <section className="sensor-history-dialog surface" role="dialog" aria-modal="true" aria-labelledby="sensor-history-title">
-          <div className="sensor-history-heading"><div><span className="eyebrow">SENESTE 24 TIMER</span><h2 id="sensor-history-title">{SENSOR_HISTORY[activeSensor].title}</h2></div><button ref={closeHistoryRef} type="button" aria-label="Luk temperaturgraf" onClick={() => setActiveSensor(null)}><X size={20}/></button></div>
-          {historyError ? <p className="sensor-history-message" role="alert">{historyError}</p> : historyLoading ? <div className="history-chart-empty" style={{ height: 230 }}>Henter historik…</div> : <HistoryChart height={230} unit={SENSOR_HISTORY[activeSensor].unit ?? "°C"} samples={historySamples} series={[{ key: SENSOR_HISTORY[activeSensor].key, label: SENSOR_HISTORY[activeSensor].title, color: SENSOR_HISTORY[activeSensor].color }]}/>}
-        </section>
-      </div>, document.body)}
+      {activeSensor && SENSOR_HISTORY[activeSensor] && <SensorHistoryDialog sensor={SENSOR_HISTORY[activeSensor]} onClose={closeSensor}/>}
     </section>
   );
 }

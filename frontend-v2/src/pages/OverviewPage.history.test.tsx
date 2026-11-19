@@ -25,7 +25,7 @@ describe("sensor history popup", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Udeluft · T1: 6,1°C, vis 24 timers graf/ }));
     const dialog = await screen.findByRole("dialog", { name: "Udeluft · T1" });
     expect(api.requestJson).toHaveBeenCalledWith("/history.json?range=24h", { timeoutMs: 6000 });
-    await waitFor(() => expect(dialog.querySelector("path[stroke='var(--blue)']")).not.toBeNull());
+    await waitFor(() => expect(dialog.querySelector("path[stroke='var(--hx-1)']")).not.toBeNull());
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });

@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.7.7
+
+- **History redesigned.** Every chart now has a real time axis and clean value ticks, lines break at gaps instead of
+  bridging them, and one crosshair follows the same moment in all charts on the page, with the values in each chart's
+  legend. Arrow keys step through the samples, and every chart has a table view.
+- **Afterheat at a glance.** A new main chart shows the air after the coil (T2AH) against the setpoint, the spread of
+  T2AH inside each point, and a strip with how much of the time the valve was open. Water flow, return and the frost
+  sensor, outdoor/exhaust, fans (% with rpm), CO₂ with a 1,000 ppm guide and heat recovery follow. Key figures for the
+  period sit above the charts.
+- **Sensor graphs from the overview drawing** open a larger dialog with 6 h / 24 h / 7 d / 30 d, now/low/average/high
+  and related lines (flow with return, exhaust with outdoor air; T2AH with spread, setpoint and valve).
+- **History data:** points are now averages per time bucket instead of every n-th sample, so short swings are no longer
+  dropped; T2AH also carries its min/max per bucket, and the afterheat setpoint and valve state are recorded.
+  Old decode errors (e.g. 655 °C) are kept off the charts.
+- Colours come from a palette checked for colour blindness and contrast in both themes.
+
 ## 1.7.6
 
 - **Smooth airflow animation in the overview.** The animated unit drawing is now a stack of SVG layers with the same

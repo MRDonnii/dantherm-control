@@ -25,7 +25,7 @@ ASSET_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; chars
 AUXILIARY_REFRESH_SECONDS = 5
 PREHEATER_STALE_SECONDS = 60
 RANGES = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000}
-HISTORY_FIELDS = ("outdoor_temp", "supply_temp", "extract_temp", "exhaust_temp", "hrc2_t5_temperature", "heating_coil_after_temperature", "heating_coil_frost_temperature", "flow_temperature", "return_temperature", "co2", "fan_supply_rpm", "fan_extract_rpm", "fan_supply_percent", "fan_extract_percent", "heat_recovery_efficiency", "system_cpu_usage_percent", "pi_cpu_temperature", "system_memory_used_percent", "system_load_1m")
+HISTORY_FIELDS = ("outdoor_temp", "supply_temp", "extract_temp", "exhaust_temp", "hrc2_t5_temperature", "heating_coil_after_temperature", "heating_coil_frost_temperature", "flow_temperature", "return_temperature", "co2", "fan_supply_rpm", "fan_extract_rpm", "fan_supply_percent", "fan_extract_percent", "heat_recovery_efficiency", "system_cpu_usage_percent", "pi_cpu_temperature", "system_memory_used_percent", "system_load_1m", "afterheat_setpoint", "afterheat_active")
 HISTORY_SENSOR_MARKERS = {
     "supply_temp": "supply_temp_sample_fresh",
     "heating_coil_after_temperature": "heating_coil_after_temperature_sample_fresh",
@@ -88,31 +88,42 @@ class HistoryStore:
         except (OSError, sqlite3.Error) as error:
             self.available, self.error = False, str(error)
             LOGGER.warning("History write failed, disabling: %s", error)
+    # Fields whose spread inside a bucket is worth showing (min/max band).
+    HISTORY_SPREAD_FIELDS = ("heating_coil_after_temperature",)
+    MAX_POINTS = 720
     def query(self, range_name: str) -> list[dict[str, object]]:
+        """Samples for a range, averaged into at most MAX_POINTS time buckets.
+
+        Averaging (instead of keeping every n-th row) keeps short swings in the
+        mean, gives afterheat_active as the share of time the valve was open,
+        and HISTORY_SPREAD_FIELDS also get their min/max per bucket.
+        """
         if not self.available: return []
-        since = int(time.time()) - RANGES.get(range_name, RANGES["24h"])
+        span = RANGES.get(range_name, RANGES["24h"])
+        since = int(time.time()) - span
+        bucket = max(self.sample_seconds, -(-span // self.MAX_POINTS))
+        def value(field: str) -> str:
+            marker = HISTORY_SENSOR_MARKERS.get(field)
+            return f'CASE WHEN "{marker}" = 1 THEN "{field}" END' if marker else f'"{field}"'
+        columns = [f'AVG({value(field)}) AS "{field}"' for field in HISTORY_FIELDS]
+        for field in self.HISTORY_SPREAD_FIELDS:
+            columns.append(f'MIN({value(field)}) AS "{field}_min"')
+            columns.append(f'MAX({value(field)}) AS "{field}_max"')
+        sql = (f"SELECT CAST(MIN(ts) AS INTEGER) AS ts, {', '.join(columns)} FROM samples "
+               "WHERE ts >= ? GROUP BY ts / ? ORDER BY ts")
         try:
             with self.lock, self._connect() as db:
-                # Thin out in SQLite: turning 10,000+ rows into Python objects
-                # takes seconds on a Pi 3, and only every stride-th row is kept.
-                count = db.execute("SELECT COUNT(*) FROM samples WHERE ts >= ?", (since,)).fetchone()[0]
-                stride = max(1, count // 720)
                 db.row_factory = sqlite3.Row
-                rows = db.execute(
-                    "SELECT * FROM (SELECT *, ROW_NUMBER() OVER (ORDER BY ts) - 1 AS _row FROM samples WHERE ts >= ?) "
-                    "WHERE _row % ? = 0 ORDER BY ts", (since, stride)).fetchall()
+                rows = db.execute(sql, (since, bucket)).fetchall()
         except (OSError, sqlite3.Error) as error:
             self.available, self.error = False, str(error)
             LOGGER.warning("History read failed, disabling: %s", error)
             return []
         samples = []
         for row in rows:
-            sample = dict(row)
-            sample.pop("_row", None)
-            for field, marker in HISTORY_SENSOR_MARKERS.items():
-                if sample.get(marker) != 1:
-                    sample[field] = None
-                sample.pop(marker, None)
+            sample = {key: row[key] for key in row.keys()}
+            for key, item in sample.items():
+                if isinstance(item, float): sample[key] = round(item, 3)
             samples.append(sample)
         return samples
 

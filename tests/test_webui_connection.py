@@ -145,7 +145,9 @@ class WebUIConnectionTests(unittest.TestCase):
 
 
 class HistoryStrideTests(unittest.TestCase):
-    def test_sql_thinning_keeps_the_same_rows_as_before(self):
+    def test_sql_buckets_average_long_ranges(self):
+        # Long ranges are averaged per time bucket in SQLite (a Pi 3 cannot turn
+        # 10,000+ rows into Python objects quickly), at most MAX_POINTS rows.
         with tempfile.TemporaryDirectory() as tmp:
             store = HistoryStore(Path(tmp) / "history.sqlite3")
             now = int(time.time())
@@ -153,9 +155,11 @@ class HistoryStrideTests(unittest.TestCase):
                 db.executemany("INSERT INTO samples (ts, co2) VALUES (?, ?)",
                                [(now - 60 * i, 400 + i) for i in range(2000)])
             rows = store.query("7d")
-            everything = sorted(range(2000), reverse=True)
-            stride = 2000 // 720
-            self.assertEqual([row["co2"] for row in rows], [400 + i for i in everything[::stride]])
+            self.assertLessEqual(len(rows), HistoryStore.MAX_POINTS)
+            self.assertLess(len(rows), 2000)
+            self.assertEqual([row["ts"] for row in rows], sorted(row["ts"] for row in rows))
+            self.assertAlmostEqual(min(row["co2"] for row in rows), 400, delta=15)
+            self.assertAlmostEqual(max(row["co2"] for row in rows), 2399, delta=15)
             self.assertNotIn("_row", rows[0])
 
 

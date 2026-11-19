@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
+import type React from "react";
 import { Activity, Fan, Leaf, Recycle, SlidersHorizontal } from "lucide-react";
 import { AlarmHistory } from "../components/AlarmHistory";
 import { HistoryChart } from "../components/HistoryChart";
 import { requestJson } from "../lib/api";
+import { clean } from "../lib/historyData";
 import "../styles/history.css";
 
 type Sample = Record<string, number | null>;
@@ -46,25 +48,77 @@ function changeValue(key: string, value: unknown) {
   return valueLabel(value);
 }
 
-const RANGES: { value: string; label: string }[] = [
-  { value: "1h", label: "1 time" },
-  { value: "6h", label: "6 timer" },
-  { value: "24h", label: "24 timer" },
-  { value: "7d", label: "7 dage" },
-  { value: "30d", label: "30 dage" },
+const RANGES: { value: string; label: string; seconds: number }[] = [
+  { value: "1h", label: "1 time", seconds: 3600 },
+  { value: "6h", label: "6 timer", seconds: 21600 },
+  { value: "24h", label: "24 timer", seconds: 86400 },
+  { value: "7d", label: "7 dage", seconds: 604800 },
+  { value: "30d", label: "30 dage", seconds: 2592000 },
 ];
+
+const AFTER = "heating_coil_after_temperature";
+
+function finite(value: unknown): value is number { return typeof value === "number" && Number.isFinite(value); }
+
+function summary(samples: Sample[], key: string) {
+  let latest: number | null = null;
+  let low = Infinity;
+  let high = -Infinity;
+  let total = 0;
+  let count = 0;
+  for (const sample of samples) {
+    const value = sample[key];
+    if (!finite(value)) continue;
+    latest = value;
+    low = Math.min(low, value);
+    high = Math.max(high, value);
+    total += value;
+    count += 1;
+  }
+  return { latest, low: count ? low : null, high: count ? high : null, mean: count ? total / count : null };
+}
+
+function format(value: number | null, decimals: number) {
+  return value === null ? "–" : value.toLocaleString("da-DK", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+}
+
+function StatTile({ label, value, unit, detail }: { label: string; value: string; unit: string; detail: string }) {
+  return (
+    <article className="surface hx-stat">
+      <span>{label}</span>
+      <strong>{value}<small>{value === "–" ? "" : unit}</small></strong>
+      <em>{detail}</em>
+    </article>
+  );
+}
+
+function ChartCard({ title, subtitle, icon, wide = false, children }: { title: string; subtitle: string; icon: React.ReactNode; wide?: boolean; children: React.ReactNode }) {
+  return (
+    <article className={`surface history-card${wide ? " history-card-wide" : ""}`}>
+      <div className="pro-card-head compact"><div><h2>{title}</h2><p>{subtitle}</p></div>{icon}</div>
+      {children}
+    </article>
+  );
+}
 
 export function HistoryPage() {
   const [range, setRange] = useState("24h");
   const [samples, setSamples] = useState<Sample[]>([]);
+  const [window_, setWindow] = useState<{ from: number; to: number } | undefined>(undefined);
+  const [updated, setUpdated] = useState<number | null>(null);
   const [online, setOnline] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [hover, setHover] = useState<number | null>(null);
   const [changes, setChanges] = useState<ChangeEvent[]>([]);
 
   const refresh = useCallback(async (activeRange: string) => {
     try {
-      const result = await requestJson<HistoryResponse>(`/history.json?range=${activeRange}`, { timeoutMs: 6000 });
-      setSamples(Array.isArray(result.samples) ? result.samples : []);
+      const result = await requestJson<HistoryResponse>(`/history.json?range=${activeRange}`, { timeoutMs: 8000 });
+      const now = Math.floor(Date.now() / 1000);
+      const seconds = RANGES.find(item => item.value === activeRange)?.seconds ?? 86400;
+      setSamples(Array.isArray(result.samples) ? clean(result.samples) : []);
+      setWindow({ from: now - seconds, to: now });
+      setUpdated(now);
       const state = await requestJson<{ change_log?: ChangeEvent[] }>("/api/controller/state", { timeoutMs: 3500 }).catch(() => null);
       if (state && Array.isArray(state.change_log)) setChanges(state.change_log);
       setOnline(true);
@@ -77,10 +131,24 @@ export function HistoryPage() {
 
   useEffect(() => {
     setLoading(true);
+    setHover(null);
     void refresh(range);
     const timer = window.setInterval(() => void refresh(range), 60000);
     return () => window.clearInterval(timer);
   }, [range, refresh]);
+
+  const label = RANGES.find(item => item.value === range)?.label ?? "";
+  const outdoor = summary(samples, "outdoor_temp");
+  const after = summary(samples, AFTER);
+  const supplyKey = after.latest !== null ? AFTER : "supply_temp";
+  const supply = after.latest !== null ? after : summary(samples, "supply_temp");
+  const extract = summary(samples, "extract_temp");
+  const co2 = summary(samples, "co2");
+  const recovery = summary(samples, "heat_recovery_efficiency");
+  const valve = summary(samples, "afterheat_active");
+  const span = (item: ReturnType<typeof summary>, decimals: number, unit: string) =>
+    item.low === null ? "Ingen data" : `${format(item.low, decimals)}–${format(item.high, decimals)}${unit} i perioden`;
+  const shared = { samples, range: window_, hoverTs: hover, onHover: setHover, loading };
 
   return (
     <section className="dashboard-overview page-enter">
@@ -88,85 +156,94 @@ export function HistoryPage() {
         <div>
           <span className="eyebrow">HISTORIK</span>
           <h1>Udvikling over tid</h1>
-          <p>Temperaturer, luftkvalitet, ventilatorer og varmegenvinding samlet i en fejltolerant historikvisning.</p>
+          <p>Peg eller tryk på en graf for at se alle værdier på samme tidspunkt.</p>
         </div>
         <div className="overview-status-pills">
           <div><span className={`status-led ${online ? "" : "warn"}`}/><small>Historik</small><strong>{online ? "Live" : "Afventer"}</strong></div>
         </div>
       </header>
 
-      <div className="pro-segment history-range-segment">
-        {RANGES.map(item => (
-          <button key={item.value} className={range === item.value ? "active" : ""} onClick={() => setRange(item.value)}>{item.label}</button>
-        ))}
+      <div className="hx-toolbar">
+        <div className="pro-segment history-range-segment" role="group" aria-label="Periode">
+          {RANGES.map(item => (
+            <button key={item.value} className={range === item.value ? "active" : ""} aria-pressed={range === item.value} onClick={() => setRange(item.value)}>{item.label}</button>
+          ))}
+        </div>
+        <span className="hx-updated">{updated ? `Opdateret kl. ${new Date(updated * 1000).toLocaleTimeString("da-DK", { hour: "2-digit", minute: "2-digit" })} · gennemsnit pr. punkt` : ""}</span>
+      </div>
+
+      <div className="hx-stats">
+        <StatTile label="Ude" value={format(outdoor.latest, 1)} unit="°C" detail={span(outdoor, 1, "°C")}/>
+        <StatTile label={supplyKey === AFTER ? "Indblæsning" : "Tilluft"} value={format(supply.latest, 1)} unit="°C" detail={span(supply, 1, "°C")}/>
+        <StatTile label="Udsugning" value={format(extract.latest, 1)} unit="°C" detail={span(extract, 1, "°C")}/>
+        <StatTile label="CO₂" value={format(co2.latest, 0)} unit=" ppm" detail={span(co2, 0, " ppm")}/>
+        <StatTile label="Genvinding" value={format(recovery.latest, 0)} unit="%" detail={recovery.mean === null ? "Ingen data" : `Gns. ${format(recovery.mean, 0)}% i perioden`}/>
+        <StatTile label="Eftervarme" value={valve.mean === null ? "–" : format(valve.mean * 100, 0)} unit="%" detail={`af tiden med åben ventil · ${label}`}/>
       </div>
 
       <div className="history-grid">
-        <article className="surface history-card">
-          <div className="pro-card-head compact"><div><h2>Temperaturer</h2><p>Ude-, udsugnings-, afkast- og indblæsningstemperatur</p></div><Activity size={20}/></div>
-          {loading ? <div className="history-chart-empty" style={{ height: 200 }}><span>Henter…</span></div> : (
-            <HistoryChart
-              unit="°C"
-              samples={samples}
-              series={[
-                { key: "outdoor_temp", label: "Udeluft", color: "blue" },
-                { key: "extract_temp", label: "Udsugning", color: "orange" },
-                { key: "exhaust_temp", label: "Afkast", color: "red" },
-                { key: "supply_temp", label: "Tilluft", color: "green" },
-              ]}
-            />
-          )}
-        </article>
+        <ChartCard wide title="Indblæsning og eftervarme" subtitle="Luften efter varmefladen mod setpunktet, og hvornår ventilen er åben" icon={<Activity size={20}/>}>
+          <HistoryChart
+            {...shared} title="Indblæsning og eftervarme" unit="°C" height={270} minSpan={4}
+            series={[
+              { key: AFTER, label: "Indblæsning · T2AH", slot: 1 },
+              { key: "extract_temp", label: "Udsugning · T3", slot: 2 },
+            ]}
+            band={{ seriesKey: AFTER, minKey: `${AFTER}_min`, maxKey: `${AFTER}_max`, label: "Udsving T2AH" }}
+            reference={{ key: "afterheat_setpoint", label: "Setpunkt" }}
+            strip={{ key: "afterheat_active", label: "Ventil åben" }}
+          />
+        </ChartCard>
 
-        <article className="surface history-card">
-          <div className="pro-card-head compact"><div><h2>Eftervarmevand</h2><p>Fremløb og retur til varmefladen</p></div><Activity size={20}/></div>
-          {loading ? <div className="history-chart-empty" style={{ height: 200 }}><span>Henter…</span></div> : (
-            <HistoryChart
-              unit="°C"
-              samples={samples}
-              series={[
-                { key: "flow_temperature", label: "Fremløb", color: "orange" },
-                { key: "return_temperature", label: "Retur", color: "blue" },
-              ]}
-            />
-          )}
-        </article>
+        <ChartCard title="Eftervarmevand" subtitle="Fremløb, retur og frostføleren på vandsiden" icon={<Activity size={20}/>}>
+          <HistoryChart
+            {...shared} title="Eftervarmevand" unit="°C" minSpan={6}
+            series={[
+              { key: "flow_temperature", label: "Fremløb", slot: 1 },
+              { key: "return_temperature", label: "Retur", slot: 2 },
+              { key: "heating_coil_frost_temperature", label: "Frostføler", slot: 3 },
+            ]}
+          />
+        </ChartCard>
 
-        <article className="surface history-card">
-          <div className="pro-card-head compact"><div><h2>Ventilatorer</h2><p>Omdrejninger for tilluft og fraluft</p></div><Fan size={20}/></div>
-          {loading ? <div className="history-chart-empty" style={{ height: 200 }}><span>Henter…</span></div> : (
-            <HistoryChart
-              unit=" RPM"
-              samples={samples}
-              series={[
-                { key: "fan_supply_rpm", label: "Tilluft", color: "green" },
-                { key: "fan_extract_rpm", label: "Fraluft", color: "orange" },
-              ]}
-            />
-          )}
-        </article>
+        <ChartCard title="Ude og afkast" subtitle="Udeluften ind og den brugte luft ud af huset" icon={<Activity size={20}/>}>
+          <HistoryChart
+            {...shared} title="Ude og afkast" unit="°C" minSpan={4}
+            series={[
+              { key: "outdoor_temp", label: "Udeluft · T1", slot: 1 },
+              { key: "exhaust_temp", label: "Afkast · T4", slot: 2 },
+            ]}
+          />
+        </ChartCard>
 
-        <article className="surface history-card">
-          <div className="pro-card-head compact"><div><h2>Luftkvalitet</h2><p>CO₂-niveau</p></div><Leaf size={20}/></div>
-          {loading ? <div className="history-chart-empty" style={{ height: 200 }}><span>Henter…</span></div> : (
-            <HistoryChart
-              unit=" ppm"
-              samples={samples}
-              series={[{ key: "co2", label: "CO₂", color: "green" }]}
-            />
-          )}
-        </article>
+        <ChartCard title="Ventilatorer" subtitle="Ydelse i procent · omdrejninger i forklaringen" icon={<Fan size={20}/>}>
+          <HistoryChart
+            {...shared} title="Ventilatorer" unit="%" decimals={0} minSpan={10}
+            series={[
+              { key: "fan_supply_percent", label: "Indblæsning", slot: 1 },
+              { key: "fan_extract_percent", label: "Udsugning", slot: 2 },
+            ]}
+            extras={[
+              { key: "fan_supply_rpm", label: "Ind", unit: " rpm" },
+              { key: "fan_extract_rpm", label: "Ud", unit: " rpm" },
+            ]}
+          />
+        </ChartCard>
 
-        <article className="surface history-card">
-          <div className="pro-card-head compact"><div><h2>Genvinding · udsugningsside</h2><p>Beregnet fra T1, T3 og T4</p></div><Recycle size={20}/></div>
-          {loading ? <div className="history-chart-empty" style={{ height: 200 }}><span>Henter…</span></div> : (
-            <HistoryChart
-              unit="%"
-              samples={samples}
-              series={[{ key: "heat_recovery_efficiency", label: "Udsugningsside", color: "blue" }]}
-            />
-          )}
-        </article>
+        <ChartCard title="Luftkvalitet" subtitle="CO₂ i udsugningsluften" icon={<Leaf size={20}/>}>
+          <HistoryChart
+            {...shared} title="CO₂" unit=" ppm" decimals={0} minSpan={200}
+            series={[{ key: "co2", label: "CO₂", slot: 1 }]}
+            threshold={{ value: 1000, label: "1.000 ppm" }}
+          />
+        </ChartCard>
+
+        <ChartCard title="Varmegenvinding" subtitle="Udsugningssiden, beregnet fra T1, T3 og T4" icon={<Recycle size={20}/>}>
+          <HistoryChart
+            {...shared} title="Varmegenvinding" unit="%" decimals={0} minSpan={10}
+            series={[{ key: "heat_recovery_efficiency", label: "Genvinding", slot: 1 }]}
+          />
+        </ChartCard>
 
         <AlarmHistory/>
 
@@ -178,7 +255,7 @@ export function HistoryPage() {
                 <li key={`${event.timestamp}-${key}`}>
                   <time>{new Date(event.timestamp * 1000).toLocaleString("da-DK", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</time>
                   <strong>{SETTING_LABELS[key] ?? key}</strong>
-                  <span>{key === "schedule_periods" ? "perioder ændret" : `${changeValue(key, from)} → ${changeValue(key, to)}`}</span>
+                  <span>{key === "schedule_periods" ? "perioder ændret" : (from !== null && typeof from === "object") || (to !== null && typeof to === "object") ? "ændret" : `${changeValue(key, from)} → ${changeValue(key, to)}`}</span>
                   <em>{sourceLabel(event.source)}</em>
                 </li>
               )))}

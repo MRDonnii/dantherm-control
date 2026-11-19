@@ -34,7 +34,7 @@ function Metric({ title, value, detail, amount, tone = "blue", Icon }: { title: 
   return <article className={`surface system-metric ${tone}`}><div><span>{title}</span><Icon size={18} /></div><strong>{value}</strong><small>{detail}</small>{amount != null && <i className="system-track"><b style={{ width: `${Math.max(0, Math.min(100, amount))}%` }} /></i>}</article>;
 }
 function Chart({ title, detail, samples, field, color, unit }: { title: string; detail: string; samples: Sample[]; field: string; color: "blue" | "orange" | "green"; unit: string }) {
-  return <article className="surface system-chart"><div className="pro-card-head compact"><div><h2>{title}</h2><p>{detail}</p></div><Activity size={18} /></div><HistoryChart samples={samples} series={[{ key: field, label: title, color }]} unit={unit} height={160} /></article>;
+  return <article className="surface system-chart"><div className="pro-card-head compact"><div><h2>{title}</h2><p>{detail}</p></div><Activity size={18} /></div><HistoryChart samples={samples} series={[{ key: field, label: title, color }]} unit={unit} height={170} title={title} /></article>;
 }
 
 export function SystemPage() {
