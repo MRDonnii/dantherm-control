@@ -119,7 +119,7 @@ LEVEL_KEYS = (
     "manual_level", "local_normal_level", "local_min_level", "local_max_level", "air_quality_max_level",
     "ha_requested_level", "night_level", "night_air_quality_max_level",
     "bathroom_max_level", "vacation_level", "quick_boost_level", "cooling_level",
-    "dry_max_level", "pm25_max_level", "effective_level",
+    "dry_max_level", "pm25_max_level", "winter_level", "effective_level",
 )
 
 
