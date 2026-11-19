@@ -263,6 +263,11 @@ fi
 rollback_ready=0
 trap - ERR
 
+# After the update is accepted; problems here never fail or roll back the update.
+if [[ -f ${source_dir}/scripts/netboot/hch-nfs-watchdog-guard.sh && -f ${source_dir}/scripts/netboot/hch-root-is-nfs ]]; then
+  bash "${source_dir}/scripts/netboot/hch-nfs-watchdog-guard.sh" "${source_dir}/scripts/netboot/hch-root-is-nfs" \
+    || echo "NFS watchdog guard could not be applied; the update itself is fine." >&2
+fi
 # The admin helper only restarts itself after an update it ran. After a manual
 # update.sh it would keep running the old helper code (and its last update
 # status) until the next reboot, so restart it here.

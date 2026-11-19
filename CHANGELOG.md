@@ -25,6 +25,10 @@
   shown on the page when an attempt fails. The attempt survives a restart of the admin helper. An update never installs
   a build that is not newer than the running one, and a manual `update.sh` now restarts the admin helper, so it no longer
   keeps running old helper code and an old status until the next reboot.
+- **NFS-root watchdog only on a netbooted Pi.** When a leftover `hch5-nfs-watchdog.service` exists, `update.sh` installs
+  `hch-root-is-nfs` and a drop-in with `ExecCondition=`, so the watchdog only starts while `/` is on NFS, and stops it
+  if the root is not NFS. It is not enabled, disabled or deleted, and nothing is touched when the unit does not exist.
+  A problem here never fails the update.
 
 ## 1.7.5
 
