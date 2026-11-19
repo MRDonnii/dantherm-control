@@ -14,6 +14,10 @@
   system permission (administrator and technician), need the CSRF token and go through the existing allowlisted admin
   helper (new target `all` for `restart_service`; no new privileges). The page then waits and reloads by itself when
   the Pi answers again, and the restart is written to the event log with the user's name. Nothing restarts on its own.
+- **Netboot-only helpers stay quiet on SD/disk.** The NetworkManager netboot preparation now only moves profiles to RAM
+  when `/` is really mounted over NFS. The new `scripts/netboot/hch-root-is-nfs` exits 0 only on an NFS root and is meant
+  as `ExecCondition=` for other netboot-only units (for example an NFS-root watchdog), so they are skipped without failing,
+  restarting or warning once the Pi boots from a local SD card or disk.
 
 ## 1.7.5
 
