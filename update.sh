@@ -262,6 +262,13 @@ fi
 
 rollback_ready=0
 trap - ERR
+
+# The admin helper only restarts itself after an update it ran. After a manual
+# update.sh it would keep running the old helper code (and its last update
+# status) until the next reboot, so restart it here.
+if [[ ${HCH5_UPDATE_FROM_ADMIN:-0} != 1 ]] && systemctl is-active --quiet dantherm-webui-admin.service; then
+  systemctl restart dantherm-webui-admin.service || echo "Admin helper restart failed; it picks up the new code at the next start." >&2
+fi
 echo "HCH5 Control updated to $(cat "${source_dir}/VERSION")."
 echo "Preflight: OK · imports/config/assets/auth/device"
 echo "Live health: OK · stable process/WebUI/auth/controller API/raw TCP"

@@ -28,6 +28,12 @@ BIND = os.getenv("DANTHERM_ADMIN_BIND", "127.0.0.1")
 PORT = int(os.getenv("DANTHERM_ADMIN_PORT", "4198"))
 PROFILE_FILE = Path("/var/lib/dantherm-admin/power-profile")
 UPDATE_CHANNEL_FILE = Path("/var/lib/dantherm-admin/update-channel")
+# The last update attempt survives a restart of this helper, and the output of
+# update.sh is kept so a failure can be explained afterwards.
+UPDATE_STATE_FILE = Path(os.getenv("DANTHERM_UPDATE_STATE_FILE", "/var/lib/dantherm-admin/update-state.json"))
+UPDATE_LOG_FILE = Path(os.getenv("DANTHERM_UPDATE_LOG_FILE", "/var/lib/dantherm-admin/update-last.log"))
+UPDATE_LOG_MAX_BYTES = 200 * 1024
+UPDATE_LOG_TAIL_LINES = 40
 FILTER_STATE_FILE = Path("/var/lib/dantherm-hch5-ha/filter-state.json")
 APP_DIR = Path("/opt/dantherm-passivelink-webui")
 VERSION_FILE = APP_DIR / "VERSION"
@@ -53,7 +59,16 @@ UPDATE_STATE = {
     "phase": "idle",
     "detail": "Klar",
     "last_error": None,
+    # The last attempt: when, from which version to which, on which channel,
+    # how it ended, and the end of the update.sh output when it failed.
+    "from_version": None,
+    "target_version": None,
+    "ref": None,
+    "result": None,
+    "log_tail": None,
 }
+PERSISTED_UPDATE_KEYS = ("channel", "started_at", "finished_at", "progress", "phase", "detail", "last_error",
+                         "from_version", "target_version", "ref", "result", "log_tail")
 FILTER_INTERVAL_MIN_DAYS = 90
 FILTER_INTERVAL_MAX_DAYS = 360
 
@@ -61,6 +76,84 @@ FILTER_INTERVAL_MAX_DAYS = 360
 def _set_update_state(**changes) -> None:
     with UPDATE_LOCK:
         UPDATE_STATE.update(changes)
+        snapshot = {key: UPDATE_STATE.get(key) for key in PERSISTED_UPDATE_KEYS}
+    try:
+        _atomic_write_text(UPDATE_STATE_FILE, json.dumps(snapshot, separators=(",", ":")) + "\n")
+    except OSError:
+        pass
+
+
+def load_update_state() -> None:
+    """Restore the last attempt after a restart of this helper."""
+    try:
+        saved = json.loads(UPDATE_STATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(saved, dict):
+        return
+    restored = {key: saved.get(key) for key in PERSISTED_UPDATE_KEYS if key in saved}
+    if restored.get("phase") not in {None, "idle", "complete", "failed", "up_to_date", "dismissed"}:
+        # The helper stopped in the middle of an attempt (update.sh restarts it
+        # only after a successful update, so this is an interrupted one).
+        restored.update(phase="failed", result="failed", detail="Opdateringen blev afbrudt, før den blev færdig.",
+                        last_error=restored.get("last_error") or "Afbrudt: admin-tjenesten genstartede under opdateringen.")
+    elif restored.get("phase") == "complete":
+        restored.update(detail=f"Opdateret til {restored.get('target_version') or 'ny version'}.")
+    with UPDATE_LOCK:
+        UPDATE_STATE.update(restored, running=False)
+
+
+def _clear_update_error(reason: str) -> None:
+    """Hide a finished failure; the attempt itself stays on record."""
+    _set_update_state(phase="dismissed", progress=0, detail=reason, last_error=None, log_tail=None)
+
+
+def update_state_view() -> dict[str, object]:
+    """The update state for the WebUI. A failure is cleared by itself once the
+    installed version is the attempt's target or newer, e.g. after a later
+    update from the WebUI or a manual update.sh succeeded."""
+    with UPDATE_LOCK:
+        state = dict(UPDATE_STATE)
+    if state.get("phase") == "failed" and not state.get("running"):
+        current, target = version_key(current_version()), version_key(str(state.get("target_version") or ""))
+        if current is not None and target is not None and current >= target:
+            _clear_update_error(f"Version {current_version()} er installeret; den gamle fejl er ryddet.")
+            with UPDATE_LOCK:
+                state = dict(UPDATE_STATE)
+    return state
+
+
+def _tail_lines(path: Path, lines: int = UPDATE_LOG_TAIL_LINES) -> str | None:
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - 16 * 1024))
+            text = handle.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    return "\n".join(text.splitlines()[-lines:]) or None
+
+
+def _open_update_log():
+    """Start a fresh log for this attempt; the previous one becomes .1."""
+    UPDATE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if UPDATE_LOG_FILE.exists():
+        UPDATE_LOG_FILE.replace(UPDATE_LOG_FILE.with_name(UPDATE_LOG_FILE.name + ".1"))
+    return UPDATE_LOG_FILE.open("w", encoding="utf-8")
+
+
+def _cap_update_log() -> None:
+    """Keep only the newest UPDATE_LOG_MAX_BYTES of the log."""
+    try:
+        if UPDATE_LOG_FILE.stat().st_size <= UPDATE_LOG_MAX_BYTES:
+            return
+        with UPDATE_LOG_FILE.open("rb") as handle:
+            handle.seek(-UPDATE_LOG_MAX_BYTES, os.SEEK_END)
+            data = handle.read()
+        data = data[data.find(b"\n") + 1:] if b"\n" in data else data
+        _atomic_write_bytes(UPDATE_LOG_FILE, "[... ældre linjer fjernet ...]\n".encode() + data)
+    except OSError:
+        pass
 
 
 def set_profile(profile):
@@ -250,6 +343,13 @@ def _read_text(path: Path, fallback: str = "unknown") -> str:
         return fallback
 
 
+def _atomic_write_bytes(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_bytes(content)
+    temporary.replace(path)
+
+
 def _atomic_write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
@@ -337,7 +437,7 @@ def update_info(channel: str | None = None, *, force_refresh: bool = False) -> d
     cached = _UPDATE_INFO_CACHE.get(channel)
     cache_age = now - _UPDATE_INFO_CACHE_AT.get(channel, 0.0)
     if not force_refresh and cached is not None and cache_age < UPDATE_INFO_CACHE_SECONDS:
-        return {**cached, "current_build": current_build(), "update": dict(UPDATE_STATE)}
+        return {**cached, "current_build": current_build(), "update": update_state_view()}
     try:
         current = current_version()
         installed_build = current_build()
@@ -361,7 +461,7 @@ def update_info(channel: str | None = None, *, force_refresh: bool = False) -> d
         # spam the UI with a failure on every poll. Fall back to the last
         # known-good check instead of raising, if one exists.
         if cached is not None:
-            return {**cached, "current_build": current_build(), "update": dict(UPDATE_STATE), "check_error": str(error)}
+            return {**cached, "current_build": current_build(), "update": update_state_view(), "check_error": str(error)}
         raise
     result = {
         "ok": True,
@@ -377,7 +477,7 @@ def update_info(channel: str | None = None, *, force_refresh: bool = False) -> d
     }
     _UPDATE_INFO_CACHE[channel] = result
     _UPDATE_INFO_CACHE_AT[channel] = now
-    return {**result, "update": dict(UPDATE_STATE)}
+    return {**result, "update": update_state_view()}
 
 
 def _download_tarball(ref: str, destination: Path) -> None:
@@ -428,14 +528,33 @@ def _install_update(channel: str) -> None:
         phase="starting",
         detail="Forbereder sikker opdatering…",
         last_error=None,
+        from_version=current_version(),
+        target_version=None,
+        ref=None,
+        result=None,
+        log_tail=None,
     )
     success = False
+    log = None
     try:
+        log = _open_update_log()
+        log.write(f"HCH5 Control update {time.strftime('%Y-%m-%d %H:%M:%S')} · kanal {channel} · installeret {current_version()}\n")
+        log.flush()
         set_update_channel(channel)
         _set_update_state(progress=7, phase="checking", detail="Kontrollerer kanal og tilgængelig build…")
         info = update_info(channel, force_refresh=True)
         ref = str(info["ref"])
+        target = str(info.get("available_version") or ref.lstrip("v"))
         build = str(info.get("available_build") or ref)
+        _set_update_state(target_version=target, ref=ref)
+        log.write(f"Mål: {target} (ref {ref})\n")
+        # Never install a build that is not newer than the running one, whatever
+        # the channel points at (an old prerelease, or main ahead of releases).
+        if not is_newer(target, current_version()):
+            log.write("Ingen nyere build; intet installeret.\n")
+            _set_update_state(progress=0, phase="up_to_date", result="up_to_date",
+                              detail=f"Ingen nyere build: {current_version()} kører, kanalen tilbyder {target}. Intet installeret.")
+            return
         _set_update_state(progress=14, phase="preparing", detail="Opretter isoleret staging-område…")
         with tempfile.TemporaryDirectory(prefix="hch5-control-update-") as temporary:
             directory = Path(temporary)
@@ -450,18 +569,38 @@ def _install_update(channel: str) -> None:
             _set_update_state(progress=50, phase="validating", detail="Validerer updater og eksisterende installation…")
             env = os.environ.copy()
             env["HCH5_UPDATE_BUILD"] = build
+            # update.sh must not restart this helper while it is its parent.
+            env["HCH5_UPDATE_FROM_ADMIN"] = "1"
             _set_update_state(progress=58, phase="installing", detail="Installerer og kører failsafe-validering…")
-            subprocess.run(["bash", str(updater)], cwd=source, check=True, timeout=300, env=env)
+            log.write(f"$ bash {updater.relative_to(directory)}\n")
+            log.flush()
+            completed = subprocess.run(["bash", str(updater)], cwd=source, timeout=300, env=env,
+                                       stdout=log, stderr=subprocess.STDOUT, check=False)
+            if completed.returncode != 0:
+                raise RuntimeError(f"update.sh stoppede med kode {completed.returncode}")
             _set_update_state(progress=93, phase="verifying", detail="Bekræfter ny build og services…")
         success = True
-        _set_update_state(progress=100, phase="complete", detail="Opdatering installeret. Genindlæser WebUI…")
+        _set_update_state(progress=100, phase="complete", result="complete", detail="Opdatering installeret. Genindlæser WebUI…")
     except Exception as error:
+        message = str(error) if type(error) is RuntimeError else f"{type(error).__name__}: {error}"
+        if log is not None:
+            try:
+                log.write(f"FEJL: {message}\n")
+                log.flush()
+            except (OSError, ValueError):
+                pass
         _set_update_state(
             phase="failed",
+            result="failed",
             detail="Opdateringen fejlede og failsafe har bevaret/tilbageført installationen.",
-            last_error=f"{type(error).__name__}: {error}",
+            last_error=message,
         )
     finally:
+        if log is not None:
+            log.close()
+            _cap_update_log()
+            if UPDATE_STATE.get("phase") == "failed":
+                _set_update_state(log_tail=_tail_lines(UPDATE_LOG_FILE))
         _set_update_state(running=False, finished_at=time.time())
     if success:
         _schedule_admin_restart()
@@ -510,7 +649,7 @@ class Handler(BaseHTTPRequestHandler):
                 "build": current_build(),
                 "update_channel": current_update_channel(),
                 "filter": _read_filter_state(),
-                "update": dict(UPDATE_STATE),
+                "update": update_state_view(),
             })
         self.reply(404, {"error": "not_found"})
 
@@ -568,13 +707,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         if action == "get_update_channel":
             return self.reply(200, {"ok": True, "channel": current_update_channel()})
+        if action == "dismiss_update_error":
+            if UPDATE_STATE["running"]:
+                return self.reply(409, {"error": "update_already_running", "update": update_state_view()})
+            if UPDATE_STATE.get("phase") == "failed":
+                _clear_update_error("Fejlen er skjult.")
+            return self.reply(200, {"ok": True, "update": update_state_view()})
         if action == "get_update_status":
             return self.reply(200, {
                 "ok": True,
                 "channel": current_update_channel(),
                 "current_version": current_version(),
                 "current_build": current_build(),
-                "update": dict(UPDATE_STATE),
+                "update": update_state_view(),
             })
         if action == "set_update_channel" and target in {"stable", "beta"}:
             try:
@@ -610,7 +755,7 @@ class Handler(BaseHTTPRequestHandler):
         if action == "install_update":
             channel = str(target) if target in {"stable", "beta"} else current_update_channel()
             if UPDATE_STATE["running"]:
-                return self.reply(409, {"error": "update_already_running", "update": dict(UPDATE_STATE)})
+                return self.reply(409, {"error": "update_already_running", "update": update_state_view()})
             try:
                 set_update_channel(channel)
             except OSError as error:
@@ -630,6 +775,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    load_update_state()
     if PROFILE_FILE.exists():
         saved = PROFILE_FILE.read_text().strip()
         if saved in PROFILES:

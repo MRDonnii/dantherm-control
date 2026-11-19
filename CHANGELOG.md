@@ -18,6 +18,13 @@
   when `/` is really mounted over NFS. The new `scripts/netboot/hch-root-is-nfs` exits 0 only on an NFS root and is meant
   as `ExecCondition=` for other netboot-only units (for example an NFS-root watchdog), so they are skipped without failing,
   restarting or warning once the Pi boots from a local SD card or disk.
+- **Updates: an old failure no longer hangs around.** The failsafe card shows when the last attempt ran, from which
+  version to which and on which channel. A failure clears itself once the installed version is the attempt's target or
+  newer (also after a manual `update.sh`), and a "Skjul" button hides it. The output of `update.sh` is kept in
+  `/var/lib/dantherm-admin/update-last.log` (the previous run in `.1`, at most about 200 KB each), and the last lines are
+  shown on the page when an attempt fails. The attempt survives a restart of the admin helper. An update never installs
+  a build that is not newer than the running one, and a manual `update.sh` now restarts the admin helper, so it no longer
+  keeps running old helper code and an old status until the next reboot.
 
 ## 1.7.5
 

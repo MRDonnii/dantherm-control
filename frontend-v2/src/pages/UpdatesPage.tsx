@@ -14,6 +14,13 @@ interface UpdateState {
   phase?: string;
   detail?: string;
   last_error?: string | null;
+  /** The last attempt: from which version to which, and how it ended. */
+  from_version?: string | null;
+  target_version?: string | null;
+  ref?: string | null;
+  result?: "complete" | "failed" | "up_to_date" | null;
+  /** The last lines of update.sh's output when the attempt failed. */
+  log_tail?: string | null;
 }
 interface UpdateInfo {
   ok?: boolean;
@@ -43,6 +50,7 @@ function phaseLabel(value?: string) {
   const labels: Record<string, string> = {
     idle: "Klar", starting: "Starter", checking: "Kontrollerer", preparing: "Forbereder", downloading: "Downloader",
     extracting: "Pakker ud", validating: "Validerer", installing: "Installerer", verifying: "Verificerer", complete: "Færdig", failed: "Fejlet",
+    up_to_date: "Ingen nyere build", dismissed: "Klar",
   };
   return labels[value ?? ""] ?? value ?? "Klar";
 }
@@ -53,6 +61,17 @@ export function aheadOfReleaseText(info: UpdateInfo | null): string | null {
   return `Du kører ${info.current_version} – nyere end seneste udgivelse (${info.available_version})`;
 }
 
+const RESULT_LABELS: Record<string, string> = { complete: "lykkedes", failed: "fejlede", up_to_date: "intet nyere at installere" };
+/** "Sidste forsøg 19.11.2026 kl. 18.57 · 1.6.1 → 1.7.0 · Beta · fejlede", or null before the first attempt. */
+export function lastAttemptText(update?: UpdateState | null): string | null {
+  if (!update?.started_at) return null;
+  const when = new Date(update.started_at * 1000);
+  const date = `${when.toLocaleDateString("da-DK", { day: "2-digit", month: "2-digit", year: "numeric" })} kl. ${when.toLocaleTimeString("da-DK", { hour: "2-digit", minute: "2-digit" })}`;
+  const versions = update.target_version ? `${update.from_version ?? "?"} → ${update.target_version}` : null;
+  const channel = update.channel ? (update.channel === "beta" ? "Beta" : "Stable") : null;
+  const result = update.running ? "i gang" : RESULT_LABELS[update.result ?? ""] ?? null;
+  return ["Sidste forsøg " + date, versions, channel, result].filter(Boolean).join(" · ");
+}
 function statusMessage(result: UpdateInfo) {
   return aheadOfReleaseText(result) ?? (result.update_available ? "En nyere build er klar." : "Denne kanal er opdateret.");
 }
@@ -132,6 +151,12 @@ export function UpdatesPage() {
         const local = await postJson<UpdateInfo>("/api/admin/action", { action: "get_update_status" }, token);
         if (!mounted.current) return;
         setInfo(current => ({ ...current, ...local, update: local.update ?? current?.update }));
+        if (!local.update?.running && local.update?.phase === "up_to_date") {
+          window.clearInterval(timer);
+          setBusy(false);
+          setMessage(local.update.detail ?? "Ingen nyere build. Intet installeret.");
+          return;
+        }
         if (local.update?.last_error) {
           window.clearInterval(timer);
           setBusy(false);
@@ -161,7 +186,22 @@ export function UpdatesPage() {
     }, 1200);
   }
 
+  async function hideError() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await action("dismiss_update_error");
+      setInfo(current => ({ ...current, update: result.update ?? current?.update }));
+    } catch (error) {
+      setMessage(error instanceof ApiError ? error.message : "Kunne ikke skjule fejlen");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const progress = clamp(info?.update?.progress);
+  const lastAttempt = lastAttemptText(info?.update);
+  const failed = info?.update?.phase === "failed" && !info?.update?.running && !!info?.update?.last_error;
   const running = info?.update?.running === true;
   const detail = info?.update?.detail ?? (running ? "Installerer…" : message);
   const ahead = aheadOfReleaseText(info);
@@ -217,7 +257,11 @@ export function UpdatesPage() {
               <div className="update-progress-track"><i style={{ width: `${progress}%` }}/></div>
               <div className="update-stage">{phaseLabel(info?.update?.phase)}</div>
             </div>
-            {info?.update?.last_error && <div className="control-notice error">{info.update.last_error}</div>}
+            {lastAttempt && <div className="update-last-attempt">{lastAttempt}</div>}
+            {failed && <div className="control-notice error update-failure" role="alert">
+              <div className="update-failure-head"><strong>{info?.update?.last_error}</strong><button type="button" className="secondary-action" onClick={() => void hideError()} disabled={busy}>Skjul</button></div>
+              {info?.update?.log_tail && <details className="update-log-tail"><summary>Sidste linjer fra update.sh</summary><pre>{info.update.log_tail}</pre></details>}
+            </div>}
             <button type="button" className="primary-action" onClick={() => void installUpdate()} disabled={busy || running || !info?.update_available}>
               {running ? "Installerer…" : busy ? "Arbejder…" : info?.update_available ? "Opdater nu" : "Ingen update"}
             </button>

@@ -345,6 +345,14 @@ body[data-sidebar="collapsed"] .app-shell { grid-template-columns: 78px minmax(0
 /* Full update page progress */
 .update-progress-panel { margin-top: 14px; padding: 14px; border: 1px solid #1f3e50; border-radius: 11px; background: #091922; }
 .update-progress-panel .update-progress-track { height: 12px; }
+/* Last update attempt and, when it failed, why (end of the update.sh log). */
+.update-last-attempt { margin-top: 10px; color: var(--muted, #8aa3b2); font-size: 12.5px; }
+.update-failure-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.update-failure-head strong { overflow-wrap: anywhere; }
+.update-failure-head button { flex: none; min-height: 30px; padding: 0 12px; }
+.update-log-tail { margin-top: 8px; }
+.update-log-tail summary { cursor: pointer; font-weight: 700; }
+.update-log-tail pre { max-height: 240px; margin: 6px 0 0; padding: 8px; overflow: auto; border-radius: 6px; background: rgb(0 0 0 / 28%); color: inherit; font-size: 11.5px; line-height: 1.35; white-space: pre-wrap; overflow-wrap: anywhere; }
 .update-progress-meta { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
 .update-progress-meta strong { font-size: 14px; }
 .update-progress-meta span { color: #64c5ff; font-size: 16px; font-weight: 850; }
