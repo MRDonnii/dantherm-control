@@ -93,6 +93,34 @@ class UpdaterTransportTests(unittest.TestCase):
         ):
             self.assertFalse(self.module.update_info("stable")["update_available"])
 
+    def test_install_ahead_of_the_newest_release_is_reported(self):
+        # 1.6.1 installed from main while the stable channel still points at 1.6.0.
+        with (
+            mock.patch.object(self.module, "current_version", return_value="1.6.1"),
+            mock.patch.object(self.module, "current_build", return_value="1.6.1"),
+            mock.patch.object(self.module, "_final_url", return_value="https://github.com/x/y/releases/tag/v1.6.0"),
+        ):
+            info = self.module.update_info("stable")
+        self.assertFalse(info["update_available"])
+        self.assertTrue(info["ahead_of_release"])
+        self.assertEqual(info["current_version"], "1.6.1")
+        self.assertEqual(info["available_version"], "1.6.0")
+
+    def test_same_or_older_install_is_not_ahead_of_release(self):
+        ahead = self.module.is_ahead_of_release
+        self.assertTrue(ahead("1.6.1", "1.6.0"))
+        self.assertTrue(ahead("1.3.0", "1.3.0-beta.9"))
+        self.assertFalse(ahead("1.6.0", "1.6.0"))
+        self.assertFalse(ahead("1.5.9", "1.6.0"))
+        self.assertFalse(ahead("1.6.0-beta.2", "1.6.0"))
+        self.assertFalse(ahead("unknown", "1.6.0"))
+        with (
+            mock.patch.object(self.module, "current_version", return_value="1.6.0"),
+            mock.patch.object(self.module, "current_build", return_value="1.6.0"),
+            mock.patch.object(self.module, "_final_url", return_value="https://github.com/x/y/releases/tag/v1.6.0"),
+        ):
+            self.assertFalse(self.module.update_info("stable")["ahead_of_release"])
+
     def test_stable_check_resolves_public_latest_redirect(self):
         with (
             mock.patch.object(self.module, "current_version", return_value="1.1.0"),
