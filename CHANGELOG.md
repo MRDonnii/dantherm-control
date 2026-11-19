@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Smooth airflow animation in the overview.** The animated unit drawing is now a stack of SVG layers with the same
+  viewBox: the cabinet, the blurred fog, the moving parts (fans, damper, bus, water) and the wisps each get their own
+  compositor layer, so a frame only repaints the small moving layers instead of the whole drawing with its blur
+  filters, masks and drop shadow. The fog breathes on its own layer, the route the air is not taking stops animating,
+  everything pauses while the tab is hidden or the card is off screen, and the drawing no longer re-renders on every
+  2 s poll when nothing has changed. Measured on a 6x slower CPU: about 19 to 46 fps on an iPad-sized screen, and
+  about 4 to 10 fps in WebKit without GPU.
+
 ## 1.7.5
 
 - **Diagnostics: read-only register scan.** A JSON request in `/var/lib/dantherm-hch5-ha/register-scan.json`

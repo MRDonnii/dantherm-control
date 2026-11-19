@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { memo, useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
 import type { ControlSummary } from "../lib/control";
 import { bypassOpenShare, bypassTravel, formatRemaining, type BypassDirection } from "../lib/bypass";
 
@@ -473,7 +473,57 @@ function WaterCoil({ heating, lockout, flowWater, returnWater }: { heating: bool
   </g>;
 }
 
-export function Hch5UnitDiagram(props:Hch5UnitDiagramProps) {
+// The animations stop while the drawing cannot be seen: the browser tab is in
+// the background, or the card is scrolled out of view.
+function useOutOfSight<T extends Element>(): [RefObject<T | null>, boolean] {
+  const ref = useRef<T>(null);
+  const [offscreen, setOffscreen] = useState(false);
+  const [hidden, setHidden] = useState(() => typeof document !== "undefined" && document.hidden);
+  useEffect(() => {
+    const onVisibility = () => setHidden(document.hidden);
+    document.addEventListener("visibilitychange", onVisibility);
+    const element = ref.current;
+    const observer = element && typeof IntersectionObserver !== "undefined"
+      ? new IntersectionObserver(entries => setOffscreen(!entries.some(entry => entry.isIntersecting)))
+      : null;
+    if (element) observer?.observe(element);
+    return () => { document.removeEventListener("visibilitychange", onVisibility); observer?.disconnect(); };
+  }, []);
+  return [ref, offscreen || hidden];
+}
+
+// The wrapper's perspective starts 80 % of its own height above it, and the
+// wrapper can be taller than the drawing (the "Styring nu" panel may sit in
+// it). Each layer is turned by itself, so it is given that height in pixels.
+function usePerspectiveOrigin(ref: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    const stack = ref.current, wrap = stack?.parentElement;
+    if (!stack || !wrap || typeof ResizeObserver === "undefined") return;
+    const update = () => stack.style.setProperty("--hch-origin-y", `${Math.round(-0.8 * wrap.getBoundingClientRect().height * 10) / 10}px`);
+    const observer = new ResizeObserver(update);
+    observer.observe(wrap); update();
+    return () => observer.disconnect();
+  }, [ref]);
+}
+
+// The overview polls every 2 s and builds a new control summary each time;
+// the drawing only renders again when something it shows has changed.
+function sameControl(a: ControlSummary | null | undefined, b: ControlSummary | null | undefined) {
+  if (!a || !b) return a === b;
+  return a.title === b.title && a.level === b.level && a.reason === b.reason && a.footer === b.footer && a.tone === b.tone;
+}
+function sameProps(a: Hch5UnitDiagramProps, b: Hch5UnitDiagramProps) {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)] as (keyof Hch5UnitDiagramProps)[]);
+  for (const key of keys) {
+    if (key === "control") { if (!sameControl(a.control, b.control)) return false; }
+    else if (!Object.is(a[key], b[key])) return false;
+  }
+  return true;
+}
+
+export const Hch5UnitDiagram = memo(Hch5UnitDiagramView, sameProps);
+
+function Hch5UnitDiagramView(props:Hch5UnitDiagramProps) {
   const {outdoor,extract,exhaust,afterHeater,beforeHeater=null,t2Corrected=false,beforeHeaterEstimate=null,frost,flowWater,returnWater,supplyRpm,extractRpm,supplyPercent,extractPercent,bypassActual,bypassRequest,heating,recovery,supplyRecovery=null,busActive=false,bypassRaw=null,bypassTravelDirection=null,bypassTravelSeconds=null,bypassTravelTotal=null,afterheatLockout=false,afterheatCoil="electric",control=null,onTemperatureClick}=props;
   const water = afterheatCoil === "water";
   const waterDelta = flowWater === null || returnWater === null ? null : flowWater - returnWater;
@@ -494,6 +544,9 @@ export function Hch5UnitDiagram(props:Hch5UnitDiagramProps) {
   const bypassAwaitingEnd=travel?.awaitingEnd??false;
   const air=airStops(outdoor,extract,exhaust,afterHeater,beforeHeater,heating,recovery,bypassOpen);
   const [coreOpen,toggleCore]=useCoreView();
+  const [stackRef,paused]=useOutOfSight<HTMLDivElement>();
+  usePerspectiveOrigin(stackRef);
+  const viewBox=`${VIEW.x} ${VIEW.y} ${VIEW.width} ${VIEW.height}`;
   const bypassLabel=bypassPhase?`${BYPASS_PHASE_LABEL[bypassPhase]}${bypassPercent===null?"":` ${bypassPercent} %`}`:bypassOpen?"Åben":"Lukket";
   // Extract is drawn on both routes; the damper position cross-fades the fog
   // from the core to the bottom channel as it opens, and back as it closes.
@@ -507,7 +560,12 @@ export function Hch5UnitDiagram(props:Hch5UnitDiagramProps) {
   const backX=ox+ow+CABINET_DEPTH[0], backY=oy+oh+CABINET_DEPTH[1];
   return <div className={`hch5-visual${bypassOpen?" is-bypass":" is-recovery"}`}>
     <div className="hch5-svg-wrap" style={{ "--svg-unit": `calc(100cqw / ${VIEW.width})` } as CSSProperties}>
-    <svg viewBox={`${VIEW.x} ${VIEW.y} ${VIEW.width} ${VIEW.height}`} role="group" aria-label="HCH5 luftstrøm med intern bypass og ekstern eftervarme">
+    {/* The drawing is stacked from SVG layers with the same viewBox. Only the
+        small layers hold moving parts, so a frame repaints those and never
+        the blurred fog, the masks or the cabinet's drop shadow, which used
+        to be rendered again for every frame of every animation. */}
+    <div className={`hch5-svg-stack${paused ? " is-paused" : ""}`} ref={stackRef}>
+    <svg className="hch-layer hch-layer-base" viewBox={viewBox} role="group" aria-label="HCH5 luftstrøm med intern bypass og ekstern eftervarme">
       <defs>
         <linearGradient id="metalFace" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stopColor="#596b76"/><stop offset=".4" stopColor="#263843"/><stop offset="1" stopColor="#14242e"/></linearGradient>
         <linearGradient id="metalTop" x1="0" x2="1"><stop offset="0" stopColor="#7b8991"/><stop offset=".48" stopColor="#40515b"/><stop offset="1" stopColor="#263640"/></linearGradient>
@@ -571,6 +629,16 @@ export function Hch5UnitDiagram(props:Hch5UnitDiagramProps) {
           <Exchanger bypassed={bypassOpen}/>
           {/* While the damper travels, the core says which way and how far open
               its estimated time based progress, with a bar that follows it. */}
+          {!bypassPhase && <text className="hch-exchanger-title" x="520" y="255" textAnchor="middle">Varmeveksler</text>}
+          {[["P3",438,204],["P1",602,204],["P2",438,334],["P4",602,334]].map(([port,x,y])=><text key={port} className="hch-core-port" x={x} y={y} textAnchor="middle">{port}</text>)}
+          <rect className="hch-service-box" x="214" y="374" width="80" height="36" rx="8"/><text className="hch-part-label" x="254" y="397" textAnchor="middle">Styring</text>
+        </g>
+      </g>
+      <DuctCollar x={164} y={205}/><DuctCollar x={164} y={365}/>
+    </svg>
+    <svg className="hch-layer hch-layer-moving" viewBox={viewBox} aria-hidden="true" focusable="false">
+      {/* Moving parts inside the cabinet, seen through its opening. */}
+      <g clipPath="url(#cabinetOpening)">
           {bypassPhase
             ? <g className={`hch-bypass-progress ${bypassPhase}`}>
                 <text className="hch-exchanger-title" x="520" y="242" textAnchor="middle">{BYPASS_PHASE_TITLE[bypassPhase]}</text>
@@ -581,8 +649,7 @@ export function Hch5UnitDiagram(props:Hch5UnitDiagramProps) {
                   : <path className="bypass-progress-fill" d={BYPASS_PROGRESS} pathLength={100} style={{strokeDasharray:`${bypassPercent} 100`}}/>}
                 <text className="hch-bypass-countdown" x="520" y="315" textAnchor="middle">{bypassAwaitingEnd?"Afventer endestilling":bypassRemaining===null?"Spjældet kører ca. 3 min":`ca. ${formatRemaining(bypassRemaining)} tilbage`}</text>
               </g>
-            : <><text className="hch-exchanger-title" x="520" y="255" textAnchor="middle">Varmeveksler</text></>}
-          {[["P3",438,204],["P1",602,204],["P2",438,334],["P4",602,334]].map(([port,x,y])=><text key={port} className="hch-core-port" x={x} y={y} textAnchor="middle">{port}</text>)}
+            : null}
           <Fan x={770} y={212} rpm={supplyRpm} label="Tilluft"/><Fan x={800} y={330} rpm={extractRpm} label="Fraluft" labelRight/>
           {/* Bypass damper sits on the lower (extract) fan motor, orange actuator at the bottom. */}
           <g className={`hch-bypass ${bypassOpen?"open":"closed"}${bypassPhase?" moving":""}`} transform="translate(800 386)">
@@ -590,32 +657,45 @@ export function Hch5UnitDiagram(props:Hch5UnitDiagramProps) {
             <rect className="bypass-blade" x="-12" y="-3" width="24" height="6" rx="3" style={{transform:`rotate(${bladeAngle}deg)`}}/>
             <rect className="bypass-actuator" x="-15" y="13" width="30" height="11" rx="4"/>
           </g>
-          <rect className="hch-service-box" x="214" y="374" width="80" height="36" rx="8"/><text className="hch-part-label" x="254" y="397" textAnchor="middle">Styring</text>
-        </g>
       </g>
-      <DuctCollar x={164} y={205}/><DuctCollar x={164} y={365}/>
       {water ? <WaterCoil heating={heating} lockout={afterheatLockout} flowWater={flowWater} returnWater={returnWater}/> : <ElectricCoil heating={heating} lockout={afterheatLockout}/>}
       <Rs485Wiring active={busActive} valveAt={water ? [WATER_VALVE_AT[0], WATER_VALVE_AT[1] + 14] : [23, 446]}/>
+    </svg>
       {/* The core looks solid unless the user has opened it: the air layers are
           masked out where they pass through it, with a soft edge. */}
+    <svg className="hch-layer hch-layer-air hch-layer-fog" viewBox={viewBox} aria-hidden="true" focusable="false">
       <g className="hch-air-layer" mask={coreOpen ? undefined : "url(#coreSolidMask)"}>
         <g className="hch-fog-group" filter="url(#fogBlur)" mask="url(#fogFadeMask)">
           <path className="hch-fog hch-fog-supply hch-fog-a" d={NORMAL_SUPPLY} style={{"--flow-speed":supplySpeed?`${supplySpeed}s`:"0s"} as CSSProperties}/><path className="hch-fog hch-fog-supply hch-fog-b" d={NORMAL_SUPPLY} style={{"--flow-speed":supplySpeed?`${supplySpeed*1.35}s`:"0s"} as CSSProperties}/>
-          {([["route-core",NORMAL_EXTRACT,coreRoute],["route-bypass",BYPASS_EXTRACT,bypassRoute]] as const).map(([route,path,style])=><g key={route} className={`hch-fog-route ${route}`} style={style}><path className="hch-fog hch-fog-extract hch-fog-a" d={path} style={{"--flow-speed":extractSpeed?`${extractSpeed}s`:"0s"} as CSSProperties}/><path className="hch-fog hch-fog-extract hch-fog-b" d={path} style={{"--flow-speed":extractSpeed?`${extractSpeed*1.35}s`:"0s"} as CSSProperties}/></g>)}
-        </g>
-        <g className="hch-fog-group soft" filter="url(#fogBlurSoft)" mask="url(#fogFadeMask)">
-          <path className="hch-fog-wash hch-fog-supply" d={NORMAL_SUPPLY} style={{"--flow-speed":supplySpeed?`${supplySpeed*1.7}s`:"0s"} as CSSProperties}/>
-          {([["route-core",NORMAL_EXTRACT,coreRoute],["route-bypass",BYPASS_EXTRACT,bypassRoute]] as const).map(([route,path,style])=><g key={route} className={`hch-fog-route ${route}`} style={style}><path className="hch-fog-wash hch-fog-extract" d={path} style={{"--flow-speed":extractSpeed?`${extractSpeed*1.7}s`:"0s"} as CSSProperties}/></g>)}
-        </g>
-        <g className="hch-wisp-group" mask="url(#fogFadeMask)">
-          <AirWisps path={NORMAL_SUPPLY} kind="supply" speed={supplySpeed}/>
-          {EXTRACT_ROUTES.map(([route,path])=><g key={route} className={`hch-fog-route ${route}`} style={route==="route-core"?coreRoute:bypassRoute}><AirWisps path={path} kind="extract" speed={extractSpeed}/></g>)}
-        </g>
-        <g className="hch-airflow-guides" mask="url(#fogFadeMask)">
-          <path className="hch-airflow-guide hch-supply-flow" d={NORMAL_SUPPLY} style={{"--flow-speed":supplySpeed?`${supplySpeed}s`:"0s"} as CSSProperties}/>
-          {([["route-core",NORMAL_EXTRACT,coreRoute],["route-bypass",BYPASS_EXTRACT,bypassRoute]] as const).map(([route,path,style])=><g key={route} className={`hch-fog-route ${route}`} style={style}><path className="hch-airflow-guide hch-extract-flow" d={path} style={{"--flow-speed":extractSpeed?`${extractSpeed}s`:"0s"} as CSSProperties}/></g>)}
+          {([["route-core",NORMAL_EXTRACT,coreRoute],["route-bypass",BYPASS_EXTRACT,bypassRoute]] as const).map(([route,path,style])=><g key={route} className={`hch-fog-route ${route}`} style={style} data-idle={style.opacity===0||undefined}><path className="hch-fog hch-fog-extract hch-fog-a" d={path} style={{"--flow-speed":extractSpeed?`${extractSpeed}s`:"0s"} as CSSProperties}/><path className="hch-fog hch-fog-extract hch-fog-b" d={path} style={{"--flow-speed":extractSpeed?`${extractSpeed*1.35}s`:"0s"} as CSSProperties}/></g>)}
         </g>
       </g>
+    </svg>
+    <svg className="hch-layer hch-layer-air hch-layer-fog soft" viewBox={viewBox} aria-hidden="true" focusable="false">
+      <g className="hch-air-layer" mask={coreOpen ? undefined : "url(#coreSolidMask)"}>
+        <g className="hch-fog-group soft" filter="url(#fogBlurSoft)" mask="url(#fogFadeMask)">
+          <path className="hch-fog-wash hch-fog-supply" d={NORMAL_SUPPLY} style={{"--flow-speed":supplySpeed?`${supplySpeed*1.7}s`:"0s"} as CSSProperties}/>
+          {([["route-core",NORMAL_EXTRACT,coreRoute],["route-bypass",BYPASS_EXTRACT,bypassRoute]] as const).map(([route,path,style])=><g key={route} className={`hch-fog-route ${route}`} style={style} data-idle={style.opacity===0||undefined}><path className="hch-fog-wash hch-fog-extract" d={path} style={{"--flow-speed":extractSpeed?`${extractSpeed*1.7}s`:"0s"} as CSSProperties}/></g>)}
+        </g>
+      </g>
+    </svg>
+    <svg className="hch-layer hch-layer-air hch-layer-wisps" viewBox={viewBox} aria-hidden="true" focusable="false">
+      <g className="hch-air-layer" mask={coreOpen ? undefined : "url(#coreSolidMask)"}>
+        <g className="hch-wisp-group" mask="url(#fogFadeMask)">
+          <AirWisps path={NORMAL_SUPPLY} kind="supply" speed={supplySpeed}/>
+          {EXTRACT_ROUTES.map(([route,path])=><g key={route} className={`hch-fog-route ${route}`} style={route==="route-core"?coreRoute:bypassRoute} data-idle={(route==="route-core"?coreRoute:bypassRoute).opacity===0||undefined}><AirWisps path={path} kind="extract" speed={extractSpeed}/></g>)}
+        </g>
+      </g>
+    </svg>
+    <svg className="hch-layer hch-layer-air hch-layer-guides" viewBox={viewBox} aria-hidden="true" focusable="false">
+      <g className="hch-air-layer" mask={coreOpen ? undefined : "url(#coreSolidMask)"}>
+        <g className="hch-airflow-guides" mask="url(#fogFadeMask)">
+          <path className="hch-airflow-guide hch-supply-flow" d={NORMAL_SUPPLY} style={{"--flow-speed":supplySpeed?`${supplySpeed}s`:"0s"} as CSSProperties}/>
+          {([["route-core",NORMAL_EXTRACT,coreRoute],["route-bypass",BYPASS_EXTRACT,bypassRoute]] as const).map(([route,path,style])=><g key={route} className={`hch-fog-route ${route}`} style={style} data-idle={style.opacity===0||undefined}><path className="hch-airflow-guide hch-extract-flow" d={path} style={{"--flow-speed":extractSpeed?`${extractSpeed}s`:"0s"} as CSSProperties}/></g>)}
+        </g>
+      </g>
+    </svg>
+    <svg className="hch-layer hch-layer-top" viewBox={viewBox}>
       <polygon className={`hch-core-toggle${coreOpen ? " open" : ""}`} points={CORE_POINTS} role="button" tabIndex={0} aria-pressed={coreOpen} aria-label={coreOpen ? "Vis veksleren massiv" : "Vis luften gennem veksleren"} onClick={toggleCore} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggleCore(); } }}><title>{coreOpen ? "Tryk for at gøre veksleren massiv igen" : "Tryk for at se luften gennem veksleren (1 min)"}</title></polygon>
       {/* T2 is before afterheat. Keep the T3/T4 history on its own value. */}
       {!bypassPhase && <g className="hch-recovery-hit">
@@ -638,6 +718,7 @@ export function Hch5UnitDiagram(props:Hch5UnitDiagramProps) {
         <g className="hch-water-reading" role="button" tabIndex={0} aria-label={`Afkøl: ${fmt(waterDelta)}, vis 24 timers graf`} onClick={() => onTemperatureClick?.("waterDelta")} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onTemperatureClick?.("waterDelta"); } }}><rect x="8" y="83" width="180" height="23" rx="5"/><text className="water-delta" x="14" y="100">Afkøl <tspan x="184" textAnchor="end">{fmt(waterDelta)}</tspan></text></g>
       </g>
     </svg>
+    </div>
     {control && <ControlPanel control={control}/>}
     </div>
     <div className="hch-mobile-flow" aria-label="HCH5 luftstrømme og temperaturer">

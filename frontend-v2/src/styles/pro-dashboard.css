@@ -67,7 +67,21 @@ body[data-sidebar="collapsed"] .app-shell { grid-template-columns: 78px minmax(0
 .hch5-visual .unit-readback-row { margin-top: auto; }
 /* Seen from the afterheat end: the left side stays put while the exhaust
    end turns slightly away from the viewer. */
-.hch5-visual .hch5-svg-wrap > svg { width: 100%; height: auto; display: block; transform: rotateY(9deg); transform-origin: 0 50%; }
+.hch5-visual .hch5-svg-stack { position: relative; isolation: isolate; }
+/* Each layer is turned on its own, with the same perspective the wrapper used
+   to give one turned SVG (perspective 1900px from 25% -80% of the wrapper,
+   rotateY(9deg) about 0 50%); --hch-origin-y is set from the wrapper's height. Turning the whole stack instead made it one 3D surface that
+   Chrome drew blurred. The 3D transform also makes every layer its own
+   compositor layer. */
+.hch5-visual .hch5-svg-stack > .hch-layer { transform-origin: 0 0; transform: translate(25%, var(--hch-origin-y, -80%)) perspective(1900px) translate(-25%, calc(-1 * var(--hch-origin-y, -80%))) translateY(50%) rotateY(9deg) translateY(-50%); }
+/* The drawing is a stack of SVG layers with one viewBox: the first sets the
+   size, the others lie exactly on top of it. Each moving layer is its own
+   compositor layer, so its frames never repaint the static drawing below. */
+.hch5-svg-stack > .hch-layer { width: 100%; height: auto; display: block; }
+.hch5-svg-stack > .hch-layer:not(.hch-layer-base) { position: absolute; inset: 0; height: 100%; }
+.hch5-svg-stack > .hch-layer:not(.hch-layer-base, .hch-layer-top) { pointer-events: none; }
+.hch5-svg-stack > .hch-layer-fog, .hch5-svg-stack > .hch-layer-wisps { mix-blend-mode: screen; }
+.hch5-svg-stack.is-paused, .hch5-svg-stack.is-paused * { animation-play-state: paused !important; }
 .hch-side-inset { fill: none; stroke: #8199a7; stroke-width: 1; opacity: .45; }
 .hch-floor-shadow { fill: rgb(0 0 0 / 32%); filter: blur(9px); }
 .hch-cabinet,.hch-top-panel,.hch-side-panel { stroke: #77909f; stroke-width: 1.4; }
@@ -127,6 +141,8 @@ body[data-sidebar="collapsed"] .app-shell { grid-template-columns: 78px minmax(0
 .hch-bypass-channel { fill: #0a1820; stroke: #2f4756; stroke-width: 1.4; stroke-dasharray: 5 5; }
 .hch-bypass-channel-glow { fill: rgb(255 159 90 / 7%); stroke: #ff9f5a; stroke-width: 1.4; transition: opacity 2.6s ease-in-out; }
 .hch-fog-route { transition: opacity 2s linear; }
+/* The route the air is not taking does not animate unseen. */
+.hch-fog-route[data-idle] * { animation: none !important; }
 .hch-bypass.moving .bypass-actuator { animation: pro-actuator-run .7s ease-in-out infinite alternate; }
 @keyframes pro-actuator-run { to { fill: #ffb070; filter: drop-shadow(0 0 5px rgb(255 159 90 / 75%)); } }
 /* Damper travel in the core: direction, % open and a bar that follows the
@@ -166,7 +182,6 @@ body[data-sidebar="collapsed"] .app-shell { grid-template-columns: 78px minmax(0
 /* Diffuse fog/mist flow: one continuous, evenly solid blurred band the
    full length of the path — no dashes, so opacity/width never thins out
    partway along it, matching the density of the previous densest spots. */
-.hch-fog-group { mix-blend-mode: screen; }
 .hch-fog { fill: none; stroke-linecap: round; }
 .hch-fog-a { stroke-width: 38; opacity: .27; }
 .hch-fog-b { stroke-width: 24; opacity: .18; }
@@ -180,7 +195,7 @@ body[data-sidebar="collapsed"] .app-shell { grid-template-columns: 78px minmax(0
    upstream for both air streams, so decreasing dashoffset moves the wisps in
    the physical flow direction. Different lengths and phases avoid a train of
    identical bright dots. The continuous fog beneath them keeps the air full. */
-.hch-wisp-group { mix-blend-mode: screen; pointer-events: none; }
+.hch-wisp-group { pointer-events: none; }
 .hch-air-wisp { fill: none; stroke: currentColor; stroke-linecap: round; }
 .hch-air-wisps.hch-fog-supply .hch-air-wisp { stroke: url(#supplyWisp); }
 .hch-air-wisps.hch-fog-extract .hch-air-wisp { stroke: url(#extractWisp); }
@@ -199,10 +214,12 @@ body[data-sidebar="collapsed"] .app-shell { grid-template-columns: 78px minmax(0
 /* A slow, uniform opacity breathe — never spatial, so the band never reads
    as thinner in one place than another — gives the fog a sense of life
    without touching the dash pattern (there isn't one) or its density. */
-.hch-fog-group { animation: pro-fog-breathe 9s ease-in-out infinite; }
-.hch-fog-group.soft { animation-duration: 12s; animation-delay: -4s; }
+/* It breathes on the fog's own layer, so the compositor fades the finished
+   picture instead of blurring the fog again for every frame. */
+.hch5-svg-stack > .hch-layer-fog { animation: pro-fog-breathe 9s ease-in-out infinite; }
+.hch5-svg-stack > .hch-layer-fog.soft { animation-duration: 12s; animation-delay: -4s; }
 @keyframes pro-fog-breathe { 0%, 100% { opacity: .92; } 50% { opacity: 1; } }
-:root[data-motion="reduced"] .hch-fog-group,
+:root[data-motion="reduced"] .hch5-svg-stack > .hch-layer-fog,
 :root[data-motion="reduced"] .hch-air-wisp,
 :root[data-motion="reduced"] .hch-airflow-guide,
 :root[data-motion="reduced"] .hch-fan-rotor,
@@ -361,7 +378,7 @@ body[data-sidebar="collapsed"] .app-shell { grid-template-columns: 78px minmax(0
   .afterheat-row { grid-template-columns: 1fr; }
   .setpoint-stepper { justify-self: stretch; grid-template-columns: 42px 1fr 42px; }
   .hch5-visual { overflow: visible; padding-top: 0; }
-  .hch5-visual .hch5-svg-wrap > svg { display: block; width: 100%; height: auto; transform: none; }
+  .hch5-visual .hch5-svg-stack > .hch-layer { transform: none; }
 }
 
 /* RS485/Modbus wiring between the unit, HAC1 and the Raspberry Pi. */
@@ -450,7 +467,7 @@ body[data-sidebar="collapsed"] .app-shell { grid-template-columns: 78px minmax(0
 }
 @media (max-width:680px) {
   .pro-air-card { margin-inline: -12px; padding: 12px 10px; border-radius: 0; }
-  .hch5-visual .hch5-svg-wrap > svg { max-width: 100%; }
+  .hch5-visual .hch5-svg-stack > .hch-layer { max-width: 100%; }
 }
 
 /* Water afterheat coil (controller setting afterheat_coil = water): copper
