@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
 import { postJson, requestJson } from "../lib/api";
@@ -13,7 +14,7 @@ import { TablerIcon, type TablerName } from "./TablerIcon";
 type NavItem = readonly [to: string, label: string, icon: TablerName, permission: Permission | null, group: string | null, short?: string];
 
 // Fleetdeck-menuen: tre faste punkter, derefter grupperne "Teknik og drift" og "Opsætning".
-const navigation = [
+export const navigation = [
   ["/overview", "Overblik", "home", null, null],
   ["/history", "Historik", "history", null, null],
   ["/schedule", "Ugeplan", "calendar-time", null, null],
@@ -57,6 +58,23 @@ const searchWords: Record<string, string> = {
   "/updates": "version opdatering beta stable kanal",
   "/settings": "udseende tema sprog brugere mail adgangskode konto eftervarme ventilatortrin",
 };
+
+/** Sider uden eget menupunkt, som søgningen også skal finde (fx Min konto i avatar-menuen). */
+const searchExtras: readonly NavItem[] = [
+  ["/settings?section=security", "Min konto", "user", null, null],
+];
+const extraTitles: Record<string, string> = { "/settings?section=security": "Adgangskode, passkeys og log ud" };
+const extraWords: Record<string, string> = { "/settings?section=security": "konto bruger adgangskode passkey sikkerhed log ud" };
+
+/** Siderne i brugerens egen menu, der passer på søgeteksten (alle ord skal findes). */
+export function searchPages(items: readonly NavItem[], query: string): NavItem[] {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  return items.filter(item => {
+    const hay = `${item[1]} ${item[4] ?? ""} ${routeTitles[item[0]]?.[1] ?? extraTitles[item[0]] ?? ""} ${searchWords[item[0]] ?? extraWords[item[0]] ?? ""}`.toLowerCase();
+    return words.every(word => hay.includes(word));
+  });
+}
 
 const TABBAR = ["/overview", "/history", "/schedule", "/technique"];
 
@@ -111,6 +129,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [menu, setMenu] = useState<string | null>(null);
   const [sheet, setSheet] = useState(false);
   const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
   const [now, setNow] = useState(new Date());
   const [unit, setUnit] = useState<UnitState>({});
@@ -250,7 +269,36 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, [reportPoll]);
 
   const needle = query.trim().toLowerCase();
-  const results = needle ? visibleNavigation.filter(item => `${item[1]} ${routeTitles[item[0]]?.[1] ?? ""} ${searchWords[item[0]] ?? ""}`.toLowerCase().includes(needle)) : [];
+  const results = searchPages([...visibleNavigation, ...searchExtras], query);
+  const current = Math.min(active, Math.max(results.length - 1, 0));
+  const go = (to: string) => { navigate(to); setMenu(null); setQuery(""); searchRef.current?.blur(); };
+  // Søgefeltet findes i begge menuplaceringer (som Fleetdeck); på telefonen åbnes det med søgeknappen.
+  const searchBox = (
+    <div className="fd-search" data-menu-root data-open={menu === "search" ? "" : undefined}>
+      <TablerIcon name="search"/>
+      <input ref={searchRef} type="search" value={query} placeholder="Søg efter sider, sensorer, indstillinger…" aria-label="Søg"
+        role="combobox" aria-expanded={menu === "search" && !!needle} aria-controls="fd-search-results" aria-autocomplete="list" enterKeyHint="search"
+        onFocus={() => setMenu("search")} onChange={event => { setQuery(event.target.value); setActive(0); setMenu("search"); }}
+        onKeyDown={event => {
+          if (event.key === "ArrowDown" && results.length) { event.preventDefault(); setActive((current + 1) % results.length); }
+          else if (event.key === "ArrowUp" && results.length) { event.preventDefault(); setActive((current - 1 + results.length) % results.length); }
+          else if (event.key === "Enter" && results[current]) go(results[current][0]);
+          else if (event.key === "Escape") { setMenu(null); searchRef.current?.blur(); }
+        }}/>
+      <kbd>Ctrl K</kbd>
+      {menu === "search" && needle && <div className="fd-drop fd-search-results" id="fd-search-results" role="listbox">
+        {results.length ? results.map(([to, label, icon, , group], index) => <NavLink key={to} to={to} role="option" aria-selected={index === current} data-current={index === current ? "" : undefined}
+          onMouseEnter={() => setActive(index)} onClick={() => { setMenu(null); setQuery(""); }}>
+          <TablerIcon name={icon}/>{label}<small>{group ?? routeTitles[to]?.[1] ?? extraTitles[to]}</small></NavLink>) : <div className="lbl">Ingen sider passer</div>}
+      </div>}
+    </div>
+  );
+  const openSearch = () => {
+    if (menu === "search") { setMenu(null); return; }
+    // flushSync: feltet skal være synligt, før det får fokus (ellers kommer tastaturet ikke frem på iPhone).
+    flushSync(() => setMenu("search"));
+    searchRef.current?.focus();
+  };
   const updateCount = availableUpdate && session.can("system") ? 1 : 0;
   const count = (to: string) => to === "/updates" && updateCount ? <span className="fd-count" data-red>{updateCount}</span> : null;
   const navLink = ([to, label, icon]: NavItem, onClick?: () => void) => (
@@ -285,19 +333,16 @@ export function AppShell({ children }: { children: ReactNode }) {
                   </span>;
                 })}
               </nav>
+              {searchBox}
             </>
-          : <div className="fd-search only-desktop" data-menu-root>
-              <TablerIcon name="search"/>
-              <input ref={searchRef} type="search" value={query} placeholder="Søg efter sider, sensorer, indstillinger…" aria-label="Søg"
-                onFocus={() => setMenu("search")} onChange={event => { setQuery(event.target.value); setMenu("search"); }}
-                onKeyDown={event => { if (event.key === "Enter" && results[0]) { navigate(results[0][0]); searchRef.current?.blur(); } }}/>
-              <kbd>Ctrl K</kbd>
-              {menu === "search" && needle && <div className="fd-drop fd-search-results" role="listbox">
-                {results.length ? results.map(([to, label, icon]) => <NavLink key={to} to={to} role="option" aria-selected={false} onClick={() => setMenu(null)}><TablerIcon name={icon}/>{label}<small>{routeTitles[to]?.[1]}</small></NavLink>) : <div className="lbl">Ingen sider passer</div>}
-              </div>}
-            </div>}
+          : searchBox}
         <div className="spacer"/>
         <div className="topbar-actions">
+          <span className="fd-menu-root only-mobile" data-menu-root>
+            <button className="fd-icon-btn icon-button topbar-search-btn" type="button" aria-label="Søg" aria-expanded={menu === "search"} data-active={menu === "search" ? "" : undefined} onClick={openSearch}>
+              <TablerIcon name="search" size={18}/>
+            </button>
+          </span>
           <TopbarWeather outdoorTemp={outdoorTemp} weather={weather} />
           {availableUpdate && session.can("system") && <NavLink className="topbar-update-tab" to="/updates" title={availableUpdate}><RefreshCw size={15}/><span>{availableUpdate === "Installerer opdatering" ? availableUpdate : "Opdatering klar"}</span>{availableUpdate !== "Installerer opdatering" && <small>{availableUpdate}</small>}</NavLink>}
           <div className="topbar-clock only-desktop"><strong>{now.toLocaleTimeString("da-DK", { hour: "2-digit", minute: "2-digit" })}</strong><span>{now.toLocaleDateString("da-DK", { day: "2-digit", month: "short", year: "numeric" })}</span></div>
