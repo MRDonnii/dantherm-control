@@ -13,6 +13,8 @@ import { usePollHealth, useSinglePoll } from "../lib/connection";
 import { bypassTravel, formatRemaining } from "../lib/bypass";
 import { useTopbarNotice } from "../lib/topbar-notice";
 import { LEVEL_NAMES, MAX_LEVEL_HOURS, levelList, stepCount } from "../lib/fanSteps";
+import { OverviewSide } from "../components/OverviewSide";
+import { useSkin } from "../lib/appearance";
 import "../styles/overview.css";
 import "../styles/history.css";
 
@@ -100,6 +102,7 @@ function remaining(value: unknown) {
 
 export function OverviewPage() {
   const session = useSession();
+  const skin = useSkin();
   const [unit, setUnit] = useState<Data>({});
   const [controller, setController] = useState<Data>({});
   const [csrf, setCsrf] = useState("");
@@ -298,7 +301,10 @@ export function OverviewPage() {
   );
 
   return (
-    <section className="dashboard-overview page-enter">
+    <section className={`dashboard-overview page-enter${skin === "aurora" ? " with-side" : ""}`}>
+      <div className="ov-layout">
+      {/* Dantherm Live-kortet er forsidens hovedelement; i Aurora står en oversigtskolonne til højre. */}
+      <div className="ov-card">
       <header className="overview-heading-row">
         <div>
           <span className="eyebrow">OVERBLIK</span>
@@ -397,58 +403,63 @@ export function OverviewPage() {
               <div className="active-decision"><span>Aktiv beslutning</span><strong>{standbyActive ? "OFF · anlæg slukket" : `Trin ${whole(level)} · ${text(controller.effective_source).replaceAll("_", " ")}`}</strong><small>{text(controller.effective_reason, "Afventer controllerens beslutning")}</small></div>
             </article>
 
-            <article className="surface functions-card">
-              <div className="pro-card-head compact"><div><h2>Funktioner</h2><p>Midlertidige funktioner og bypass</p></div></div>
-              <div className="function-rows">
-                <div className={`function-row${quickBoostActive ? " active" : ""}`}>
-                  <span className="function-icon boost"><Wind size={18}/></span>
-                  <div className="function-text"><strong>Hurtig boost</strong><small>{quickBoostActive ? `Aktiv · ${remaining(controller.quick_boost_remaining_seconds)}` : fireplace ? "Ikke under pejsefunktion" : `Trin ${number(controller.quick_boost_level) ?? levels.length} i kort tid`}</small></div>
-                  <div className="function-buttons">
-                    {[15,30,60].map(minutes => <button key={minutes} className={quickBoostActive && number(controller.quick_boost_minutes) === minutes ? "active" : ""} disabled={busy !== null || fireplace} onClick={() => void command(`boost-${minutes}`, { quick_boost_minutes: minutes }, `Quick Boost ${minutes} min startet.`)}>{minutes} min</button>)}
-                    {quickBoostActive && <button className="stop" onClick={() => void command("boost-stop", { quick_boost_minutes: 0 }, "Quick Boost stoppet.")}>Stop</button>}
-                  </div>
+            {/* Samme opbygning som Dantherm Live-kortet: boost og bypass, bål og pejs, derefter frikøling. */}
+            <div className="pro-control-pair">
+              <article className={`surface mini-control${quickBoostActive ? " active" : ""}`}>
+                <div className="mini-control-title"><Wind size={20}/><strong>Hurtig boost</strong></div>
+                <div className="mini-buttons three">
+                  {[15,30,60].map(minutes => <button key={minutes} className={quickBoostActive && number(controller.quick_boost_minutes) === minutes ? "active" : ""} aria-pressed={quickBoostActive && number(controller.quick_boost_minutes) === minutes} disabled={busy !== null || fireplace} onClick={() => void command(`boost-${minutes}`, { quick_boost_minutes: minutes }, `Quick Boost ${minutes} min startet.`)}>{minutes} min</button>)}
                 </div>
-                <div className={`function-row${String(controller.bypass) === "on" ? " active" : ""}`}>
-                  <span className="function-icon bypass"><ArrowRight size={18}/></span>
-                  <div className="function-text"><strong>Bypass</strong><small>Faktisk: {bypassActualLabel}</small></div>
-                  <div className="function-buttons">
-                    <button className={String(controller.bypass ?? "off") === "off" ? "active" : ""} disabled={busy !== null || bypassMoving} onClick={() => void command("bypass-auto", { bypass: "off" }, "Bypass sat til Auto.")}>Auto</button>
-                    <button className={String(controller.bypass) === "on" ? "active" : ""} disabled={busy !== null || fireplace || bypassMoving} onClick={() => void command("bypass-on", { bypass: "on" }, "Bypass ønskes åben.")}>On</button>
-                  </div>
+                {quickBoostActive
+                  ? <button className="text-action stop" onClick={() => void command("boost-stop", { quick_boost_minutes: 0 }, "Quick Boost stoppet.")}>Aktiv · {remaining(controller.quick_boost_remaining_seconds)} · Stop</button>
+                  : <small className="control-footnote">{fireplace ? "Ikke under pejsefunktion" : `Trin ${number(controller.quick_boost_level) ?? levels.length} i kort tid`}</small>}
+              </article>
+              <article className={`surface mini-control${String(controller.bypass) === "on" ? " active" : ""}`}>
+                <div className="mini-control-title"><ArrowRight size={20}/><strong>Bypass-styring</strong></div>
+                <div className="mini-buttons two">
+                  <button className={String(controller.bypass ?? "off") === "off" ? "active" : ""} aria-pressed={String(controller.bypass ?? "off") === "off"} disabled={busy !== null || bypassMoving} onClick={() => void command("bypass-auto", { bypass: "off" }, "Bypass sat til Auto.")}>Auto</button>
+                  <button className={String(controller.bypass) === "on" ? "active" : ""} aria-pressed={String(controller.bypass) === "on"} disabled={busy !== null || fireplace || bypassMoving} onClick={() => void command("bypass-on", { bypass: "on" }, "Bypass ønskes åben.")}>On</button>
                 </div>
-                <div className={`function-row${controller.cooling_enabled === true || coolActive ? " active" : ""}`}>
-                  <span className="function-icon cooling"><Snowflake size={18}/></span>
-                  <div className="function-text"><strong>Frikøling</strong><small>{coolActive ? `Køl aktiv · ${remaining(controller.cool_boost_remaining_seconds)}` : `${coolingLabel(controller.cooling_state)} · ${controller.cooling_enabled === true ? "automatik til" : "slået fra"}`}</small></div>
-                  <div className="function-buttons">
-                    <button className={coolActive ? "active" : ""} aria-haspopup="dialog" disabled={busy !== null || fireplace || standbyActive} title={fireplace ? "Ikke under pejsefunktion" : "Åbn bypass og kør boost i en periode"} onClick={() => setCoolDialog(true)}>Køl</button>
-                    {coolActive && <button className="stop" disabled={busy !== null} onClick={() => void command("cool-stop", { cool_boost_minutes: 0 }, "Køl stoppet.")}>Stop</button>}
-                    <button className={controller.cooling_enabled === true ? "active" : ""} disabled={busy !== null} onClick={() => controller.cooling_enabled !== true && void command("cooling", { cooling_enabled: true }, "Frikøling aktiveret.")}>Til</button>
-                    <button className={controller.cooling_enabled !== true ? "active" : ""} disabled={busy !== null} onClick={() => controller.cooling_enabled === true && void command("cooling", { cooling_enabled: false }, "Frikøling deaktiveret.")}>Fra</button>
-                  </div>
+                <small className="control-footnote">Faktisk: {bypassActualLabel}</small>
+              </article>
+            </div>
+            <div className="pro-control-pair">
+              <article className={`surface status-action-card bonfire-card${bonfireActive ? " active" : ""}`}>
+                <div className="status-action-icon smoke"><CloudFog size={24}/></div>
+                <div><span>Bål i haven</span><strong>{bonfireActive ? "Aktiv · anlæg slukket" : "Ikke aktiv"}</strong><small>{bonfireActive ? `${remaining(controller.bonfire_remaining_seconds)} · tænder selv igen` : fireplace ? "Ikke under pejsefunktion" : standbyActive ? "Anlægget er slukket" : "Slukker anlægget, tænder selv igen"}</small></div>
+                <div className="fireplace-actions bonfire-actions">
+                  {bonfireActive
+                    ? <button className="stop" onClick={() => void command("bonfire-stop", { bonfire_minutes: 0 }, "Bål-tilstand stoppet.")}>Stop</button>
+                    : BONFIRE_CHOICES.map(([minutes, label]) => <button key={minutes} disabled={busy !== null || fireplace || standbyActive} onClick={() => void command(`bonfire-${minutes}`, { bonfire_minutes: minutes }, `Bål-tilstand startet i ${label}.`)}>{label}</button>)}
                 </div>
-                <div className={`function-row${fireplace ? " active" : ""}`}>
-                  <span className="function-icon flame"><Flame size={18}/></span>
-                  <div className="function-text"><strong>Pejsefunktion</strong><small>{fireplace ? `Aktiv · ${remaining(controller.fireplace_remaining_seconds)}` : "Overtryk mens der fyres"}</small></div>
-                  <div className="function-buttons">
-                    {fireplace
-                      ? <button className="stop" onClick={() => void command("fireplace-stop", { fireplace_minutes: 0 }, "Pejsefunktion stoppet.")}>Stop</button>
-                      : <><button disabled={busy !== null} onClick={() => void command("fireplace-15", { fireplace_minutes: 15 }, "Pejsefunktion startet i 15 min.")}>15 min</button><button disabled={busy !== null} onClick={() => void command("fireplace-30", { fireplace_minutes: 30 }, "Pejsefunktion startet i 30 min.")}>30 min</button></>}
-                  </div>
+              </article>
+              <article className={`surface status-action-card${fireplace ? " active" : ""}`}>
+                <div className="status-action-icon flame"><Flame size={24}/></div>
+                <div><span>Pejsefunktion</span><strong>{fireplace ? "Aktiv" : "Ikke aktiv"}</strong><small>{fireplace ? remaining(controller.fireplace_remaining_seconds) : "Overtryk mens der fyres · 15 eller 30 min"}</small></div>
+                <div className="fireplace-actions">
+                  {fireplace
+                    ? <button className="stop" onClick={() => void command("fireplace-stop", { fireplace_minutes: 0 }, "Pejsefunktion stoppet.")}>Stop</button>
+                    : <><button disabled={busy !== null} onClick={() => void command("fireplace-15", { fireplace_minutes: 15 }, "Pejsefunktion startet i 15 min.")}>15 min</button><button disabled={busy !== null} onClick={() => void command("fireplace-30", { fireplace_minutes: 30 }, "Pejsefunktion startet i 30 min.")}>30 min</button></>}
                 </div>
-                <div className={`function-row${bonfireActive ? " active" : ""}`}>
-                  <span className="function-icon smoke"><CloudFog size={18}/></span>
-                  <div className="function-text"><strong>Bål i haven</strong><small>{bonfireActive ? `Anlæg slukket · ${remaining(controller.bonfire_remaining_seconds)}` : fireplace ? "Ikke under pejsefunktion" : standbyActive ? "Anlægget er slukket" : "Slukker anlægget, starter selv"}</small></div>
-                  <div className="function-buttons">
-                    {bonfireActive
-                      ? <button className="stop" onClick={() => void command("bonfire-stop", { bonfire_minutes: 0 }, "Bål-tilstand stoppet.")}>Stop</button>
-                      : BONFIRE_CHOICES.map(([minutes, label]) => <button key={minutes} disabled={busy !== null || fireplace || standbyActive} onClick={() => void command(`bonfire-${minutes}`, { bonfire_minutes: minutes }, `Bål-tilstand startet i ${label}.`)}>{label}</button>)}
-                  </div>
-                </div>
+              </article>
+            </div>
+            <article className={`surface status-action-card cooling-card${controller.cooling_enabled === true || coolActive ? " active" : ""}`}>
+              <div className="status-action-icon"><Snowflake size={24}/></div>
+              <div><span>Frikøling</span><strong>{coolActive ? "Køl aktiv" : coolingLabel(controller.cooling_state)}</strong><small>{coolActive ? `${remaining(controller.cool_boost_remaining_seconds)} · bypass åben og boost` : controller.cooling_enabled === true ? "Automatik aktiv" : "Automatik slået fra"}</small></div>
+              <div className="fireplace-actions cooling-actions">
+                <button className={coolActive ? "active" : ""} aria-haspopup="dialog" disabled={busy !== null || fireplace || standbyActive} title={fireplace ? "Ikke under pejsefunktion" : "Åbn bypass og kør boost i en periode"} onClick={() => setCoolDialog(true)}>Køl</button>
+                {coolActive && <button className="stop" disabled={busy !== null} onClick={() => void command("cool-stop", { cool_boost_minutes: 0 }, "Køl stoppet.")}>Stop</button>}
+                <button className={controller.cooling_enabled === true ? "active" : ""} aria-pressed={controller.cooling_enabled === true} disabled={busy !== null} onClick={() => controller.cooling_enabled !== true && void command("cooling", { cooling_enabled: true }, "Frikøling aktiveret.")}>Til</button>
+                <button className={controller.cooling_enabled !== true ? "active" : ""} aria-pressed={controller.cooling_enabled !== true} disabled={busy !== null} onClick={() => controller.cooling_enabled === true && void command("cooling", { cooling_enabled: false }, "Frikøling deaktiveret.")}>Fra</button>
               </div>
             </article>
           </aside>
           {unit.unit_generation === "mk2" ? null : afterheatCard}
         </div>
+      </div>
+      </div>
+      {skin === "aurora" && <OverviewSide controller={controller} busHealthy={busHealthy} haLabel={haInfo.label} haDetail={haInfo.detail} haTone={haInfo.tone}
+        haVisible={haLink.state !== null && (haLink.state !== "never" || haLink.required)} canConfigure={canConfigure}/>}
       </div>
       {standbyDialog && createPortal(<div className="sensor-history-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setStandbyDialog(false); }}>
         <section className="standby-dialog surface" role="dialog" aria-modal="true" aria-labelledby="standby-dialog-title">

@@ -1,0 +1,111 @@
+/* Forsiden: Dantherm Live-kortet i Fleetdeck-stil (overstyringen fra Faelles-design/scripts/dantherm-kort.html, FD_CSS).
+   - ingen farvede venstrekanter: felterne er Fleetdecks indlejrede flade (.fd-machine)
+   - knapper som Button default, det aktive valg Button light, vælgere som SegmentedControl (fleetdeck-app.css)
+   - rettelse 1: teksten i Bål/Pejs ombrydes, og knapperne står under teksten
+   - rettelse 2: aktive knapper bruger light-varianten (fx indigo-9 på indigo-1 i lyst tema), så kontrasten holder
+   - rettelse 3: "Sluk" under eftervarmen bliver ikke smal: knapperne får deres egen række, når kortet er smalt */
+
+/* Kortet som én flade (ha-card), med sidens titel i skallen i stedet for kortets egen overskrift */
+:root[data-skin] .ov-card { min-width: 0; display: grid; gap: 12px; padding: 16px; border: 1px solid var(--fd-border); border-radius: var(--r-lg); background: var(--fd-card); box-shadow: var(--fd-shadow); }
+:root[data-skin][data-skin="aurora"] .ov-card { backdrop-filter: blur(16px); }
+:root[data-skin] .ov-card .overview-heading-row { display: block; margin: 0; }
+:root[data-skin] .ov-card .overview-heading-row > div:first-child { display: none; }
+
+/* Afsnittene inde i kortet er ikke egne kort: kun en tynd skillelinje, som i Live-kortet */
+:root[data-skin] .ov-card :is(.pro-air-card, .climate-panel, .pro-control-card, .afterheat-setpoint-card, .mini-control) {
+  border: 0; border-top: 1px solid var(--fd-border); border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; }
+:root[data-skin] .ov-card .pro-air-card { border-top: 0; }
+:root[data-skin] .ov-card .dashboard-col-side > :first-child > :first-child { border-top: 0; }
+
+/* Indlejrede felter: kant --fd-border, radius md, baggrund som .fd-machine. Ingen venstrekant, ingen glød. */
+:root[data-skin] .ov-card :is(.unit-readback, .climate-metric, .status-action-card, .overview-status-pills > div, .hch-mobile-subreadings > button, .hch-mobile-water, .hch-mobile-reading, .active-decision, .thermostat-readings > div, .hch-mobile-core) {
+  border: 1px solid var(--fd-border); border-radius: var(--r-md); background: var(--fd-tile); box-shadow: none; backdrop-filter: none; }
+:root[data-skin] .ov-card .status-action-card.active { border-color: color-mix(in srgb, var(--primary) 45%, var(--fd-border)); }
+:root[data-skin] .ov-card .overview-status-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+:root[data-skin] .ov-card .overview-status-pills > div { min-width: 120px; padding: 10px 14px; }
+:root[data-skin] .ov-card .overview-status-pills small, :root[data-skin] .ov-card .overview-status-pills > div > span:not(.status-led) { color: var(--dimmed); }
+:root[data-skin] .ov-card .overview-status-pills strong { color: var(--bright); }
+:root[data-skin] .ov-card .overview-status-pills svg { color: var(--dimmed); }
+:root[data-skin] .ov-card .status-led { background: var(--fd-ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--fd-ok) 18%, transparent); }
+:root[data-skin] .ov-card .status-led.warn { background: var(--fd-warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--fd-warn) 18%, transparent); }
+:root[data-skin] .ov-card :is(.unit-readback, .climate-metric, .status-action-card) :is(span, small, em) { color: var(--dimmed); }
+:root[data-skin] .ov-card :is(.unit-readback, .climate-metric, .status-action-card, .active-decision, .mini-control-title) strong { color: var(--bright); }
+:root[data-skin] .ov-card :is(.control-label, .control-footnote, .active-decision span, .active-decision small) { color: var(--dimmed); }
+:root[data-skin] .ov-card .mini-control-title { color: var(--bright); }
+:root[data-skin] .ov-card .mini-control-title svg, :root[data-skin] .ov-card .status-action-icon { color: var(--primary); }
+:root[data-skin] .ov-card .status-action-icon { border: 0; border-radius: var(--r-default); background: var(--primary-light); color: var(--primary-lc); box-shadow: none; }
+:root[data-skin] .ov-card .status-action-icon.flame { background: var(--orange-l); color: var(--orange-lc); }
+:root[data-skin] .ov-card .status-action-icon.smoke { background: var(--gray-l); color: var(--gray-lc); }
+/* Nøgletallenes bjælke: Fleetdecks .fd-minibar (5 px, runding 3) */
+:root[data-skin] .ov-card .climate-metric > i { height: 5px; border-radius: 3px; box-shadow: none; }
+:root[data-skin] .ov-card .climate-metric::after { height: 5px; border-radius: 3px; background: var(--fd-chip); box-shadow: none; }
+:root[data-skin] .ov-card .diagnostics-alarm { border: 0; border-radius: var(--r-default); background: var(--orange-l); color: var(--orange-lc); box-shadow: none; }
+:root[data-skin] .ov-card .diagnostics-alarm.critical { background: var(--red-l); color: var(--red-lc); }
+:root[data-skin] .ov-card .ha-warning { border: 0; border-radius: var(--r-default); background: var(--orange-l); color: var(--orange-lc); box-shadow: none; }
+:root[data-skin] .ov-card .ha-warning.tone-bad { background: var(--red-l); color: var(--red-lc); }
+:root[data-skin] .ov-card .text-action { min-height: 30px; padding: 0 10px; font-size: 13px; }
+:root[data-skin] .ov-card .text-action.stop { background: var(--red-l); border-color: transparent; color: var(--red-lc); }
+
+/* Rettelse 1: Bål/Pejs/Frikøling. Teksten ombrydes, og knapperne står i deres egen række under teksten. */
+:root[data-skin] .ov-card .status-action-card { grid-template-columns: 42px minmax(0, 1fr); align-items: start; row-gap: 10px; }
+:root[data-skin] .ov-card .status-action-card > div > :is(strong, small, span) { white-space: normal; overflow: visible; text-overflow: clip; }
+:root[data-skin] .ov-card .status-action-card > .fireplace-actions { grid-column: 1 / -1; gap: 6px; grid-auto-flow: row; grid-template-columns: repeat(auto-fit, minmax(58px, 1fr)); }
+:root[data-skin] .ov-card .status-action-card > .fireplace-actions button { min-width: 0; height: 32px; padding: 0 4px; font-size: 13px; white-space: nowrap; }
+/* Kolonnerne skal ikke strækkes til samme højde: så bliver indeklimafelterne meget høje under den højere styrekolonne. */
+:root[data-skin] .ov-card .dashboard-main-grid { align-items: start; }
+:root[data-skin] .ov-card .dashboard-col > :last-child { flex: 0 0 auto; }
+
+/* Rettelse 3: eftervarmens knapper. Under ca. 560 px bredde stables drejeknap og knapper, så "Sluk" altid har plads. */
+:root[data-skin] .ov-card .thermostat-actions { grid-template-columns: 44px minmax(88px, 1fr) 44px; }
+:root[data-skin] .ov-card .thermostat-actions .thermostat-power { min-width: 88px; white-space: nowrap; }
+:root[data-skin] .ov-card .afterheat-setpoint-card { container-type: inline-size; }
+@container (max-width: 560px) {
+  .afterheat-thermostat { grid-template-columns: 1fr; justify-items: center; }
+  .thermostat-dial { max-width: 230px; }
+  .thermostat-side { width: 100%; }
+}
+:root[data-skin] .ov-card .thermostat-head span { color: var(--bright); }
+:root[data-skin] .ov-card .thermostat-head em, :root[data-skin] .ov-card .thermostat-readings small { color: var(--dimmed); }
+:root[data-skin] .ov-card .thermostat-readings strong, :root[data-skin] .ov-card .thermostat-center strong { color: var(--bright); }
+
+/* Forslag B (Aurora): kortet til venstre og en højre kolonne (Fleetdecks .fd-dash-main). Kortets eget gitter stables. */
+:root[data-skin] .with-side .ov-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; }
+:root[data-skin] .ov-layout { min-width: 0; }
+@media (max-width: 1800px) {
+  :root[data-skin] .with-side .dashboard-main-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 1200px) {
+  :root[data-skin] .with-side .ov-layout { grid-template-columns: minmax(0, 1fr); }
+}
+:root[data-skin] .ov-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+:root[data-skin] .ov-side .paper-head .more { text-decoration: none; }
+:root[data-skin] .ov-alerts { display: flex; flex-direction: column; gap: 10px; }
+:root[data-skin] .ov-alerts .alert { padding: 12px 14px; gap: 12px; }
+:root[data-skin] .ov-period { gap: 12px; font-size: 14px; }
+:root[data-skin] .ov-period .tabnum { width: 44px; }
+:root[data-skin] .ov-period .badge { margin-left: auto; }
+:root[data-skin] .ov-empty { margin: 0; color: var(--dimmed); font-size: 14px; }
+:root[data-skin] .ov-sparks { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 16px; }
+:root[data-skin] .ov-sparks > div { display: grid; gap: 2px; font-size: 12.5px; }
+:root[data-skin] .ov-sparks strong { color: var(--bright); font-size: 14px; }
+:root[data-skin] .ov-spark { width: 100%; height: 32px; display: block; margin-top: 4px; }
+:root[data-skin] .ov-ha { flex-wrap: nowrap; font-size: 14px; }
+:root[data-skin] .ov-ha .badge { margin-left: auto; }
+
+@media (max-width: 48em) {
+  :root[data-skin] .ov-card { padding: 10px; gap: 10px; border-radius: var(--r-default); }
+  :root[data-skin] .ov-card .overview-status-pills > div { min-width: 0; flex: 1 1 140px; }
+  :root[data-skin] .ov-sparks { grid-template-columns: 1fr 1fr; }
+}
+
+/* "Styring nu" som bjælke under tegningen op til 1100 px tegnebredde (i Aurora er tegningen smallere end før, og
+   panelet over tegningen dækkede ellers aflæsningerne). Samme regler som pro-dashboard.css ved 900 px. */
+@container (max-width: 1100px) {
+  .with-side .hch-control-panel { position: static; width: auto !important; margin: 8px 0 4px; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; column-gap: 12px; row-gap: 2px; }
+  .with-side .hch-control-eyebrow { grid-row: 1 / span 2; }
+  .with-side .hch-control-title { grid-column: 2; }
+  .with-side .hch-control-reason { grid-column: 2; -webkit-line-clamp: 1; }
+  .with-side .hch-control-footer { grid-column: 3; grid-row: 1 / span 2; text-align: right; }
+}
+/* Styring nu-panelet i tegningen: Fleetdecks flade i stedet for blå kant og glød */
+:root[data-skin] .ov-card .hch-control-panel { border: 1px solid var(--fd-border); border-radius: var(--r-md); background: var(--fd-tile); box-shadow: none; }
