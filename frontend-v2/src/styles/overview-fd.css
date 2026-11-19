@@ -100,12 +100,19 @@
 
 /* "Styring nu" som bjælke under tegningen op til 1100 px tegnebredde (i Aurora er tegningen smallere end før, og
    panelet over tegningen dækkede ellers aflæsningerne). Samme regler som pro-dashboard.css ved 900 px. */
-@container (max-width: 1100px) {
+@media (min-width: 681px) { @container (max-width: 1100px) {
   .with-side .hch-control-panel { position: static; width: auto !important; margin: 8px 0 4px; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; column-gap: 12px; row-gap: 2px; }
   .with-side .hch-control-eyebrow { grid-row: 1 / span 2; }
   .with-side .hch-control-title { grid-column: 2; }
   .with-side .hch-control-reason { grid-column: 2; -webkit-line-clamp: 1; }
   .with-side .hch-control-footer { grid-column: 3; grid-row: 1 / span 2; text-align: right; }
-}
+} }
 /* Styring nu-panelet i tegningen: Fleetdecks flade i stedet for blå kant og glød */
 :root[data-skin] .ov-card .hch-control-panel { border: 1px solid var(--fd-border); border-radius: var(--r-md); background: var(--fd-tile); box-shadow: none; }
+
+/* Mobilens aflæsninger under tegningen: Fleetdeck-flader med appens tekstfarver (også i lyst tema) */
+:root[data-skin] .ov-card .hch-mobile-flow { border: 1px solid var(--fd-border); border-radius: var(--r-md); background: transparent; box-shadow: none; }
+:root[data-skin] .ov-card :is(.hch-mobile-reading, .hch-mobile-lane.extract .hch-mobile-reading, .hch-mobile-core, .hch-mobile-subreadings span, .hch-mobile-subreadings button) {
+  border: 1px solid var(--fd-border); background: var(--fd-tile); box-shadow: none; }
+:root[data-skin] .ov-card :is(.hch-mobile-reading, .hch-mobile-core, .hch-mobile-subreadings span, .hch-mobile-subreadings button) :is(small, span) { color: var(--dimmed); }
+:root[data-skin] .ov-card :is(.hch-mobile-reading, .hch-mobile-core, .hch-mobile-subreadings span, .hch-mobile-subreadings button) strong { color: var(--bright); }
