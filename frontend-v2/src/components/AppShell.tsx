@@ -254,7 +254,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const updateCount = availableUpdate && session.can("system") ? 1 : 0;
   const count = (to: string) => to === "/updates" && updateCount ? <span className="fd-count" data-red>{updateCount}</span> : null;
   const navLink = ([to, label, icon]: NavItem, onClick?: () => void) => (
-    <NavLink key={to} to={to} onClick={onClick} className={({ isActive }) => `fd-nav nav-item${isActive ? " active" : ""}`} data-active={location.pathname === to ? "" : undefined} title={collapsed && nav === "side" ? label : undefined}>
+    <NavLink key={to} to={to} onClick={onClick} className="fd-nav" data-active={location.pathname === to ? "" : undefined} title={collapsed && nav === "side" ? label : undefined}>
       <TablerIcon name={icon} size={18} stroke={1.6}/>
       <span className="fd-nav-label">{label}</span>{count(to)}
     </NavLink>
