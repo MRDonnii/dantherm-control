@@ -7,8 +7,13 @@
   compositor layer, so a frame only repaints the small moving layers instead of the whole drawing with its blur
   filters, masks and drop shadow. The fog breathes on its own layer, the route the air is not taking stops animating,
   everything pauses while the tab is hidden or the card is off screen, and the drawing no longer re-renders on every
-  2 s poll when nothing has changed. Measured on a 6x slower CPU: about 19 to 46 fps on an iPad-sized screen, and
-  about 4 to 10 fps in WebKit without GPU.
+  2 s poll when nothing has changed. Measured on an iPad-sized screen with a 6x slower CPU: about 41 to 60 fps with
+  GPU, 19 to 46 fps without; WebKit without GPU about 4 to 10 fps.
+- **Restart buttons on the System page.** "Genstart Dantherm-styringen" restarts the control services (gateway and
+  1-Wire) and "Genstart Pi'en" reboots the Pi. Both ask for confirmation first, are only offered to roles with the
+  system permission (administrator and technician), need the CSRF token and go through the existing allowlisted admin
+  helper (new target `all` for `restart_service`; no new privileges). The page then waits and reloads by itself when
+  the Pi answers again, and the restart is written to the event log with the user's name. Nothing restarts on its own.
 
 ## 1.7.5
 

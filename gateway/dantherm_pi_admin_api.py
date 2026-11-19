@@ -315,10 +315,12 @@ def _write_filter_state(*, interval_days: int | None = None, reset_now: bool = F
     return _read_filter_state()
 
 
-def _schedule_service_restart(service: str, delay: float = 0.7) -> None:
+def _schedule_service_restart(service: str | list[str], delay: float = 0.7) -> None:
+    units = [service] if isinstance(service, str) else list(service)
+
     def restart():
         time.sleep(delay)
-        subprocess.run(["systemctl", "restart", service], check=False)
+        subprocess.run(["systemctl", "restart", *units], check=False)
     threading.Thread(target=restart, daemon=True).start()
 
 
@@ -557,9 +559,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(400, {"error": str(error)})
             except (OSError, RuntimeError, subprocess.TimeoutExpired):
                 return self.reply(503, {"error": "wifi_connection_failed"})
-        if action == "restart_service" and target in SERVICES:
+        # "all" is the WebUI's "Genstart Dantherm-styringen": the allowlisted
+        # control services in one systemctl call. The admin helper itself is
+        # not restarted, so it can still answer while the gateway comes back.
+        if action == "restart_service" and (target in SERVICES or target == "all"):
             self.reply(202, {"ok": True, "message": "service restart scheduled"})
-            _schedule_service_restart(SERVICES[target], 0.5)
+            _schedule_service_restart(list(SERVICES.values()) if target == "all" else SERVICES[target], 0.5)
             return
         if action == "get_update_channel":
             return self.reply(200, {"ok": True, "channel": current_update_channel()})

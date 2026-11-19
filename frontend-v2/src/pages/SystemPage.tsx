@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Activity, Bluetooth, Cpu, HardDrive, MemoryStick, Network, RefreshCw, Server, Thermometer, Timer, Wifi, WifiOff } from "lucide-react";
 import { HistoryChart } from "../components/HistoryChart";
+import { RestartPanel } from "../components/RestartPanel";
 import { requestJson } from "../lib/api";
 import "../styles/panels.css";
 import "../styles/history.css";
@@ -123,6 +124,8 @@ export function SystemPage() {
       </article>
     </div>
     {notice && <p className="system-notice" role="status">{notice}</p>}
+    <div className="system-heading"><div><span className="eyebrow">PI · GENSTART</span><h2>Genstart styringen eller Pi’en</h2></div></div>
+    <div className="system-restart-row"><RestartPanel csrf={csrf}/></div>
     <div className="system-heading system-history-heading"><div><span className="eyebrow">RESSOURCER</span><h2>Udvikling over tid</h2></div><div className="pro-segment system-range">{[["1h", "1 time"], ["6h", "6 timer"], ["24h", "24 timer"]].map(([value, label]) => <button key={value} type="button" className={range === value ? "active" : ""} onClick={() => setRange(value)}>{label}</button>)}</div></div>
     <div className="system-charts"><Chart title="CPU-forbrug" detail="Belastning i procent" samples={samples} field="system_cpu_usage_percent" color="blue" unit="%" /><Chart title="CPU-temperatur" detail="Advarsel ved 70°C" samples={samples} field="pi_cpu_temperature" color="orange" unit="°C" /><Chart title="RAM-forbrug" detail="Brugt fysisk hukommelse" samples={samples} field="system_memory_used_percent" color="green" unit="%" /></div>
     <div className="system-lower"><article className="surface system-panel"><div className="pro-card-head compact"><div><h2>Services</h2><p>Aktuel status på Pi’en</p></div><Server size={19} /></div><div className="system-services">{services.map(([name, value]) => <div key={String(name)}><i className={serviceTone(value)} /><strong>{text(name)}</strong><span className={serviceTone(value)}>{value === "active" ? "OK" : value === "failed" ? "Fejl" : value === "inactive" ? "Stoppet" : "Ukendt"}</span></div>)}</div></article>

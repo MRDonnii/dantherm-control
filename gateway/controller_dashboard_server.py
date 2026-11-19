@@ -600,6 +600,12 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                     payload, status = error.read(), error.code
                 except OSError:
                     return self.send_error(503, "Admin helper unavailable")
+                restart_kind = {"reboot": "Genstart af Pi'en", "restart_service": "Genstart af Dantherm-styringen"}.get(str(admin_action.get("action", "")))
+                if restart_kind and status < 300 and getattr(dashboard, "events", None) is not None:
+                    try:
+                        dashboard.events.add("system_restart", f"{restart_kind} startet fra WebUI", by=session.get("username"), target=admin_action.get("target"))
+                    except Exception:
+                        LOG.debug("Kunne ikke logge genstart", exc_info=True)
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
