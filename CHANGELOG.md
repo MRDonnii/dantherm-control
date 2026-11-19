@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.4
+
+- **Overview: a fixed, symmetric grid.** The front page is laid out on 12 equal columns that follow the card's own width, so
+  it looks the same with the side menu and the top menu. On portrait screens the drawing spans the full width, "Control now"
+  sits as a bar below it instead of covering a tile, and Operation and After-heat stand side by side at the same height.
+  The five functions share one layout with equal buttons (3 + 2), and the key figures stand in pairs. Wide screens keep the
+  drawing on the left, phones get one column. No control logic changed.
+
 ## 1.7.3
 
 - **The unit's own frost protection is shown, not treated as an error.** When the exchanger risks icing, the HCH5 lowers
