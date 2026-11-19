@@ -1,0 +1,10 @@
+#!/bin/sh
+# Exit 0 when the root file system (/) is mounted over NFS, 1 otherwise.
+# Silent on purpose: units that only make sense on a netbooted Pi use it as
+#   ExecCondition=/usr/local/sbin/hch-root-is-nfs
+# so they are skipped (not failed, not restarted, no warnings) after the Pi
+# moved to a local SD card or disk. HCH_MOUNTS_FILE overrides /proc/mounts
+# for tests.
+mounts=${HCH_MOUNTS_FILE:-/proc/mounts}
+# The last "/" entry is the active root (old kernels list "rootfs" first).
+awk '$2 == "/" { fs = $3 } END { exit !(fs ~ /^nfs4?$/) }' "$mounts" 2>/dev/null

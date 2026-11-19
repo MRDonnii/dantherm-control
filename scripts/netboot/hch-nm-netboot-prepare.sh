@@ -3,6 +3,10 @@ set -eu
 plugin_dir=/usr/lib/arm-linux-gnueabihf/NetworkManager/1.42.4
 profile_dir=/etc/NetworkManager/system-connections
 runtime_dir=/run/hch-nm-netboot
+# Only an NFS root needs RAM-backed NetworkManager files. After a move to a
+# local SD card or disk, leave NetworkManager's normal persistent storage alone.
+mounts=${HCH_MOUNTS_FILE:-/proc/mounts}
+awk '$2 == "/" { fs = $3 } END { exit !(fs ~ /^nfs4?$/) }' "$mounts" 2>/dev/null || exit 0
 [ -d "$plugin_dir" ] || exit 0
 [ -d "$profile_dir" ] || exit 0
 mkdir -p "$runtime_dir/plugins" "$runtime_dir/connections"
