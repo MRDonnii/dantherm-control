@@ -27,6 +27,17 @@ from webui_mail import AlarmMailer, MailError, MailService
 from webui_permissions import admin_action_allowed, can, capabilities, config_allowed
 
 LOG = logging.getLogger("passivelink-controller-web")
+
+# Sign-in from Kontrolrum is an extra. If the module cannot be loaded the WebUI
+# and the ventilation control carry on, and the endpoint just answers 404.
+try:
+    from kontrolrum_sso import MAX_BODY as KONTROLRUM_MAX_BODY, KontrolrumSso, parse_peers
+except Exception:  # noqa: BLE001 - whatever is wrong with it must stay here
+    KontrolrumSso = None
+    KONTROLRUM_MAX_BODY = 4096
+    parse_peers = None
+    LOG.warning("Kontrolrum sign-in is unavailable")
+
 CONTROLLER_ASSETS = {
     "controller.css": "text/css; charset=utf-8",
     "controller.js": "text/javascript; charset=utf-8",
@@ -35,6 +46,7 @@ CONTROLLER_ASSETS = {
     "sniffer.html": "text/html; charset=utf-8",
     "sniffer.js": "text/javascript; charset=utf-8",
     "sniffer.css": "text/css; charset=utf-8",
+    "kontrolrum-sso.js": "text/javascript; charset=utf-8",
 }
 
 
@@ -66,7 +78,23 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
         self.ha_last_ok: float | None = None
         self.ha_last_rejected: float | None = None
         self.ha_rejected_ip: str | None = None
+        self.kontrolrum_sso = self._create_kontrolrum_sso()
+        self.auth.session_guard = self._kontrolrum_session_problem
         self.alarm_mailer = AlarmMailer(self.mail, lambda: {**controller_runtime.snapshot(), **self.ha_link()}, events=self.events)
+
+    def _create_kontrolrum_sso(self):
+        if KontrolrumSso is None:
+            return None
+        try:
+            return KontrolrumSso(self.auth.path.with_name("kontrolrum-sso.json"), "dantherm")
+        except Exception as error:  # noqa: BLE001 - never stop the gateway for this
+            LOG.warning("Kontrolrum sign-in is unavailable: %s", type(error).__name__)
+            return None
+
+    def _kontrolrum_session_problem(self, binding, client_ip, username) -> str:
+        if self.kontrolrum_sso is None:
+            return "sso_disabled"
+        return self.kontrolrum_sso.session_problem(binding, client_ip, username)
 
     def ha_link(self, now: float | None = None) -> dict:
         """Whether Home Assistant is talking to the controller API right now."""
@@ -113,7 +141,7 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
 
         class Handler(BaseHTTPRequestHandler):
             def _session(self):
-                return dashboard.auth.authenticate_cookie(self.headers.get("Cookie", ""))
+                return dashboard.auth.authenticate_cookie(self.headers.get("Cookie", ""), self.client_address[0])
 
             def _require_auth(self):
                 session = self._session()
@@ -179,6 +207,12 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                     # Read by the local 1-Wire service so its flow/return follow the WebUI.
                     self._json(dashboard.controller_runtime.onewire.water_assignment())
                     return
+                if parsed.path == "/api/auth/kontrolrum/status":
+                    if self._require("users") is None:
+                        return
+                    if dashboard.kontrolrum_sso is None:
+                        return self._json_error(503, "Login fra Kontrolrum er ikke tilgængeligt")
+                    return self._json(dashboard.kontrolrum_sso.status())
                 if parsed.path == "/api/auth/status":
                     session = self._session()
                     role = session.get("role", "user") if session else None
@@ -222,6 +256,9 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                 elif parsed.path in ("/controller", "/controller.html"):
                     if self._require("configure") is not None:
                         self._file(dashboard.web_root / "controller.html", "text/html; charset=utf-8")
+                elif parsed.path == "/kontrolrum-sso":
+                    if self._require("users") is not None:
+                        self._file(dashboard.web_root / "kontrolrum-sso.html", "text/html; charset=utf-8")
                 elif parsed.path == "/sniffer":
                     # Sniffer UI (technicians and administrators)
                     if self._require("diagnostics") is not None:
@@ -375,6 +412,9 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                     dashboard.events.add("login", "Logget ind", user=str(data["username"])[:64], ip=ip)
                     return self._login_reply(sid, csrf)
 
+                if self.path == "/api/auth/kontrolrum":
+                    return self._kontrolrum_login()
+
                 if self.path == "/api/auth/forgot":
                     data = self._read_json() or {}
                     key = f"forgot:{self.client_address[0]}"
@@ -429,6 +469,10 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                     return self._json_error(403, "Ugyldig sikkerhedstoken")
                 if self.path == "/api/auth/logout":
                     dashboard.auth.logout(self.headers.get("Cookie", "")); return self._json({"ok": True})
+                if self.path.startswith("/api/auth/kontrolrum/"):
+                    if not self._need(session, "users"):
+                        return
+                    return self._kontrolrum_admin(session, self._read_json() or {})
                 if self.path == "/api/auth/settings":
                     data = self._read_json() or {}
                     enabled = data.get("enabled") if can(session.get("role"), "login_switch") else None
@@ -605,6 +649,70 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                     LOG.exception("Could not save the WebUI user store")
                     return self._json_error(500, "Kunne ikke gemme brugerne")
                 return self.send_error(404)
+
+            def _kontrolrum_login(self):
+                """POST /api/auth/kontrolrum: sign-in from Kontrolrum. Whatever
+                goes wrong in here ends with this one request being refused."""
+                sso = dashboard.kontrolrum_sso
+                if sso is None:
+                    return self._json_error(404, "not_found")
+                ip = self.client_address[0]
+                try:
+                    refusal = sso.gate(ip)
+                    if refusal is not None:
+                        return self._json_error(refusal.status, refusal.error)
+                    try:
+                        length = int(self.headers.get("Content-Length", "0"))
+                    except ValueError:
+                        length = -1
+                    raw = self.rfile.read(length) if 0 < length <= KONTROLRUM_MAX_BODY else b""
+                    outcome = sso.login(ip, raw, dashboard.auth.active_username)
+                    if not outcome.ok:
+                        dashboard.events.add("login_failed", f"Afvist login fra Kontrolrum ({outcome.error})", ip=ip)
+                        return self._json_error(outcome.status, outcome.error)
+                    sid, csrf = dashboard.auth.session_kontrolrum(outcome.user, outcome.binding)
+                    dashboard.auth.record_login(outcome.user)
+                    dashboard.events.add("login", "Logget ind fra Kontrolrum", user=outcome.user[:64], ip=ip)
+                except Exception as error:  # noqa: BLE001 - see the docstring
+                    LOG.warning("Kontrolrum sign-in failed: %s", type(error).__name__)
+                    return self._json_error(503, "unavailable")
+                return self._login_reply(sid, csrf)
+
+            def _kontrolrum_admin(self, session, data):
+                sso = dashboard.kontrolrum_sso
+                if sso is None:
+                    return self._json_error(503, "Login fra Kontrolrum er ikke tilgængeligt")
+                who = session.get("username")
+                action = self.path.rsplit("/", 1)[-1]
+                try:
+                    if action == "key":
+                        key = sso.create_key(who)
+                        dashboard.events.add("token_generated", "Ny SSO-nøgle til Kontrolrum", user=who)
+                        return self._json({"key": key, "status": sso.status()})
+                    if action == "off":
+                        if sso.disable():
+                            dashboard.events.add("user_changed", "Login fra Kontrolrum slået fra", user=who)
+                    elif action == "peers":
+                        good, bad = parse_peers(str(data.get("ips", ""))[:400])
+                        if bad:
+                            return self._json_error(400, "Kunne ikke læse: " + ", ".join(bad[:3]))
+                        sso.set_peers(good)
+                        dashboard.events.add("user_changed", "Kontrolrums adresse ændret: " + (", ".join(good) or "ingen"), user=who)
+                    elif action == "user":
+                        name = str(data.get("username", ""))[:64]
+                        if not dashboard.auth.user(name):
+                            return self._json_error(404, "Brugeren findes ikke")
+                        allowed = data.get("allowed") is True
+                        if sso.set_user(name, allowed):
+                            dashboard.events.add("user_changed", f"{name} {'må' if allowed else 'må ikke'} logges ind fra Kontrolrum", user=who)
+                    else:
+                        return self.send_error(404)
+                except ValueError as error:
+                    return self._json_error(400, str(error))
+                except OSError:
+                    LOG.warning("Could not save the Kontrolrum sign-in settings")
+                    return self._json_error(500, "Kunne ikke gemme indstillingen")
+                return self._json({"status": sso.status()})
 
             def _login_reply(self, sid, csrf):
                 max_age = dashboard.auth.session_max_age(sid)

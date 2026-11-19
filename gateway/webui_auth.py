@@ -45,6 +45,9 @@ class AuthManager:
         self.sessions = {}
         self.failures = {}
         self.reset_tokens = {}
+        # Set by the web server: decides whether a Kontrolrum session may be
+        # used by this request (see kontrolrum_sso.KontrolrumSso.session_problem).
+        self.session_guard = None
         self._load_sessions()
 
     # ------------------------------------------------------------------ store
@@ -186,6 +189,11 @@ class AuthManager:
     def role(self, username):
         user = self._find(self.load(), username)
         return user.get("role", "user") if user else None
+
+    def active_username(self, username):
+        """The account's real name when it exists and may log in, else None."""
+        user = self._find(self.load(), username)
+        return user["username"] if self._active(user) else None
 
     def list_users(self):
         data = self.load() or {"users": []}
@@ -422,11 +430,49 @@ class AuthManager:
             self._save_sessions()
         return sid, csrf
 
+    def session_kontrolrum(self, username, binding):
+        """A session from Kontrolrum single sign-on. It is bound to Kontrolrum's
+        address and key (binding), is never written to disk and ends with a
+        restart; Kontrolrum simply signs in again."""
+        user = self._find(self.load(), username)
+        if not self._active(user):
+            raise KeyError("Brugeren findes ikke")
+        now = time.time()
+        sid = secrets.token_urlsafe(32)
+        csrf = secrets.token_urlsafe(24)
+        with self.lock:
+            # Kontrolrum signs in again whenever its session is gone, so old
+            # ones are cleared here to keep the memory use flat.
+            live = {key: value for key, value in self.sessions.items() if float(value.get("expires", 0)) > now}
+            bound = sorted((key for key, value in live.items() if value.get("kr") is not None),
+                           key=lambda key: live[key]["expires"])
+            for key in bound[:-7]:
+                live.pop(key, None)
+            live[sid] = {
+                "username": user["username"],
+                "csrf": csrf,
+                "expires": now + SHORT_SESSION_SECONDS,
+                "remember": False,
+                "kr": dict(binding),
+            }
+            self.sessions = live
+        return sid, csrf
+
+    def _kontrolrum_session_problem(self, session, client_ip):
+        """'' when this request may use the Kontrolrum session, else why not."""
+        guard = self.session_guard
+        if guard is None or client_ip is None:
+            return "peer_changed"
+        try:
+            return guard(session.get("kr"), client_ip, session.get("username"))
+        except Exception:  # A fault here must refuse the session, nothing more.
+            return "peer_changed"
+
     def session_max_age(self, sid):
         session = self.sessions.get(sid) or {}
         return REMEMBER_SESSION_SECONDS if session.get("remember") else SHORT_SESSION_SECONDS
 
-    def authenticate_cookie(self, header):
+    def authenticate_cookie(self, header, client_ip=None):
         data = self.load()
         if not data:
             return None
@@ -443,6 +489,14 @@ class AuthManager:
             self.sessions.pop(sid, None)
             self._save_sessions()
             return None
+        if session.get("kr") is not None:
+            problem = self._kontrolrum_session_problem(session, client_ip)
+            if problem:
+                # A copied cookie from elsewhere does not end Kontrolrum's own
+                # session; a new key, SSO off or a removed tick does.
+                if problem != "peer_changed":
+                    self.sessions.pop(sid, None)
+                return None
         # Role, deletion, disabling and expiry take effect immediately.
         user = self._find(data, session.get("username"))
         if not self._active(user):
