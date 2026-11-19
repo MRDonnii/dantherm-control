@@ -41,3 +41,37 @@ def test_afterheat_block_encodes_negative_temperatures_as_words():
     source = (ROOT / "gateway/dantherm_gateway.py").read_text()
     assert 'words.append(round(float(self.state[key]) * 100) & 0xFFFF)' in source
     assert decode_temperature(round(-0.35 * 100) & 0xFFFF) == pytest.approx(-0.35)
+
+
+def test_passive_windows_let_outdoor_and_exhaust_go_below_zero():
+    t = dantherm_gateway.temperature_in
+    windows = dantherm_gateway.PASSIVE_180_WINDOWS
+    assert t(0xFE0C, *windows["outdoor_temp"]) == pytest.approx(-5.0)
+    assert t(0xFF9C, *windows["exhaust_temp"]) == pytest.approx(-1.0)
+    assert t(300, *windows["extract_temp"]) is None      # 3 °C indoor air is a misread frame
+    assert t(0xFF9C, *dantherm_gateway.FROST_SENSOR_WINDOW) == pytest.approx(-1.0)
+    assert t(0x8000, *dantherm_gateway.T2AH_WINDOW) is None
+    source = (ROOT / "gateway/dantherm_gateway.py").read_text()
+    assert "raw / 100.0" not in source and "] / 100.0" not in source
+
+
+class _FakeGateway:
+    def __init__(self, written):
+        self.state = {}
+        self.written_fan_pair = written
+
+    def publish(self, key, value, **_kwargs):
+        self.state[key] = value
+
+
+def test_unit_frost_protection_is_reported_not_an_error():
+    update = dantherm_gateway.Gateway.update_unit_frost_protection
+    gw = _FakeGateway((70, 35))
+    assert update(gw, (70, 16)) is True
+    assert gw.state["unit_frost_protection"] is True and gw.state["unit_frost_supply_percent"] == 16
+    assert update(gw, (70, 35)) is False
+    assert gw.state["unit_frost_protection"] is False and gw.state["unit_frost_supply_percent"] is None
+    # Anything else than a lowered supply fan is still a real mismatch.
+    assert update(gw, (40, 35)) is False
+    assert update(gw, (70, 50)) is False
+    assert update(gw, None) is False

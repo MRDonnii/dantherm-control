@@ -110,6 +110,28 @@ def decode_temperature(raw: int) -> float | None:
     return value if -35 <= value <= 100 else None
 
 
+def temperature_in(raw: int, low: float, high: float) -> float | None:
+    """Signed decode plus a plausibility window for one particular sensor."""
+    value = decode_temperature(raw)
+    return value if value is not None and low <= value <= high else None
+
+
+# Plausible windows for the registers whose frames can be misidentified on the
+# passive bus. Outdoor air (T1) and exhaust (T4) really go below zero; indoor
+# air and the air after the coil do not drop below +5 °C in normal running, but
+# the after-coil air and the coil's water-side frost sensor are kept visible
+# down to −35 °C, because a low value there is exactly the frost danger.
+PASSIVE_180_WINDOWS = {
+    "outdoor_temp": (-35.0, 40.0),
+    "supply_temp": (5.0, 40.0),
+    "extract_temp": (5.0, 40.0),
+    "exhaust_temp": (-35.0, 40.0),
+    "hrc2_t5_temperature": (5.0, 40.0),
+}
+T2AH_WINDOW = (-35.0, 40.0)
+FROST_SENSOR_WINDOW = (-35.0, 60.0)
+
+
 def crc16(data: bytes) -> int:
     crc = 0xFFFF
     for byte in data:
@@ -766,8 +788,9 @@ class Gateway:
                 elif action == "fan_pair":
                     extract, supply = value
                     self.write_pair(ser, int(extract), int(supply))
+                    self.written_fan_pair = (int(extract), int(supply))
                     actual = self.read_fan_pair(ser)
-                    if actual != (int(extract), int(supply)):
+                    if actual != (int(extract), int(supply)) and not self.update_unit_frost_protection(actual):
                         raise RuntimeError(f"fan readback mismatch: {actual}")
                     self.publish("fan_extract_percent", actual[0])
                     self.publish("fan_supply_percent", actual[1])
@@ -1386,9 +1409,10 @@ class Gateway:
                     ),
                     values,
                 ):
-                    if 500 <= raw <= 4000:
+                    value = temperature_in(raw, *PASSIVE_180_WINDOWS[key])
+                    if value is not None:
                         self.publish_temperature(
-                            key, raw / 100.0,
+                            key, value,
                             source="passive_hcp4_hac1_register_180",
                         )
                 self.publish_temperature(
@@ -1459,14 +1483,14 @@ class Gateway:
                 # manuelle test (2026-08-31, aabn/luk/setpunkt-test). Det er
                 # IKKE en glidende positionsvaerdi -- kun to stabile tilstande
                 # er nogensinde set trods gentagne delvise fysiske aabninger.
-                if 500 <= values[0] <= 4000:
+                if temperature_in(values[0], *T2AH_WINDOW) is not None:
                     self.publish_temperature(
-                        "heating_coil_after_temperature", values[0] / 100.0,
+                        "heating_coil_after_temperature", temperature_in(values[0], *T2AH_WINDOW),
                         source="passive_hcp4_hac1_register_205",
                     )
-                if 500 <= values[1] <= 6000:
+                if temperature_in(values[1], *FROST_SENSOR_WINDOW) is not None:
                     self.publish_temperature(
-                        "heating_coil_frost_temperature", values[1] / 100.0,
+                        "heating_coil_frost_temperature", temperature_in(values[1], *FROST_SENSOR_WINDOW),
                         source="passive_hcp4_hac1_register_206",
                     )
                 self.publish(
@@ -1720,6 +1744,30 @@ class Gateway:
         time.sleep(0.035)
         if ser.in_waiting:
             self.serial_read(ser, ser.in_waiting)
+
+    def update_unit_frost_protection(self, actual: tuple[int, int] | None) -> bool:
+        """Recognise the unit's own frost protection and report it, not fight it.
+
+        When the exchanger risks icing, the HCH5 lowers the supply fan below the
+        value the Pi wrote and keeps the extract fan. That is the unit defrosting,
+        not a failed write: the Pi shows it and leaves the unit alone.
+        Returns True while that is what the readback shows.
+        """
+        written = getattr(self, "written_fan_pair", None)
+        active = (
+            actual is not None and written is not None
+            and actual[0] == written[0] and actual[1] < written[1]
+        )
+        was_active = self.state.get("unit_frost_protection") is True
+        if active != was_active:
+            if active:
+                LOG.info("The unit's frost protection lowers the supply fan to %s %% (Pi wants %s %%)",
+                         actual[1], written[1])
+            else:
+                LOG.info("The unit's frost protection has ended (supply fan back at the Pi's value)")
+        self.publish("unit_frost_protection", active)
+        self.publish("unit_frost_supply_percent", actual[1] if active else None)
+        return active
 
     def write_pair(self, ser: serial.Serial, extract: int, supply: int):
         # Samme rækkefølge som observeret fra HAC1.
@@ -2019,6 +2067,7 @@ class Gateway:
         if fan_pair is not None:
             self.publish("fan_extract_percent", fan_pair[0])
             self.publish("fan_supply_percent", fan_pair[1])
+            self.update_unit_frost_protection(fan_pair)
         if temperatures is not None:
             for legacy_key, canonical_key, raw in zip(
                 ("outdoor_temp", "supply_temp", "extract_temp", "exhaust_temp"),
@@ -2063,10 +2112,12 @@ class Gateway:
             # Register 205 is T2AH: air temperature after the HAC1 heating
             # coil. Ordinary unit T2 (supply_temp) is the temperature before
             # the coil, so together they form the valid air-side delta.
-            if len(hac205) == 5 and 500 <= hac205[0] <= 4000:
-                self.publish_temperature("heating_coil_after_temperature", hac205[0] / 100.0)
-            if len(hac205) == 5 and 500 <= hac205[1] <= 6000:
-                self.publish_temperature("heating_coil_frost_temperature", hac205[1] / 100.0)
+            t2ah = temperature_in(hac205[0], *T2AH_WINDOW) if len(hac205) == 5 else None
+            frost = temperature_in(hac205[1], *FROST_SENSOR_WINDOW) if len(hac205) == 5 else None
+            if t2ah is not None:
+                self.publish_temperature("heating_coil_after_temperature", t2ah)
+            if frost is not None:
+                self.publish_temperature("heating_coil_frost_temperature", frost)
             # Same verified register-209 semantics as decode(): 0 is inactive
             # and 16 is active when words 207/208 contain the HAC1 markers.
             if len(hac205) == 5 and hac205[2:4] == [0x8000, 0x8000]:
@@ -2118,9 +2169,9 @@ class Gateway:
                 value.to_bytes(2, "big") for value in values
             )
             self.tcp_mirror.broadcast(body + crc16(body).to_bytes(2, "little"))
-        raw = values[0]
-        if 500 <= raw <= 4000:
-            self.publish_temperature("hrc2_t5_temperature", raw / 100.0)
+        value = temperature_in(values[0], 5.0, 40.0)
+        if value is not None:
+            self.publish_temperature("hrc2_t5_temperature", value)
 
     def poll_temperature_snapshot(self, ser: serial.Serial):
         """Read all seven temperatures in one FC03 transaction, without writes."""
