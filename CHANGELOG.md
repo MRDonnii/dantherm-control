@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.2
+
+- **Fix: the Pi could not send minus temperatures to HAC1.** The T1..T4 refresh of the after-heat module failed with
+  "can't convert negative int to unsigned" as soon as it froze. HAC1 then kept 0.0 °C as the outdoor temperature, and the
+  outdoor reading flickered between the real value and 0.0. The words are now sent as signed 16-bit values.
+
 ## 1.7.1
 
 - **Fix: minus temperatures on the unit's own sensors.** In the active (FC04) and passive readings, the outdoor, supply,

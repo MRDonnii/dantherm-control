@@ -1796,7 +1796,8 @@ class Gateway:
         for key in keys:
             if not valid(key):
                 raise RuntimeError(f"afterheat temperature unavailable: {key}")
-            words.append(round(float(self.state[key]) * 100))
+            # Signed hundredths as a 16-bit word: -0.35 °C is 0xFFDD (two's complement).
+            words.append(round(float(self.state[key]) * 100) & 0xFFFF)
         return [*words, current[4]]
 
     def write_afterheat_temperature_block(self, ser: serial.Serial) -> list[int]:
