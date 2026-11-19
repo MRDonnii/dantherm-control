@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.7.3
+
+- **The unit's own frost protection is shown, not treated as an error.** When the exchanger risks icing, the HCH5 lowers
+  the supply fan below the value the Pi wrote. Before, the Pi logged "fan readback mismatch" and retried. Now it reports
+  `actual_unit_frost_protection` and `actual_unit_frost_supply_percent` in the controller state, logs the start and the
+  end once each, and leaves the unit to defrost. Any other readback difference is still an error.
+- **Every temperature is read with a sign.** The last readings that only accepted +5..40 °C now use the shared signed
+  decoder with a window per sensor:
+  - Outdoor air (T1) and exhaust (T4) no longer disappear below +5 °C when the HCP4 panel is master.
+  - The air after the coil (T2AH) and the coil's water-side frost sensor stay visible down to −35 °C, because a low value
+    there is exactly the frost danger.
+
 ## 1.7.2
 
 - **Fix: the Pi could not send minus temperatures to HAC1.** The T1..T4 refresh of the after-heat module failed with
