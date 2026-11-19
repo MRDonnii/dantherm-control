@@ -20,7 +20,7 @@ try:
 except ModuleNotFoundError:
     _sensor_spec=importlib.util.spec_from_file_location("sensor_freshness",Path(__file__).with_name("sensor_freshness.py")); _sensor_module=importlib.util.module_from_spec(_sensor_spec); _sensor_spec.loader.exec_module(_sensor_module); fresh_sensor_value=_sensor_module.fresh_sensor_value; hide_stale_sensor_values=_sensor_module.hide_stale_sensor_values
 LOGGER = logging.getLogger("passivelink-dashboard")
-ASSET_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png"}
+ASSET_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2"}
 # The 1-Wire service caches for 10 s as well; refreshing more often gains nothing.
 AUXILIARY_REFRESH_SECONDS = 5
 PREHEATER_STALE_SECONDS = 60

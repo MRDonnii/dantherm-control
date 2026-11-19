@@ -1,0 +1,328 @@
+/* Kopieret 1:1 fra Faelles-design/skitser/assets/fd-shared.css (kun skrifternes sti er ændret).
+   Fælles designsystem for Spamfilter, Kiosk Warden og Dantherm – Fleetdecks komponenter 1:1 i ren CSS.
+   Kilder (fd-release/web):
+   - src/design/fleetdeck.css   flader (--fd-*), sidemenu, nøgletal, flådekort, topmenu, fanebjælke
+   - src/design/skin.tsx        tema: primærfarve fleet/indigo, primaryShade {light 6, dark 5}, radius, Inter,
+                                Paper/Card withBorder, Button radius (command sm / aurora md), Badge radius sm
+   - src/mobile.css             mobilregler (tabeller som kort, 36 px knapper, 16 px inputs)
+   - node_modules/@mantine/core 9.8 styles/*.css + defaultCssVariablesResolver (udregnet med scripts/mantine-vars.js):
+                                Button, Badge, Paper, Alert, SegmentedControl, Tabs, Table, Input, Switch, Checkbox,
+                                Menu, ActionIcon, ThemeIcon, Kbd og farvevariablerne for lyst/mørkt tema.
+   Ingen farvede venstrekanter: Fleetdeck har ingen. */
+@font-face { font-family: "Inter Variable"; font-weight: 100 900; font-display: swap; src: url(./fonts/inter-latin-wght-normal.woff2) format("woff2"); }
+@font-face { font-family: "Inter Variable"; font-weight: 100 900; font-display: swap; src: url(./fonts/inter-latin-ext-wght-normal.woff2) format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+
+/* ---------- Tokens ---------- */
+:root {
+  --font: "Inter Variable", Inter, "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  /* fleetdeck.css */
+  --fd-logo-a: #3b82f6; --fd-logo-b: #1d4ed8;
+  --fd-ok: #16a34a; --fd-warn: #d97706; --fd-bad: #dc2626; --fd-off: #a1a1aa;
+  /* skin.tsx: command-radius og Mantine-skyggen xs */
+  --r-xs: 4px; --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-xl: 16px;
+  --r-default: var(--r-md); --r-btn: var(--r-sm); --r-badge: var(--r-sm);
+  --shadow-xs: 0 1px 3px rgba(0,0,0,.05), 0 1px 2px rgba(0,0,0,.1);
+  --shadow-md: 0 1px 3px rgba(0,0,0,.05), rgba(0,0,0,.05) 0 20px 25px -5px, rgba(0,0,0,.04) 0 10px 10px -5px;
+}
+[data-skin='aurora'] { --fd-logo-a: #22d3ee; --fd-logo-b: #6366f1;
+  --r-xs: 6px; --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-xl: 22px; --r-default: var(--r-lg); --r-btn: var(--r-md); }
+
+/* Mantine, lyst tema (defaultCssVariablesResolver) */
+[data-theme='light'] { color-scheme: light;
+  --text: #000; --bright: #000; --dimmed: #868e96; --placeholder: #adb5bd;
+  --default: #fff; --default-hover: #f8f9fa; --default-color: #000; --default-border: #ced4da;
+  --input: #fff; --input-bd: #ced4da; --table-hover: #f1f3f5; --tab-border: #dee2e6; --tab-hover: #f8f9fa;
+  --sc-root: #f1f3f5; --sc-ind: #fff; --sc-ind-shadow: var(--shadow-xs); --sc-label: #495057; --sc-active: #000;
+  --switch-off: #e9ecef; --switch-off-bd: #dee2e6; --menu-bd: #e9ecef; --menu-hover: #f1f3f5;
+  --kbd-bg: #f8f9fa; --kbd-bd: #dee2e6; --kbd-c: #495057;
+  /* light-varianter: baggrund = farve-1, tekst = farve-9 */
+  --gray-l: #f1f3f5; --gray-lc: #212529; --red-l: #ffe3e3; --red-lc: #c92a2a; --orange-l: #ffe8cc; --orange-lc: #d9480f;
+  --yellow-l: #fff3bf; --yellow-lc: #e67700; --green-l: #d3f9d8; --green-lc: #2b8a3e; --teal-l: #c3fae8; --teal-lc: #087f5b;
+  --blue-l: #d0ebff; --blue-lc: #1864ab; --grape-l: #f3d9fa; --grape-lc: #862e9c;
+  /* Text c="farve" = farve-6 */
+  --red-t: #fa5252; --orange-t: #fd7e14; --yellow-t: #fab005; --green-t: #40c057; --teal-t: #12b886; --blue-t: #228be6; --grape-t: #be4bdb;
+  --red-f: #fa5252; --red-fh: #f03e3e;
+}
+/* Mantine, mørkt tema */
+[data-theme='dark'] { color-scheme: dark;
+  --text: #c9c9c9; --bright: #fff; --dimmed: #828282; --placeholder: #696969;
+  --default-hover: #3b3b3b; --default-color: #fff;
+  --table-hover: #3b3b3b; --tab-hover: var(--default);
+  --sc-root: #1f1f1f; --sc-ind: #3b3b3b; --sc-ind-shadow: none; --sc-label: #b8b8b8; --sc-active: #fff;
+  --switch-off: #3b3b3b; --menu-hover: #3b3b3b;
+  --kbd-c: #c9c9c9;
+  --fd-ok: #22c55e; --fd-warn: #f59e0b; --fd-bad: #ef4444; --fd-off: #52525b;
+  --gray-l: rgb(17,19,21); --gray-lc: #f8f9fa; --red-l: rgb(101,21,21); --red-lc: #fff5f5; --orange-l: rgb(109,36,8); --orange-lc: #fff4e6;
+  --yellow-l: rgb(115,60,0); --yellow-lc: #fff9db; --green-l: rgb(22,69,31); --green-lc: #ebfbee; --teal-l: rgb(4,64,46); --teal-lc: #e6fcf5;
+  --blue-l: rgb(12,50,86); --blue-lc: #e7f5ff; --grape-l: rgb(67,23,78); --grape-lc: #f8f0fc;
+  /* Text c="farve" = farve-4 */
+  --red-t: #ff8787; --orange-t: #ffa94d; --yellow-t: #ffd43b; --green-t: #69db7c; --teal-t: #38d9a9; --blue-t: #4dabf7; --grape-t: #da77f2;
+  --red-f: #ff6b6b; --red-fh: #fa5252;
+}
+/* Command (fleetdeck.css + skin.tsx: primær fleet) */
+[data-theme='light'][data-skin='command'] { --body: #f7f7f8; --fd-side: #fbfbfc; --fd-card: #ffffff; --fd-border: #e4e4e7; --fd-chip: #f4f4f5; --fd-shadow: 0 1px 2px rgba(0,0,0,.04);
+  --primary: #2563eb; --primary-hover: #1854d1; --primary-light: #d2e0ff; --primary-light-hover: #a3bffa; --primary-lc: #003fa6; }
+[data-theme='dark'][data-skin='command'] { --body: #0b0b0d; --fd-side: #0f0f12; --fd-card: #141417; --fd-border: #232328; --fd-chip: #1c1c21; --fd-shadow: none;
+  --default: #1c1c21; --default-border: #2c2c33; --input: #1c1c21; --input-bd: #2c2c33; --tab-border: #2c2c33; --switch-off-bd: #2c2c33; --menu-bd: #2c2c33; --kbd-bg: #1c1c21; --kbd-bd: #2c2c33;
+  --primary: #3270f0; --primary-hover: #2563eb; --primary-light: rgb(0,32,83); --primary-light-hover: rgb(0,44,116); --primary-lc: #e8f1ff; }
+/* Aurora (fleetdeck.css + skin.tsx: primær indigo) */
+[data-theme='light'][data-skin='aurora'] { --body: #f3f5fb; --fd-side: rgba(255,255,255,.72); --fd-card: rgba(255,255,255,.8); --fd-border: rgba(15,23,42,.08); --fd-chip: rgba(15,23,42,.05);
+  --fd-shadow: 0 8px 30px rgba(30,41,99,.08);
+  --primary: #5459ee; --primary-hover: #4549d4; --primary-light: #dde0ff; --primary-light-hover: #b9bdfb; --primary-lc: #3036a8; }
+[data-theme='dark'][data-skin='aurora'] { --body: #070b16; --fd-side: rgba(15,20,36,.72); --fd-card: rgba(22,28,48,.74); --fd-border: rgba(255,255,255,.07); --fd-chip: rgba(255,255,255,.05);
+  --fd-shadow: 0 10px 40px rgba(0,0,0,.35);
+  --default: #182040; --default-border: #2a3358; --input: #182040; --input-bd: #2a3358; --tab-border: #2a3358; --switch-off-bd: #2a3358; --menu-bd: #2a3358; --kbd-bg: #182040; --kbd-bd: #2a3358;
+  --primary: #5f63ee; --primary-hover: #5459ee; --primary-light: rgb(24,27,84); --primary-light-hover: rgb(34,38,118); --primary-lc: #eef0ff; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; -webkit-text-size-adjust: 100%; }
+body { position: relative; min-height: 100vh; font-family: var(--font); font-size: 14px; line-height: 1.55; color: var(--text); background: var(--body); }
+[data-skin='aurora'] { background: var(--body); }
+[data-skin='aurora'] body {
+  background: radial-gradient(900px 520px at 88% -8%, rgba(56,189,248,.16), transparent 60%),
+              radial-gradient(820px 520px at 8% 108%, rgba(129,140,248,.18), transparent 60%), var(--body); }
+a { color: var(--primary); text-decoration: none; }
+svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.tabnum { font-variant-numeric: tabular-nums; }
+.dim { color: var(--dimmed); }
+.xs { font-size: 12px; } .sm { font-size: 14px; }
+
+/* ---------- Skal (AppShell: header 60, navbar 236, padding lg) ---------- */
+.fd-header { position: fixed; top: 0; left: 0; right: 0; height: 60px; z-index: 100; display: flex; align-items: center; gap: 12px; padding: 0 20px;
+  background: color-mix(in srgb, var(--body) 82%, transparent); border-bottom: 1px solid var(--fd-border); backdrop-filter: blur(14px); }
+.fd-navbar { position: absolute; top: 60px; bottom: 0; left: 0; width: 236px; z-index: 90; display: flex; flex-direction: column; padding: 12px;
+  background: var(--fd-side); border-right: 1px solid var(--fd-border); backdrop-filter: blur(20px); }
+.fd-navbar .grow { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.fd-main { padding: 80px 20px 32px 256px; min-height: 100vh; }
+[data-nav='top'] .fd-navbar { display: none; }
+[data-nav='top'] .fd-main { padding-left: 20px; }
+.fd-brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: -.02em; color: var(--bright); }
+.fd-logo { border-radius: 9px; display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, var(--fd-logo-a), var(--fd-logo-b)); flex: none; }
+.fd-logo svg { stroke: #fff; fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+/* Søgeknappen i topbjælken (App.tsx, inline-stil 1:1) */
+.fd-search { flex: 0 1 380px; height: 36px; border: 1px solid var(--fd-border); background: var(--fd-card); border-radius: 9px; padding: 0 12px;
+  display: flex; align-items: center; gap: 8px; color: var(--dimmed); font-size: 13px; }
+/* Kbd size xs */
+kbd, .fd-search kbd { margin-left: auto; font: 700 10px/1.55 var(--mono); border: 1px solid var(--kbd-bd); border-bottom-width: 3px; border-radius: var(--r-sm); padding: .12em .45em;
+  background: var(--kbd-bg); color: var(--kbd-c); }
+.spacer { flex: 1; }
+/* ActionIcon variant default size lg (34 px) */
+.fd-icon-btn { width: 34px; height: 34px; border-radius: var(--r-default); border: 1px solid var(--default-border); background: var(--default); color: var(--default-color);
+  display: grid; place-items: center; flex: none; }
+.fd-icon-btn svg.i { width: 17px; height: 17px; }
+/* Avatar size 34, radius xl, color initials */
+.fd-avatar { width: 34px; height: 34px; border-radius: 1000px; display: grid; place-items: center; font-weight: 700; font-size: 13px; flex: none;
+  color: var(--teal-lc); background: var(--teal-l); }
+
+/* Sidemenu (fleetdeck.css .fd-nav, .fd-count, .fd-group) */
+.fd-nav { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--dimmed); font-size: 13.5px; font-weight: 500; }
+.fd-nav svg.i { width: 18px; height: 18px; stroke-width: 1.6; }
+.fd-nav:hover { background: var(--fd-chip); color: var(--text); }
+.fd-nav[data-active] { background: var(--primary-light); color: var(--text); font-weight: 600; }
+[data-skin='aurora'] .fd-nav[data-active] { background: linear-gradient(90deg, var(--primary-light), transparent); }
+.fd-nav[data-active] svg { color: var(--primary); }
+.fd-count { margin-left: auto; font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--fd-chip); font-weight: 600; color: var(--text); }
+.fd-count[data-red] { background: var(--fd-bad); color: #fff; }
+.fd-group { font-size: 11px; font-weight: 600; color: var(--dimmed); text-transform: uppercase; letter-spacing: .06em; padding: 14px 10px 6px; opacity: .8; }
+.fd-foot { font-size: 12px; color: var(--dimmed); padding: 10px; }
+
+/* Topmenu (fleetdeck.css .fd-top på Button variant subtle color gray size compact-md) */
+.fd-topnav { display: flex; gap: 2px; align-items: center; }
+.fd-top { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: var(--r-btn); font-weight: 500; font-size: 16px; color: var(--dimmed); white-space: nowrap; line-height: 1; }
+.fd-top[data-active] { color: var(--text); background: var(--primary-light); font-weight: 600; }
+.fd-top svg.i { width: 14px; height: 14px; }
+/* Menu / Popover-dropdown */
+.fd-drop { position: absolute; top: 40px; min-width: 220px; padding: 4px; border-radius: var(--r-default); background: var(--default); border: 1px solid var(--menu-bd);
+  box-shadow: var(--shadow-md); z-index: 120; }
+.fd-drop a { display: flex; align-items: center; gap: 10px; padding: 6.67px 12px; border-radius: var(--r-default); color: var(--text); font-size: 14px; }
+.fd-drop a[data-active] { background: var(--menu-hover); }
+.fd-drop .lbl { font-size: 12px; color: var(--dimmed); font-weight: 600; padding: 5px 12px; }
+
+/* ---------- Byggeklodser ---------- */
+/* Title order 2, fw 700, letter-spacing -0.02em; undertitel Text c=dimmed size=sm */
+.fd-title { font-size: 26px; font-weight: 700; letter-spacing: -.02em; margin: 0; line-height: 1.35; color: var(--bright); }
+.fd-sub { color: var(--dimmed); font-size: 14px; margin-top: 2px; }
+.fd-head { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+.stack { display: flex; flex-direction: column; gap: 20px; }
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.grid { display: grid; gap: 16px; }
+.g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); } .g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); } .g6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.span-all { grid-column: 1 / -1; }
+.fd-dash-main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; }
+
+/* Paper withBorder p="md" (fleetdeck.css: --fd-card, --fd-border, --fd-shadow; radius = theme default) */
+.paper { background: var(--fd-card); border: 1px solid var(--fd-border); border-radius: var(--r-default); box-shadow: var(--fd-shadow); padding: 16px; min-width: 0; }
+[data-skin='aurora'] .paper { backdrop-filter: blur(16px); }
+.paper.flush { padding: 0; overflow: hidden; }
+/* Kortets hoved: Group justify=space-between mb=sm + Text fw=650 */
+.paper-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.paper.flush .paper-head { padding: 16px 16px 0; }
+.paper-head h3 { margin: 0; font-size: 16px; font-weight: 650; color: var(--bright); }
+.paper-head .more { margin-left: auto; }
+
+/* Nøgletal (Dashboard.tsx Kpi + .fd-kpi-hero) */
+.kpi .lbl { font-size: 12px; font-weight: 600; color: var(--dimmed); display: flex; align-items: center; gap: 6px; }
+.kpi .lbl svg.i { width: 14px; height: 14px; }
+.kpi .val { font-size: 28px; font-weight: 700; line-height: 1.2; margin-top: 4px; font-variant-numeric: tabular-nums; color: var(--text); }
+.kpi .val small { font-size: 14px; font-weight: 500; color: var(--dimmed); }
+.kpi .sub { font-size: 12px; color: var(--dimmed); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.v-red { color: var(--red-t) !important; } .v-orange { color: var(--orange-t) !important; } .v-yellow { color: var(--yellow-t) !important; }
+.v-teal { color: var(--teal-t) !important; } .v-blue { color: var(--blue-t) !important; } .v-grape { color: var(--grape-t) !important; } .v-green { color: var(--green-t) !important; }
+.fd-kpi-hero { background: linear-gradient(135deg, var(--fd-logo-a), var(--fd-logo-b)) !important; color: #fff; border: 0 !important; }
+.fd-kpi-hero .lbl, .fd-kpi-hero .sub, .fd-kpi-hero .val small { color: rgba(255,255,255,.88); }
+.fd-kpi-hero .val { color: #fff; }
+.fd-spark { display: flex; align-items: flex-end; gap: 3px; height: 26px; margin-top: 8px; }
+.fd-spark b { flex: 1; border-radius: 2px; background: color-mix(in srgb, var(--primary) 35%, transparent); }
+.fd-spark b:last-child { background: var(--primary); }
+.fd-kpi-hero .fd-spark b { background: rgba(255,255,255,.35); } .fd-kpi-hero .fd-spark b:last-child { background: #fff; }
+
+/* ThemeIcon variant light (size sm 22 / md 28), radius default */
+.ticon { width: 28px; height: 28px; border-radius: var(--r-default); display: grid; place-items: center; flex: none; }
+.ticon.sm { width: 22px; height: 22px; }
+.ticon svg.i { width: 16px; height: 16px; }
+.t-blue { color: var(--primary-lc); background: var(--primary-light); } .t-teal { color: var(--teal-lc); background: var(--teal-l); }
+.t-orange { color: var(--orange-lc); background: var(--orange-l); } .t-red { color: var(--red-lc); background: var(--red-l); }
+.t-grape { color: var(--grape-lc); background: var(--grape-l); } .t-yellow { color: var(--yellow-lc); background: var(--yellow-l); }
+
+/* Flåden (fleetdeck.css .fd-dot, .fd-minibar, .fd-machine, .fd-chips) */
+.fd-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent); }
+.c-ok { color: var(--fd-ok); } .c-warn { color: var(--fd-warn); } .c-bad { color: var(--fd-bad); } .c-off { color: var(--fd-off); } .c-pri { color: var(--primary); }
+.fd-minibar { height: 5px; border-radius: 3px; background: var(--fd-chip); overflow: hidden; margin-top: 8px; }
+.fd-minibar i { display: block; height: 100%; border-radius: 3px; }
+.fd-machine { border: 1px solid var(--fd-border); border-radius: var(--r-md); padding: 12px; display: flex; flex-direction: column; gap: 9px;
+  background: color-mix(in srgb, var(--fd-card) 70%, var(--body)); color: inherit; }
+.fd-chips { display: flex; flex-wrap: wrap; gap: 4px; font-size: 11px; color: var(--dimmed); }
+.fd-chips span { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--fd-border);
+  background: color-mix(in srgb, var(--text) 3%, transparent); font-variant-numeric: tabular-nums; }
+.fd-chips svg.i { width: 12px; height: 12px; }
+
+/* Badge variant light, radius sm; size sm (18 px) som standard, .xs = 16 px */
+.badge { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 18px; padding: 0 8px; border-radius: var(--r-badge);
+  font-size: 10px; font-weight: 700; line-height: 16px; text-transform: uppercase; letter-spacing: .25px; white-space: nowrap; border: 1px solid transparent; }
+.badge.xs { height: 16px; padding: 0 6px; font-size: 9px; line-height: 14px; }
+.b-ok { color: var(--green-lc); background: var(--green-l); } .b-teal { color: var(--teal-lc); background: var(--teal-l); }
+.b-warn { color: var(--orange-lc); background: var(--orange-l); } .b-bad { color: var(--red-lc); background: var(--red-l); }
+.b-blue { color: var(--primary-lc); background: var(--primary-light); } .b-gray { color: var(--gray-lc); background: var(--gray-l); }
+.b-grape { color: var(--grape-lc); background: var(--grape-l); } .b-yellow { color: var(--yellow-lc); background: var(--yellow-l); }
+
+/* Button: size sm 36 px (standard), .s30 = xs, .sm = compact-sm 26 px, .xs = compact-xs 22 px. fw 600, line-height 1.
+   Varianter: default (standard her, som i Fleetdeck), .pri = filled, .light, .subtle, .red = color red variant light */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 0 18px; border-radius: var(--r-btn); font: 600 14px/1 var(--font);
+  border: 1px solid var(--default-border); background: var(--default); color: var(--default-color); white-space: nowrap; cursor: pointer; }
+.btn:has(svg.i:first-child) { padding-left: 12px; }
+.btn:hover { background: var(--default-hover); }
+.btn.s30 { height: 30px; padding: 0 14px; font-size: 12px; } .btn.s30:has(svg.i:first-child) { padding-left: 9.33px; }
+.btn.sm { height: 26px; padding: 0 8px; font-size: 14px; gap: 6px; } .btn.sm:has(svg.i:first-child) { padding-left: 5.33px; }
+.btn.xs { height: 22px; padding: 0 7px; font-size: 12px; gap: 5px; } .btn.xs:has(svg.i:first-child) { padding-left: 4.67px; }
+.btn.sm svg.i, .btn.xs svg.i { width: 14px; height: 14px; }
+.btn.pri { background: var(--primary); color: #fff; border-color: transparent; } .btn.pri:hover { background: var(--primary-hover); }
+[data-skin='aurora'] .btn.pri { background-image: linear-gradient(135deg, var(--fd-logo-a), var(--fd-logo-b)); border: 0; }
+.btn.light { background: var(--primary-light); color: var(--primary-lc); border-color: transparent; } .btn.light:hover { background: var(--primary-light-hover); }
+.btn.subtle { background: transparent; border-color: transparent; color: var(--primary-lc); } .btn.subtle:hover { background: var(--primary-light); }
+.btn.subtle.gray { color: var(--gray-lc); } .btn.subtle.gray:hover { background: var(--gray-l); }
+.btn.red { background: var(--red-l); color: var(--red-lc); border-color: transparent; }
+
+/* SegmentedControl size xs */
+.seg { display: inline-flex; padding: 4px; gap: 0; border-radius: var(--r-default); background: var(--sc-root); }
+.seg span { padding: 2px 6px; border-radius: calc(var(--r-default) - 4px); font-size: 12px; font-weight: 600; color: var(--sc-label); line-height: 1.55; }
+.seg span[data-active] { background: var(--sc-ind); color: var(--sc-active); box-shadow: var(--sc-ind-shadow); }
+
+/* Tabs variant default: 2 px linje, fane 10/16 px, fz sm */
+.tabs { display: flex; box-shadow: inset 0 -2px 0 var(--tab-border); margin-bottom: 16px; overflow: hidden; }
+.tabs span { padding: 10px 16px; font-size: 14px; line-height: 1; color: var(--text); border-bottom: 2px solid transparent; white-space: nowrap;
+  display: inline-flex; gap: 8px; align-items: center; border-radius: var(--r-default) var(--r-default) 0 0; }
+.tabs span[data-active] { border-color: var(--primary); }
+
+/* Table highlightOnHover verticalSpacing xs: fz sm, celler 10 px, række-kant --fd-border (fleetdeck.css) */
+table.fd-table { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 1.55; }
+.fd-table th { text-align: start; font-weight: 700; color: var(--text); padding: 10px; border-bottom: 1px solid var(--fd-border); white-space: nowrap; }
+.fd-table td { padding: 10px; border-bottom: 1px solid var(--fd-border); vertical-align: middle; }
+.fd-table th:first-child, .fd-table td:first-child { padding-left: 16px; } .fd-table th:last-child, .fd-table td:last-child { padding-right: 16px; }
+.fd-table tr:last-child td { border-bottom: 0; }
+.fd-table tbody tr:hover { background: var(--table-hover); }
+.fd-table .main { font-weight: 600; color: var(--text); }
+/* Checkbox size sm */
+.cb { width: 20px; height: 20px; border-radius: var(--r-xs); border: 1px solid var(--input-bd); background: var(--input); display: inline-block; vertical-align: middle; }
+.cb[data-on] { background: var(--primary); border-color: var(--primary); }
+
+/* TextInput size sm + label (fz sm, fw medium = 600) */
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 14px; font-weight: 600; color: var(--text); }
+.input { height: 36px; border: 1px solid var(--input-bd); border-radius: var(--r-default); background: var(--input); padding: 0 12px; display: flex; align-items: center;
+  color: var(--text); font-size: 14px; font-weight: 400; }
+.input .dim { color: var(--placeholder); }
+/* Switch size sm: 38×20, knap 14 */
+.switch { width: 38px; height: 20px; border-radius: 1000px; background: var(--switch-off); border: 1px solid var(--switch-off-bd); position: relative; flex: none; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 1000px; background: #fff; }
+.switch[data-on] { background: var(--primary); border-color: var(--primary); } .switch[data-on]::after { left: 20px; }
+
+.list-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--fd-border); }
+.list-row:first-child { border-top: 0; }
+/* Alert variant light: farve-baggrund, ingen kant, padding md, titel fw 700 i alert-farven, tekst sort/hvid */
+.alert { display: flex; gap: 16px; align-items: flex-start; padding: 16px; border-radius: var(--r-default); font-size: 14px; border: 1px solid transparent;
+  background: var(--primary-light); color: var(--primary-lc); }
+.alert > svg.i { width: 20px; height: 20px; margin-top: 1px; }
+.alert b { font-weight: 700; }
+.alert > div > div { color: var(--bright); font-size: 14px; margin-top: 4px; }
+.alert.warn { background: var(--orange-l); color: var(--orange-lc); } .alert.bad { background: var(--red-l); color: var(--red-lc); }
+.alert.ok { background: var(--teal-l); color: var(--teal-lc); }
+/* RingProgress size 52, thickness 6 */
+.ring { --p: 70; --c: var(--teal-t); width: 52px; height: 52px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  background: conic-gradient(var(--c) calc(var(--p) * 1%), var(--fd-chip) 0); }
+.ring::before { content: ""; width: 40px; height: 40px; border-radius: 50%; background: var(--fd-card); grid-area: 1/1; }
+[data-skin='aurora'][data-theme='light'] .ring::before { background: #fff; }
+/* Aktivitet (fleetdeck.css .fd-activity) */
+.fd-activity { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px; border-radius: 999px; font-size: 13px; font-weight: 600;
+  color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, transparent); white-space: nowrap; }
+.fd-activity.ok { color: var(--fd-ok); background: color-mix(in srgb, var(--fd-ok) 12%, transparent); }
+.chart { width: 100%; height: 170px; display: block; }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--dimmed); flex-wrap: wrap; }
+.legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+
+/* ---------- Mobil (fleetdeck.css .fd-tabbar + mobile.css) ---------- */
+.fd-tabbar { display: none; }
+.fd-sheet { display: none; }
+.only-mobile { display: none !important; }
+@media (max-width: 48em) {
+  .fd-header { padding: 0 12px; }
+  .fd-navbar, .only-desktop { display: none !important; }
+  .only-mobile { display: initial !important; }
+  .fd-main, [data-nav='top'] .fd-main { padding: 72px 12px calc(76px + env(safe-area-inset-bottom)); }
+  .fd-tabbar { display: grid; grid-template-columns: repeat(5, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 210;
+    padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); background: color-mix(in srgb, var(--body) 88%, transparent);
+    backdrop-filter: blur(16px); border-top: 1px solid var(--fd-border); }
+  .fd-tabbar a { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 10.5px; font-weight: 500; color: var(--dimmed); padding: 4px 0; }
+  .fd-tabbar a span { position: relative; }
+  .fd-tabbar svg.i { width: 22px; height: 22px; stroke-width: 1.7; }
+  .fd-tabbar [data-active] { color: var(--primary); font-weight: 600; }
+  .fd-tabbar b { position: absolute; top: -4px; right: -10px; min-width: 16px; height: 16px; border-radius: 8px; padding: 0 4px; font-size: 10px; line-height: 16px; text-align: center; background: var(--fd-warn); color: #fff; }
+  .fd-tabbar b[data-red] { background: var(--fd-bad); }
+  /* "Mere" åbner Fleetdecks navbar som fuldskærm (AppShell navbar på mobil) */
+  .fd-sheet[data-open] { display: block; position: fixed; left: 0; right: 0; bottom: 0; top: 60px; z-index: 200; background: var(--fd-side); padding: 12px 12px 90px; backdrop-filter: blur(20px); overflow: auto; }
+  [data-theme='light'][data-skin='aurora'] .fd-sheet[data-open] { background: rgba(255,255,255,.94); }
+  .fd-sheet .fd-nav { font-size: 16px; min-height: 44px; }
+  .fd-title { font-size: 22px; }
+  .g2, .g3, .g4 { grid-template-columns: minmax(0, 1fr); }
+  .g6, .m2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fd-dash-main { grid-template-columns: minmax(0, 1fr); }
+  .stack { gap: 16px; } .grid { gap: 12px; }
+  .kpi .val { font-size: 24px; }
+  /* mobile.css: tryk-venlige knapper */
+  .btn.xs, .btn.sm, .btn.s30 { min-height: 36px; padding-inline: 12px; font-size: 14px; }
+  .fd-icon-btn { min-width: 36px; min-height: 36px; }
+  .tabs span { min-height: 44px; font-size: 15px; }
+  .seg span { min-height: 32px; display: flex; align-items: center; justify-content: center; }
+  .input { font-size: 16px; }
+  .badge.xs { font-size: 11px; height: 20px; padding-inline: 7px; }
+  .badge { font-size: 12px; height: 22px; }
+  /* mobile.css: tabeller som kort */
+  .fd-table thead { display: none; }
+  .fd-table, .fd-table tbody { display: block; }
+  .fd-table tr { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 12px 14px; border-bottom: 1px solid var(--fd-border); }
+  .fd-table td, .fd-table td:first-child, .fd-table td:last-child { display: block; padding: 0; border: 0; font-size: 15px; line-height: 1.4; min-width: 0; }
+  .fd-table td.main { flex: 1 1 100%; }
+  .fd-table td[data-label]::before { content: attr(data-label); display: block; font-size: 12px; font-weight: 500; color: var(--dimmed); margin-bottom: 2px; }
+  .fd-table td.hide-m { display: none; }
+}

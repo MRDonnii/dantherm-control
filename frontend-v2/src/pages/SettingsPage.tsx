@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { NAV_KEY, SKIN_KEY, SKIN_PRESETS, readNav, readSkin, type NavPosition, type Skin } from "../lib/appearance";
 import { Activity, Droplets, Fan, Flame, Gauge, House, Mail, Monitor, Moon, RotateCcw, Save, Scale, ShieldCheck, ShowerHead, Snowflake, Thermometer, Users, Wind } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { postJson, requestJson } from "../lib/api";
@@ -185,6 +186,8 @@ export function SettingsPage() {
   const [theme, setTheme] = useState(() => localStorage.getItem("hch5-v2-theme") ?? "dark");
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("hch5-v2-sidebar") === "1");
   const [motion, setMotion] = useState(() => localStorage.getItem("hch5-v2-motion") ?? "normal");
+  const [skin, setSkin] = useState<Skin>(readSkin);
+  const [navPosition, setNavPosition] = useState<NavPosition>(readNav);
   const [language, setLanguage] = useState<Lang>(currentLang);
   // Six steps: gears typed in the step table, saved as level profiles.
   const [sixEdits, setSixEdits] = useState<Record<string, { extract?: number; supply?: number }>>({});
@@ -213,6 +216,7 @@ export function SettingsPage() {
   const uiSave = () => {
     localStorage.setItem("hch5-v2-theme", theme); localStorage.setItem("hch5-v2-sidebar", collapsed ? "1" : "0");
     localStorage.setItem("hch5-v2-motion", motion); localStorage.setItem(LANG_KEY, language);
+    localStorage.setItem(SKIN_KEY, skin); localStorage.setItem(NAV_KEY, navPosition);
     document.documentElement.dataset.motion = motion; document.documentElement.lang = language;
     window.dispatchEvent(new Event("hch5-ui-preferences"));
     setNotice(language === "en" ? T.uiSaved.en : T.uiSaved.da);
@@ -614,6 +618,8 @@ export function SettingsPage() {
     ui: <Card title={t(SECTIONS[7].title)} lead={lang === "da" ? "Gemmes kun i denne browser" : "Stored in this browser only"} icon={Monitor}>
       <div className="settings-grid">
         <label>{lang === "da" ? "Sprog" : "Language"}<select value={language} onChange={e => setLanguage(e.target.value === "en" ? "en" : "da")}><option value="da">Dansk</option><option value="en">English</option></select><Help>{lang === "da" ? "Indstillinger og forklaringer vises på det valgte sprog." : "Settings and explanations are shown in the chosen language."}</Help></label>
+        <label>{lang === "da" ? "Stil" : "Style"}<select value={skin} onChange={e => { const next = e.target.value === "aurora" ? "aurora" : "command"; setSkin(next); setTheme(SKIN_PRESETS[next].theme); setNavPosition(SKIN_PRESETS[next].nav); }}><option value="command">{lang === "da" ? "Command – mørk med sidemenu" : "Command – dark, side menu"}</option><option value="aurora">{lang === "da" ? "Aurora – lys med topmenu" : "Aurora – light, top menu"}</option></select><Help>{lang === "da" ? "Samme to stilarter som Fleetdeck. Tema og menu kan bagefter vælges hver for sig." : "The same two styles as Fleetdeck. Theme and menu can then be changed separately."}</Help></label>
+        <label>{lang === "da" ? "Menu" : "Menu"}<select value={navPosition} onChange={e => setNavPosition(e.target.value === "top" ? "top" : "side")}><option value="side">{lang === "da" ? "I siden" : "At the side"}</option><option value="top">{lang === "da" ? "I toppen" : "At the top"}</option></select></label>
         <label>{lang === "da" ? "Tema" : "Theme"}<select value={theme} onChange={e => setTheme(e.target.value)}><option value="system">System</option><option value="light">{lang === "da" ? "Lyst" : "Light"}</option><option value="dark">{lang === "da" ? "Mørkt" : "Dark"}</option></select></label>
         <label>{lang === "da" ? "Sidemenu" : "Sidebar"}<select value={collapsed ? "collapsed" : "expanded"} onChange={e => setCollapsed(e.target.value === "collapsed")}><option value="expanded">{lang === "da" ? "Udvidet" : "Expanded"}</option><option value="collapsed">{lang === "da" ? "Sammenfoldet" : "Collapsed"}</option></select></label>
         <label>{lang === "da" ? "Animation" : "Animation"}<select value={motion} onChange={e => setMotion(e.target.value)}><option value="normal">Normal</option><option value="reduced">{lang === "da" ? "Reduceret" : "Reduced"}</option></select></label>

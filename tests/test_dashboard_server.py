@@ -4,6 +4,9 @@ ROOT = Path(__file__).parents[1]
 SPEC = importlib.util.spec_from_file_location("dashboard_server", ROOT / "gateway/dashboard_server.py")
 MODULE = importlib.util.module_from_spec(SPEC); SPEC.loader.exec_module(MODULE)
 class DashboardTests(unittest.TestCase):
+    def test_webui_fonts_are_served_with_a_font_type(self):
+        # The Fleetdeck design ships Inter as hashed .woff2 files next to the bundle.
+        self.assertEqual(MODULE.ASSET_TYPES[".woff2"], "font/woff2")
     def test_boot_mode_supports_netboot_and_sd_card(self):
         self.assertEqual(MODULE.classify_boot_mode("root=/dev/nfs nfsroot=10.0.0.10:/netboot"), "Netboot (NFS)")
         self.assertEqual(MODULE.classify_boot_mode("root=/dev/mmcblk0p2 rootwait"), "SD-kort")
@@ -186,8 +189,8 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("<small>I HAC1</small>", thermostat)
         self.assertIn('heating ? "Varmer"', thermostat)
         # Technician pages carry the permission that shows them in the menu.
-        self.assertIn('["/technique", "Teknik", Gauge, "diagnostics"]', shell)
-        self.assertIn('["/updates", "Opdateringer", RefreshCw, "system"]', shell)
+        self.assertIn('["/technique", "Teknik", "gauge", "diagnostics", "Teknik og drift"]', shell)
+        self.assertIn('["/updates", "Opdateringer", "refresh", "system", "Teknik og drift"]', shell)
         self.assertIn('availableUpdate && session.can("system") && <NavLink className="topbar-update-tab" to="/updates"', shell)
         self.assertIn('guarded("/technique"', app)
         self.assertIn('guarded("/updates"', app)

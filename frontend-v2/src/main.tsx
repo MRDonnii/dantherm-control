@@ -7,6 +7,9 @@ import "./styles/app.css";
 import "./styles/pro-dashboard.css";
 import "./styles/pro-shell.css";
 import "./styles/light.css";
+import "./styles/fd-shared.css";
+import "./styles/fleetdeck-app.css";
+import "./styles/overview-fd.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

@@ -215,6 +215,20 @@ def is_newer(remote: str, current: str) -> bool:
     return remote_key > current_key
 
 
+def is_ahead_of_release(current: str, released: str) -> bool:
+    """True when the installed version is newer than the newest release.
+
+    That happens when a fix is installed from main before it is published,
+    e.g. 1.6.1 running while the stable channel still points at 1.6.0. Unknown
+    version formats never count as ahead, so the UI falls back to its normal
+    text instead of claiming something it cannot know.
+    """
+    current_key, released_key = version_key(current), version_key(released)
+    if current_key is None or released_key is None:
+        return False
+    return current_key > released_key
+
+
 def _latest_beta_tag() -> str:
     """Newest release for the beta channel from GitHub's public Atom feed.
 
@@ -357,6 +371,7 @@ def update_info(channel: str | None = None, *, force_refresh: bool = False) -> d
         "ref": ref,
         "published_at": published,
         "update_available": update_available,
+        "ahead_of_release": is_ahead_of_release(current, remote_version),
     }
     _UPDATE_INFO_CACHE[channel] = result
     _UPDATE_INFO_CACHE_AT[channel] = now

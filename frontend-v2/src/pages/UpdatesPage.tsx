@@ -24,6 +24,8 @@ interface UpdateInfo {
   available_build?: string | null;
   published_at?: string | null;
   update_available?: boolean;
+  /** The installed version is newer than the newest release on this channel. */
+  ahead_of_release?: boolean;
   update?: UpdateState;
   message?: string;
   error?: string;
@@ -43,6 +45,16 @@ function phaseLabel(value?: string) {
     extracting: "Pakker ud", validating: "Validerer", installing: "Installerer", verifying: "Verificerer", complete: "Færdig", failed: "Fejlet",
   };
   return labels[value ?? ""] ?? value ?? "Klar";
+}
+
+/** Text for an install that is newer than the newest release, e.g. 1.6.1 from main while stable is 1.6.0. */
+export function aheadOfReleaseText(info: UpdateInfo | null): string | null {
+  if (!info?.ahead_of_release || info.update_available || !info.current_version || !info.available_version) return null;
+  return `Du kører ${info.current_version} – nyere end seneste udgivelse (${info.available_version})`;
+}
+
+function statusMessage(result: UpdateInfo) {
+  return aheadOfReleaseText(result) ?? (result.update_available ? "En nyere build er klar." : "Denne kanal er opdateret.");
 }
 
 export function UpdatesPage() {
@@ -70,7 +82,7 @@ export function UpdatesPage() {
       if (!mounted.current) return;
       setInfo(result);
       if (result.channel) setChannel(result.channel);
-      setMessage(result.update_available ? "En nyere build er klar." : "Denne kanal er opdateret.");
+      setMessage(statusMessage(result));
     } catch (error) {
       if (!mounted.current) return;
       setMessage(error instanceof ApiError ? error.message : "Kunne ikke hente versionsstatus");
@@ -152,6 +164,7 @@ export function UpdatesPage() {
   const progress = clamp(info?.update?.progress);
   const running = info?.update?.running === true;
   const detail = info?.update?.detail ?? (running ? "Installerer…" : message);
+  const ahead = aheadOfReleaseText(info);
 
   return (
     <section className="page-view page-enter">
@@ -163,7 +176,7 @@ export function UpdatesPage() {
         </div>
         <span className={`status-chip${info?.update_available ? "" : " muted"}`}>
           {info?.update_available ? <RefreshCw size={14} /> : <CheckCircle2 size={14} />}
-          {info?.update_available ? " Update klar" : " Opdateret"}
+          {info?.update_available ? " Update klar" : ahead ? " Nyere end udgivelsen" : " Opdateret"}
         </span>
       </header>
 
@@ -183,10 +196,11 @@ export function UpdatesPage() {
             <small>Build {shortBuild(info?.current_build)}</small>
           </div>
           <div className="control-summary">
-            <span>Tilgængelig</span>
+            <span>{ahead ? "Seneste udgivelse" : "Tilgængelig"}</span>
             <strong>{info?.available_version ?? "—"}</strong>
             <small>Build {shortBuild(info?.available_build)}</small>
           </div>
+          {ahead && <div className="control-notice update-ahead" role="status">{ahead}</div>}
         </article>
 
         <aside className="control-column">
