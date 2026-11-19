@@ -2025,6 +2025,115 @@ class Gateway:
     def _active_read_allowed(self) -> bool:
         return True
 
+    # --- Read-only register scan (diagnostics) ---------------------------
+    # Put a JSON request in REGISTER_SCAN_REQUEST, e.g.
+    #   {"slave": 64, "function": 3, "ranges": [[0, 179]], "block": 10}
+    # and the gateway reads one block per master poll (FC03/FC04 only, never
+    # a write) and appends each answer to REGISTER_SCAN_RESULT. The request
+    # file is removed when the scan is done. Used to find unnamed registers.
+    REGISTER_SCAN_REQUEST = Path(
+        os.getenv("DANTHERM_REGISTER_SCAN_FILE", "/var/lib/dantherm-hch5-ha/register-scan.json")
+    )
+    REGISTER_SCAN_RESULT = REGISTER_SCAN_REQUEST.with_suffix(".result.jsonl")
+
+    @staticmethod
+    def parse_register_scan(request: object) -> list[tuple[int, int, int, int]]:
+        """Return the (slave, function, start, count) reads of a scan request."""
+        if not isinstance(request, dict):
+            return []
+        jobs = request.get("jobs") if isinstance(request.get("jobs"), list) else [request]
+        reads: list[tuple[int, int, int, int]] = []
+        for job in jobs:
+            try:
+                slave, function = int(job.get("slave", 0x40)), int(job.get("function", 3))
+                block = int(job.get("block", 10))
+                passes = int(job.get("passes", 1))
+                ranges = [(int(low), int(high)) for low, high in job["ranges"]]
+            except (AttributeError, KeyError, TypeError, ValueError):
+                continue
+            if function not in (3, 4) or not 1 <= slave <= 247 or not 1 <= block <= 30:
+                continue
+            for _ in range(max(1, min(passes, 500))):
+                for low, high in ranges:
+                    if not 0 <= low <= high <= 0xFFFF:
+                        continue
+                    for start in range(low, high + 1, block):
+                        reads.append((slave, function, start, min(block, high - start + 1)))
+        return reads[:20000]
+
+    def scan_read(
+        self, ser: serial.Serial, slave: int, function: int, start: int, count: int
+    ) -> dict[str, object]:
+        """One read-only FC03/FC04 request; also recognises exception replies."""
+        request = self.read_frame(start, count, slave=slave, function=function)
+        expected_length = 5 + count * 2
+        for _attempt in range(2):
+            if not self.wait_quiet(ser):
+                continue
+            self.serial_write(ser, request, "ACTIVE_READ")
+            ser.flush()
+            deadline = time.monotonic() + 0.18
+            received = bytearray()
+            while time.monotonic() < deadline:
+                received.extend(self.serial_read(ser, 256))
+                for offset in range(len(received) - 4):
+                    head = bytes(received[offset : offset + 3])
+                    if head[:2] == bytes([slave, function | 0x80]):
+                        frame = bytes(received[offset : offset + 5])
+                        if len(frame) == 5 and crc16(frame[:-2]) == int.from_bytes(frame[-2:], "little"):
+                            return {"exception": frame[2]}
+                    if head != bytes([slave, function, count * 2]):
+                        continue
+                    frame = bytes(received[offset : offset + expected_length])
+                    if len(frame) != expected_length:
+                        continue
+                    if crc16(frame[:-2]) != int.from_bytes(frame[-2:], "little"):
+                        continue
+                    self.last_bus_frame = time.monotonic()
+                    return {
+                        "values": [
+                            int.from_bytes(frame[index : index + 2], "big")
+                            for index in range(3, len(frame) - 2, 2)
+                        ]
+                    }
+        return {"timeout": True}
+
+    def register_scan_step(self, ser: serial.Serial) -> None:
+        """Run the next read of a requested register scan, if there is one."""
+        queue = getattr(self, "_register_scan_queue", None)
+        if not queue:
+            now = time.monotonic()
+            if now - getattr(self, "_register_scan_checked", 0.0) < 5.0:
+                return
+            self._register_scan_checked = now
+            if not self.REGISTER_SCAN_REQUEST.exists():
+                return
+            try:
+                request = json.loads(self.REGISTER_SCAN_REQUEST.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                request = None
+            queue = self._register_scan_queue = self.parse_register_scan(request)
+            LOG.info("Register scan requested: %d read-only blocks", len(queue))
+            if not queue:
+                self.REGISTER_SCAN_REQUEST.unlink(missing_ok=True)
+                return
+        slave, function, start, count = queue.pop(0)
+        row = {
+            "time": round(time.time(), 1), "slave": slave, "function": function,
+            "start": start, "count": count,
+            "afterheat_active": self.state.get("afterheat_active"),
+            **self.scan_read(ser, slave, function, start, count),
+        }
+        try:
+            with self.REGISTER_SCAN_RESULT.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+        except OSError as error:
+            LOG.warning("Register scan stopped: %s", error)
+            queue.clear()
+        if not queue:
+            self.REGISTER_SCAN_REQUEST.unlink(missing_ok=True)
+            LOG.info("Register scan finished: %s", self.REGISTER_SCAN_RESULT)
+
     def _mirror_active_block(self, slave: int, function: int, start: int, values: list[int]) -> None:
         """Re-broadcast a successful active read so HA's passive parser still
         sees it, exactly as it would have from HCP4's own polling traffic.
@@ -2124,6 +2233,11 @@ class Gateway:
                 self.publish("afterheat_active", hac205[4] == 16)
         if any(value is not None for value in (temperatures, status, hac200)):
             self.last_bus_frame = time.monotonic()
+        try:
+            self.register_scan_step(ser)
+        except Exception:  # diagnostics must never interrupt control
+            LOG.exception("Register scan step failed")
+            self._register_scan_queue = []
         self.last_master_poll = time.monotonic()
 
     def poll_afterheat_setpoint(self, ser: serial.Serial):

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.5
+
+- **Diagnostics: read-only register scan.** A JSON request in `/var/lib/dantherm-hch5-ha/register-scan.json`
+  (slave, function 3 or 4, ranges, block size) makes the gateway read one block per master poll and append the answers,
+  with the after-heat state, to `register-scan.result.jsonl`. It only ever sends read requests and never interrupts
+  control. Used to find unnamed registers, e.g. a valve position on the HAC1.
+
 ## 1.7.4
 
 - **Overview: a fixed, symmetric grid.** The front page is laid out on 12 equal columns that follow the card's own width, so
