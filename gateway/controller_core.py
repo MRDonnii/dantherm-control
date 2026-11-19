@@ -48,6 +48,8 @@ VALID_QUICK_BOOST_MINUTES = {0, 15, 30, 60}
 # Cool: bypass open and the top step for a while, then back to normal.
 VALID_COOL_BOOST_MINUTES = {0, 30, 60, 120}
 COOL_BOOST_AFTERHEAT_SETPOINT = 10
+# Which indoor humidity the winter dry-air mode looks at.
+WINTER_RH_BASES = ("average", "lowest")
 VALID_AFTERHEAT_COILS = {"electric", "water"}
 # Bonfire in the garden: the unit is switched off (standby pattern) for the
 # chosen time so no smoke is drawn in, then starts again by itself.
@@ -328,6 +330,22 @@ class ControllerState:
         "dry_protection_enabled": False,
         "dry_rh_limit": 30.0,
         "dry_max_level": 2,
+        # Winter dry-air mode: when the outdoor air (T1) is cold and the indoor
+        # air is dry, the base level is lowered to winter_level. CO2, humidity
+        # demand, bathroom drying, boost, manual control and the house minimum
+        # still win. Start: T1 <= winter_outdoor_max and indoor RH below
+        # winter_rh_limit. Stop: T1 above max + hysteresis or RH at limit +
+        # hysteresis. A change holds for at least winter_hold_minutes.
+        "winter_dry_enabled": False,
+        "winter_outdoor_max": 3.0,
+        "winter_outdoor_hysteresis": 2.0,
+        "winter_rh_limit": 38.0,
+        "winter_rh_hysteresis": 3.0,
+        # "average" or "lowest" of the Home Assistant rooms (bathrooms left
+        # out); without HA rooms the unit's own extract RH is used.
+        "winter_rh_basis": "average",
+        "winter_level": 2,
+        "winter_hold_minutes": 30,
         # Fine dust (PM2.5) from Home Assistant room sensors; off until chosen.
         "pm25_enabled": False,
         "pm25_setpoint": 25.0,
@@ -361,6 +379,8 @@ class ControllerState:
         self.path = Path(path or os.getenv("DANTHERM_CONTROLLER_STATE", "/var/lib/dantherm-hch5-ha/controller.json"))
         self.lock = threading.RLock()
         self.balance_error: str | None = None
+        # Base level set by the engine's winter dry-air mode (never saved).
+        self.winter_base: int | None = None
         self.data = dict(self.DEFAULTS)
         self.data["profiles"] = _copy_profiles()
         self.data["six_step_profiles"] = _copy_profiles(fan_steps.SIX_DEFAULT_PROFILES)
@@ -586,13 +606,15 @@ class ControllerState:
 
     BOOL_KEYS = ("sizing_enabled", "afterheat_room_enabled", "fireplace_auto_enabled",
                  "humidity_smart_enabled", "dry_protection_enabled", "balance_enabled", "pm25_enabled",
-                 "bathroom_night_drying")
+                 "bathroom_night_drying", "winter_dry_enabled")
 
     def _sanitize_advanced(self) -> None:
         for key in self.BOOL_KEYS:
             self.data[key] = bool(self.data.get(key, False))
         if self.data.get("balance_ratio_mode") not in BALANCE_RATIO_MODES:
             self.data["balance_ratio_mode"] = "auto"
+        if self.data.get("winter_rh_basis") not in WINTER_RH_BASES:
+            self.data["winter_rh_basis"] = "average"
         self.data["balance_learned"] = self._clean_learned(self.data.get("balance_learned"))
         for key, low, high in self.ADVANCED_FLOATS:
             try:
@@ -647,6 +669,8 @@ class ControllerState:
         ("t2_offset_k", -3.0, 3.0),
         ("pm25_setpoint", 5.0, 200.0), ("pm25_step", 2.0, 100.0), ("pm25_hysteresis", 1.0, 50.0),
         ("bathroom_rise_percent", 3.0, 20.0),
+        ("winter_outdoor_max", -25.0, 15.0), ("winter_outdoor_hysteresis", 0.5, 10.0),
+        ("winter_rh_limit", 20.0, 55.0), ("winter_rh_hysteresis", 1.0, 10.0),
     )
     ADVANCED_INTS = (
         ("house_bathrooms", 0, 10), ("house_utility_rooms", 0, 10),
@@ -655,6 +679,7 @@ class ControllerState:
         ("afterheat_room_step_minutes", 2, 60), ("fireplace_afterrun_minutes", 0, 120),
         ("fireplace_max_hours", 1, 24), ("dry_max_level", 1, None), ("pm25_max_level", 1, None),
         ("bathroom_rise_minutes", 3, 30), ("bathroom_max_minutes", 0, 720),
+        ("winter_level", 1, None), ("winter_hold_minutes", 5, 240),
     )
 
     @staticmethod
@@ -881,11 +906,18 @@ class ControllerState:
             start = None
         return start is None or start <= (now or time.time())
 
-    def normal_level(self) -> int:
+    def configured_normal_level(self) -> int:
         """Base level: from the house size when sizing is on, else the user's."""
         if self.data.get("sizing_enabled"):
             return int(self.airflow_plan()["base_level"])
         return int(self.data["local_normal_level"])
+
+    def normal_level(self) -> int:
+        """Base level in use: the configured one, lowered while winter mode holds."""
+        base = self.configured_normal_level()
+        if self.winter_base is not None and self.winter_base < base:
+            return int(self.winter_base)
+        return base
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1203,6 +1235,8 @@ class ControllerState:
         "pm25_max_level", "pm25_ignored_rooms",
         "bathroom_rise_percent", "bathroom_rise_minutes", "bathroom_night_drying",
         "bathroom_max_minutes", "bathroom_rooms",
+        "winter_dry_enabled", "winter_outdoor_max", "winter_outdoor_hysteresis", "winter_rh_limit",
+        "winter_rh_hysteresis", "winter_rh_basis", "winter_level", "winter_hold_minutes",
     )
     ADVANCED_LABELS = {
         "house_area_m2": "Boligareal", "ceiling_height_m": "Loftshøjde",
@@ -1222,6 +1256,9 @@ class ControllerState:
         "pm25_max_level": "Maks. trin ved PM2.5",
         "bathroom_rise_percent": "Fugtstigning ved bad", "bathroom_rise_minutes": "Tid for fugtstigning",
         "bathroom_max_minutes": "Maks. udtørringstid",
+        "winter_outdoor_max": "Vinter: koldt ude under", "winter_outdoor_hysteresis": "Vinter: hysterese ude",
+        "winter_rh_limit": "Vinter: tør luft under", "winter_rh_hysteresis": "Vinter: hysterese fugt",
+        "winter_level": "Vinter: grundtrin", "winter_hold_minutes": "Vinter: mindste tid",
     }
 
     def _configure_six_steps(self, patch: dict[str, object]) -> None:
@@ -1270,6 +1307,10 @@ class ControllerState:
             if patch["balance_ratio_mode"] not in BALANCE_RATIO_MODES:
                 raise ControllerError("balance_ratio_mode skal være auto eller fixed")
             self.data["balance_ratio_mode"] = patch["balance_ratio_mode"]
+        if "winter_rh_basis" in patch:
+            if patch["winter_rh_basis"] not in WINTER_RH_BASES:
+                raise ControllerError("winter_rh_basis skal være average eller lowest")
+            self.data["winter_rh_basis"] = patch["winter_rh_basis"]
         if patch.get("balance_learning_reset") is True:
             # Start the heat-balance learning over; the standby draw is kept.
             learned = self.data.get("balance_learned") or {}
@@ -1363,7 +1404,7 @@ class ControllerState:
             raise ControllerError("Rumlisten skal være en liste med højst 32 rum")
         return sorted({str(name).strip()[:64] for name in value if str(name).strip()})
 
-    def heartbeat(self, demand: str = "normal", *, requested_level: int | None = None, valid_for_s: int | None = None, reason: str | None = None, bathroom_drying: bool = False) -> dict[str, object]:
+    def heartbeat(self, demand: str = "normal", *, requested_level: int | None = None, valid_for_s: int | None = None, reason: str | None = None, bathroom_drying: bool = False, humidity_demand: bool = False) -> dict[str, object]:
         if demand not in VALID_DEMANDS:
             raise ControllerError("Ugyldigt HA-demand")
         # Older integrations still ask for 5 or 6: that is the maximum.
@@ -1383,6 +1424,8 @@ class ControllerState:
             if reason is not None:
                 self.data["ha_reason"] = str(reason)[:256]
             self.data["ha_bathroom_drying"] = bool(bathroom_drying)
+            # Room humidity (not CO2) asks for more than the base level.
+            self.data["ha_humidity_demand"] = bool(humidity_demand)
             return self.snapshot()
 
     def _expire_fireplace(self, now: float | None = None) -> None:
@@ -1578,6 +1621,12 @@ class ControllerEngine:
         self.cooling_last_on_at: float | None = None
         self.cooling_last_off_at: float | None = None
         self.cooling_reason = "disabled"
+        # Winter dry-air mode (see _update_winter).
+        self.winter_active = False
+        self.winter_changed_at: float | None = None
+        self.winter_pause_until = 0.0
+        self.winter_pause_reason: str | None = None
+        self.winter_state = "disabled"
         self.last_applied: dict[str, object] = {}
         self.last_applied_at: dict[str, float] = {}
         self.last_write_at: float | None = None
@@ -1896,6 +1945,110 @@ class ControllerEngine:
         outdoor_ah, indoor_ah = self.outdoor_absolute_humidity(), self.indoor_absolute_humidity()
         return outdoor_ah is None or indoor_ah is None or outdoor_ah < indoor_ah
 
+    def winter_indoor_rh(self) -> tuple[float | None, str | None]:
+        """Indoor RH for winter mode: HA rooms (average or lowest), else the unit's extract RH."""
+        key = "indoor_rh_lowest" if self.config.data.get("winter_rh_basis") == "lowest" else "indoor_rh_average"
+        value = self.external.get(key)
+        if isinstance(value, (int, float)):
+            return float(value), "ha_lowest" if key == "indoor_rh_lowest" else "ha_average"
+        rh = self.measurements.get("rh")
+        if isinstance(rh, (int, float)):
+            return float(rh), "unit"
+        return None, None
+
+    def _ha_live(self, d: dict, now: float) -> bool:
+        seen = d.get("ha_last_seen")
+        lease = min(int(d["ha_timeout_seconds"]), int(d.get("ha_valid_for_seconds", d["ha_timeout_seconds"])))
+        return d["mode"] == "smart_auto" and bool(seen) and now - float(seen) <= lease
+
+    def _winter_pause_trigger(self, d: dict, now: float) -> str | None:
+        """Air-quality demand that suspends winter mode: it then ventilates as usual."""
+        co2_limit = int(d["co2_setpoint"]) + int(d["co2_hysteresis"])
+        for co2 in (self.measurements.get("co2"), self.external.get("max_room_co2")):
+            if isinstance(co2, (int, float)) and co2 > co2_limit:
+                return f"CO2 {co2:.0f} ppm over {co2_limit} ppm"
+        if self._ha_live(d, now):
+            if d.get("ha_bathroom_drying"):
+                return "badeværelse tørres ud"
+            if d.get("ha_humidity_demand"):
+                return "høj fugt i et rum"
+        rh = self.measurements.get("rh")
+        if isinstance(rh, (int, float)) and rh > float(d["rh_setpoint"]):
+            return f"fugt {rh:.0f} % over {float(d['rh_setpoint']):.0f} %"
+        return None
+
+    def _update_winter(self, now: float) -> None:
+        """Winter dry-air mode: lower the base level while it is cold outside and dry inside.
+
+        Start when T1 <= winter_outdoor_max and indoor RH < winter_rh_limit; stop when
+        T1 > max + hysteresis or RH >= limit + hysteresis. The state changes at most once
+        per winter_hold_minutes, except that missing sensors stop it at once. Clear CO2 or
+        humidity demand pauses it for at least the same time, so normal control returns.
+        """
+        d = self.config.data
+        level = int(d["winter_level"])
+        self.config.winter_base = None
+        if not d.get("winter_dry_enabled"):
+            self.winter_active, self.winter_changed_at = False, None
+            self.winter_pause_until, self.winter_pause_reason = 0.0, None
+            self.winter_state = "disabled"
+            return
+        hold = int(d["winter_hold_minutes"]) * 60
+        outdoor = self.measurements.get("outdoor")
+        rh, _source = self.winter_indoor_rh()
+        if not isinstance(outdoor, (int, float)) or rh is None:
+            if self.winter_active:
+                self.winter_changed_at = now
+            self.winter_active = False
+            self.winter_state = "sensor_missing"
+            return
+        outdoor_max = float(d["winter_outdoor_max"])
+        rh_limit = float(d["winter_rh_limit"])
+        start = outdoor <= outdoor_max and rh < rh_limit
+        stop = outdoor > outdoor_max + float(d["winter_outdoor_hysteresis"]) or rh >= rh_limit + float(d["winter_rh_hysteresis"])
+        may_change = self.winter_changed_at is None or now - self.winter_changed_at >= hold
+        if not self.winter_active and start and may_change:
+            self.winter_active, self.winter_changed_at = True, now
+        elif self.winter_active and stop and may_change:
+            self.winter_active, self.winter_changed_at = False, now
+        if not self.winter_active:
+            self.winter_pause_until, self.winter_pause_reason = 0.0, None
+            self.winter_state = "waiting" if start else "standby"
+            return
+        trigger = self._winter_pause_trigger(d, now)
+        if trigger:
+            self.winter_pause_until, self.winter_pause_reason = now + hold, trigger
+        if now < self.winter_pause_until:
+            self.winter_state = "paused"
+            return
+        self.winter_pause_reason = None
+        if d["mode"] == "manual" or level >= self.config.configured_normal_level():
+            self.winter_state = "manual" if d["mode"] == "manual" else "base_already_low"
+            return
+        self.winter_state = "active"
+        self.config.winter_base = level
+
+    def _winter_text(self) -> str:
+        rh, _source = self.winter_indoor_rh()
+        outdoor = self.measurements.get("outdoor")
+        rh_text = f"{rh:.0f} %" if rh is not None else "?"
+        outdoor_text = f"{outdoor:.0f} °C" if isinstance(outdoor, (int, float)) else "?"
+        return f"inde {rh_text}, ude {outdoor_text}"
+
+    def _apply_winter(self, level: int, reason: str) -> tuple[int, str]:
+        """Hold the auto level at least at the winter base and explain it."""
+        if self.winter_state == "paused" and self.winter_pause_reason:
+            return level, f"{reason}; vinter (tør luft) på pause: {self.winter_pause_reason}"
+        if self.winter_state != "active":
+            return level, reason
+        base = int(self.config.data["winter_level"])
+        if level < base:
+            level = base
+            self.current_auto_level = level
+        if level == base:
+            return level, f"Vinter: tør luft – holder trin {base} ({self._winter_text()})"
+        return level, f"Vinter: tør luft – grundtrin {base} ({self._winter_text()}); {reason}"
+
     def _afterheat_setpoint(self, now: float) -> tuple[int, str]:
         """Afterheat setpoint, moved one degree per interval toward the room target."""
         d = self.config.data
@@ -1938,6 +2091,7 @@ class ControllerEngine:
             self.config._expire_cool_boost(now)
             self.config._expire_max_level(now)
             d = self.config.data
+            self._update_winter(now)
             if d["mode"] == "manual":
                 source, level, reason = "manual", int(d["manual_level"]), "Manuelt valgt niveau"
                 if self.config.dantherm_steps() and level == MAX_LEVEL and d.get("max_level_until"):
@@ -1953,12 +2107,13 @@ class ControllerEngine:
                     reason = str(d.get("ha_reason") or f"HA demand: {d['ha_demand']}")
                     if held:
                         reason = f"{reason}; {held}"
+                    level, reason = self._apply_winter(level, reason)
                 else:
-                    level, reason = self._local_auto_level(now)
+                    level, reason = self._apply_winter(*self._local_auto_level(now))
                     source = "local_fallback"
                     reason = f"HA offline; {reason}"
             else:
-                level, reason = self._local_auto_level(now)
+                level, reason = self._apply_winter(*self._local_auto_level(now))
                 source = "local_auto"
 
             level, source, reason, effective_bypass, flags = self._automation_overlay(level, source, reason, now)
@@ -2009,6 +2164,11 @@ class ControllerEngine:
                 "outdoor_absolute_humidity": _round(self.outdoor_absolute_humidity()),
                 "outdoor_humidity": self.external.get("outdoor_rh"),
                 "humidity_drying": self.humidity_dries(self.indoor_absolute_humidity()),
+                "winter_dry_active": self.winter_state == "active",
+                "winter_dry_state": self.winter_state,
+                "winter_dry_pause_reason": self.winter_pause_reason,
+                "winter_indoor_rh": _round(self.winter_indoor_rh()[0], 1),
+                "winter_indoor_rh_source": self.winter_indoor_rh()[1],
             }
             return result
 
