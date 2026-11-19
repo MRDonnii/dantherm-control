@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.1
+
+- **Fix: minus temperatures on the unit's own sensors.** In the active (FC04) and passive readings, the outdoor, supply,
+  extract and exhaust temperatures were read as unsigned numbers. When it froze, −0.01 °C became 655.35 °C, the value
+  was rejected, and the after-heat control and the winter logic lost the outdoor temperature. All temperatures now use
+  one signed decoder (`decode_temperature`), which also rejects the sensor's "not connected" codes and values outside
+  −35..100 °C.
+
 ## 1.7.0
 
 - **Winter: dry air protection (optional, off by default):** when the outdoor air is cold and the rooms are dry, the

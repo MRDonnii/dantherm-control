@@ -97,6 +97,19 @@ LEVEL_TARGETS = {
 }
 
 
+def decode_temperature(raw: int) -> float | None:
+    """Decode a Dantherm temperature register (signed hundredths of a degree).
+
+    Negative temperatures arrive as two's complement (−0.01 °C = 0xFFFF). Read
+    unsigned they became 655.35 °C as soon as it froze. 0x7FFF/0x8000 mean no
+    sensor, and values outside −35..100 °C are treated as invalid.
+    """
+    if raw in (0x7FFF, 0x8000):
+        return None
+    value = (raw - 65536 if raw >= 32768 else raw) / 100.0
+    return value if -35 <= value <= 100 else None
+
+
 def crc16(data: bytes) -> int:
     crc = 0xFFFF
     for byte in data:
@@ -1379,7 +1392,7 @@ class Gateway:
                             source="passive_hcp4_hac1_register_180",
                         )
                 self.publish_temperature(
-                    "supply_temperature", values[1] / 100.0,
+                    "supply_temperature", decode_temperature(values[1]),
                     source="passive_hcp4_hac1_register_181",
                 )
             elif register == 185 and count == 5 and byte_count == 10:
@@ -1472,7 +1485,7 @@ class Gateway:
                     ("outdoor_temperature", "supply_temperature", "extract_temperature", "exhaust_temperature"),
                     values,
                 ):
-                    value = raw / 100.0
+                    value = decode_temperature(raw)
                     self.publish_temperature(legacy_key, value)
                     self.publish_temperature(canonical_key, value)
                 self.state["temperature_sample_monotonic"] = time.monotonic()
@@ -2011,7 +2024,7 @@ class Gateway:
                 ("outdoor_temperature", "supply_temperature", "extract_temperature", "exhaust_temperature"),
                 temperatures,
             ):
-                value = raw / 100.0
+                value = decode_temperature(raw)
                 self.publish_temperature(legacy_key, value)
                 self.publish_temperature(canonical_key, value)
             self.state["temperature_sample_monotonic"] = time.monotonic()
@@ -2121,12 +2134,7 @@ class Gateway:
             )
             self.tcp_mirror.broadcast(request + body + crc16(body).to_bytes(2, "little"))
 
-        def temperature(raw: int):
-            if raw in (0x7FFF, 0x8000):
-                return None
-            signed = raw - 65536 if raw >= 32768 else raw
-            result = signed / 100.0
-            return result if -35 <= result <= 100 else None
+        temperature = decode_temperature
 
         # 180=T1, 181=T2 before the external afterheater, 182=T3, 183=T4,
         # 184=T5, 205=T2AH after the coil, 206=frost/water-side sensor.
