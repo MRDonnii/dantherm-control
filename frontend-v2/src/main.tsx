@@ -10,6 +10,7 @@ import "./styles/light.css";
 import "./styles/fd-shared.css";
 import "./styles/fleetdeck-app.css";
 import "./styles/overview-fd.css";
+import "./styles/overview-grid.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
