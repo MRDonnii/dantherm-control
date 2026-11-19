@@ -198,6 +198,7 @@ class ControllerRuntime:
             "afterheat_room_temperature": room_temperature,
             "stove_temperature": self._source_value(self.config.data.get("fireplace_auto_source"), "temperature"),
             "max_room_co2": self._max_room_co2(),
+            **self._indoor_room_humidity(),
         })
 
     def _with_room_overrides(self, rooms: dict[str, dict[str, object]]) -> dict[str, dict[str, object]]:
@@ -304,6 +305,24 @@ class ControllerRuntime:
         if source == "ha_average":
             return self._ha_room_average_temperature(), "ha_average"
         return self._source_value(source, "temperature"), source
+
+    def _indoor_room_humidity(self) -> dict[str, float | None]:
+        """Average and lowest RH of the HA rooms, for the winter dry-air mode.
+
+        Bathrooms (showers), rooms with control off (e.g. an unheated garage)
+        and rooms chosen as stove or outdoor sensors are left out.
+        """
+        excluded = self._source_room_names()
+        values = [
+            float(values["humidity"])
+            for name, values in self._fresh_ha_rooms().items()
+            if name not in excluded and values.get("enabled", True) and values.get("control", True)
+            and not self._is_bathroom(name, values)
+            and isinstance(values.get("humidity"), (int, float)) and 0 < values["humidity"] <= 100
+        ]
+        if not values:
+            return {"indoor_rh_average": None, "indoor_rh_lowest": None}
+        return {"indoor_rh_average": round(sum(values) / len(values), 1), "indoor_rh_lowest": min(values)}
 
     def _max_room_co2(self) -> float | None:
         excluded = self._source_room_names()
@@ -591,6 +610,7 @@ class ControllerRuntime:
             valid_for_s=valid_for,
             reason=self.smart_reason,
             bathroom_drying=decision[4] == "humidity" and decision[3] in self._bathroom_episodes,
+            humidity_demand=decision[4] in ("humidity", "rh_rise") and decision[0] > self.config.normal_level(),
         )
         if self.config.data.get("mode") == "smart_auto" and self.hardware_writes_allowed():
             self.apply_once()
@@ -804,6 +824,7 @@ class ControllerRuntime:
             valid_for_s=self.smart_inputs_valid_for,
             reason=self.smart_reason,
             bathroom_drying=decision[4] == "humidity" and decision[3] in self._bathroom_episodes,
+            humidity_demand=decision[4] in ("humidity", "rh_rise") and decision[0] > self.config.normal_level(),
         )
 
     def _smart_input_snapshot(self) -> dict[str, object]:
