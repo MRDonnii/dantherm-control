@@ -2,6 +2,14 @@
 
 ## 1.7.0
 
+- **Winter: dry air protection (optional, off by default):** when the outdoor air is cold and the rooms are dry, the
+  ventilation keeps a lower base level, so the house dries out less. CO2, humid bathrooms and rooms, boost, manual control
+  and all safety rules (frost, bypass, after-heat) still win. All limits are settings, with hysteresis and a minimum hold
+  time, and "Active decision" shows when it is working.
+- **New look:** the WebUI uses the same design system and menu as Fleetdeck, with two styles to choose from (Command with
+  a side menu, or Aurora with a top menu) and light or dark theme. No coloured left borders. All pages and functions are kept.
+- The update page now says when the running version is newer than the latest release instead of showing the older one
+  as the newest.
 - **Sign in from Kontrolrum without a stored password:** `POST /api/auth/kontrolrum` accepts a signed one-time assertion (HMAC-SHA256, at most 120 seconds, single-use). It works only from the configured Kontrolrum address and only for users who have opted in, and the session stops working from any other address.
 - New page `/kontrolrum-sso` for administrators: make, replace or delete the key, set the address, tick the users, and see the last refused attempt.
 - New command `kontrolrum_sso.py kontrolrum-sso <user>` makes the key and prints only the key.
