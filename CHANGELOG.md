@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.6
 
 - **Smooth airflow animation in the overview.** The animated unit drawing is now a stack of SVG layers with the same
   viewBox: the cabinet, the blurred fog, the moving parts (fans, damper, bus, water) and the wisps each get their own
