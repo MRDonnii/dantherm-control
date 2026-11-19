@@ -1,0 +1,239 @@
+/* Fleetdeck-stil for Dantherm Control.
+   fd-shared.css (Fleetdecks komponenter 1:1) ligger under denne fil. Her bindes appens egne klasser til
+   de samme flader, farver og komponenter, så alle eksisterende sider følger med uden at ændre deres logik.
+   Stil: html[data-skin=command|aurora], tema: html[data-theme], menu: html[data-nav=side|top].
+   Ingen farvede venstrekanter eller accentstreger nogen steder. */
+
+/* ---------- Appens tokens → Fleetdeck ---------- */
+:root[data-skin][data-theme] {
+  font-family: var(--font);
+  --page: var(--body); --page-top: var(--body);
+  --surface: var(--fd-card); --surface-soft: color-mix(in srgb, var(--fd-card) 70%, var(--body)); --surface-strong: var(--fd-chip);
+  --border: var(--fd-border); --border-strong: var(--default-border);
+  --muted: var(--dimmed);
+  --blue: var(--primary); --blue-soft: var(--primary-light);
+  --green: var(--fd-ok); --green-soft: var(--green-l); --orange: var(--fd-warn); --orange-soft: var(--orange-l); --red: var(--fd-bad); --red-soft: var(--red-l);
+  --radius-sm: var(--r-sm); --radius-md: var(--r-default); --radius-lg: var(--r-lg);
+  --shadow-sm: var(--fd-shadow);
+  --fd-tile: color-mix(in srgb, var(--fd-card) 70%, var(--body));
+}
+:root[data-skin][data-theme="dark"] { --text: #c9c9c9; --bright: #fff; }
+:root[data-skin][data-theme="light"] { --text: #000; --bright: #000; }
+:root[data-skin] body { font-family: var(--font); color: var(--text); }
+:root[data-skin][data-skin="command"] body { background: var(--body); }
+:root[data-skin] button, :root[data-skin] input, :root[data-skin] select, :root[data-skin] textarea { font-family: inherit; }
+
+/* ---------- Skal: header 60 px, sidemenu 236 px, indhold med padding lg ---------- */
+:root[data-skin] .fd-app { display: block; min-height: 100vh; background: transparent; }
+:root[data-skin] .fd-header { position: fixed; top: 0; left: 0; right: 0; height: 60px; min-height: 60px; z-index: 100; justify-content: flex-start; gap: 12px; padding: 0 20px;
+  background: color-mix(in srgb, var(--body) 82%, transparent); border-bottom: 1px solid var(--fd-border); box-shadow: none; backdrop-filter: blur(14px); }
+:root[data-skin] .fd-header > div:first-child { display: flex; }
+:root[data-skin] .fd-header .spacer { flex: 1; }
+:root[data-skin] .fd-brand { font-size: 17px; text-decoration: none; white-space: nowrap; }
+:root[data-skin] .fd-navbar-brand .fd-brand { font-size: 15px; min-width: 0; gap: 9px; }
+:root[data-skin] .fd-header .fd-brand { font-size: 15px; margin-right: 8px; }
+:root[data-skin] .fd-navbar { position: fixed; top: 60px; bottom: 0; left: 0; width: 236px; height: auto; z-index: 90; display: flex; flex-direction: column; gap: 0; padding: 12px;
+  background: var(--fd-side); border: 0; border-right: 1px solid var(--fd-border); box-shadow: none; color: var(--text); overflow: hidden; }
+:root[data-skin] .fd-navbar-brand { display: flex; align-items: center; gap: 6px; padding: 4px 4px 14px 8px; }
+:root[data-skin] .fd-collapse { margin-left: auto; width: 26px; height: 26px; flex: 0 0 26px; border-radius: var(--r-sm); border: 1px solid var(--fd-border); background: transparent; color: var(--dimmed); }
+:root[data-skin] .fd-collapse:hover { transform: none; background: var(--fd-chip); color: var(--text); border-color: var(--fd-border); }
+:root[data-skin] .fd-navbar .grow { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+:root[data-skin] .fd-nav-group { display: flex; flex-direction: column; gap: 2px; }
+:root[data-skin] .fd-main.content-stage { max-width: none; margin: 0; padding: 80px 20px 32px 256px; min-height: 100vh; }
+:root[data-skin][data-nav="top"] .fd-main.content-stage { padding-left: 20px; }
+:root[data-skin] .fd-app[data-collapsed] .fd-navbar { width: 68px; }
+:root[data-skin] .fd-app[data-collapsed] .fd-main.content-stage { padding-left: 88px; }
+:root[data-skin] .fd-app[data-collapsed] .fd-navbar-brand { flex-direction: column; padding: 0 0 12px; }
+:root[data-skin] .fd-app[data-collapsed] .fd-collapse { margin: 0; }
+:root[data-skin] .fd-app[data-collapsed] .fd-nav { justify-content: center; }
+:root[data-skin] .fd-app[data-collapsed] .fd-nav-label, :root[data-skin] .fd-app[data-collapsed] .fd-nav .fd-count { display: none; }
+:root[data-skin] .fd-app[data-collapsed] .fd-nav-group { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--fd-border); }
+:root[data-skin] .fd-page-head { margin-bottom: 20px; }
+:root[data-skin] .fd-page-head h1 { margin: 0; }
+
+/* Sidemenuens punkter: Fleetdecks .fd-nav (også over appens gamle .nav-item) */
+:root[data-skin] .fd-nav.nav-item, :root[data-skin] .fd-nav { min-height: 0; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 0; border-radius: 8px;
+  background: transparent; box-shadow: none; transform: none; color: var(--dimmed); font-size: 13.5px; font-weight: 500; text-decoration: none; }
+:root[data-skin] .fd-nav:hover { background: var(--fd-chip); color: var(--text); transform: none; }
+:root[data-skin] .fd-nav[data-active], :root[data-skin] .fd-nav.nav-item.active { background: var(--primary-light); color: var(--text); font-weight: 600; box-shadow: none; }
+:root[data-skin][data-skin="aurora"] .fd-nav[data-active] { background: linear-gradient(90deg, var(--primary-light), transparent); }
+:root[data-skin] .fd-nav[data-active] svg { color: var(--primary); }
+:root[data-skin] .fd-nav svg.i { flex: 0 0 18px; }
+:root[data-skin] .fd-foot.sidebar-health { margin-top: 8px; min-height: 0; display: flex; align-items: flex-start; gap: 8px; padding: 10px; border: 0; border-top: 1px solid var(--fd-border);
+  border-radius: 0; background: transparent; box-shadow: none; color: var(--dimmed); font-size: 12px; line-height: 1.45; }
+:root[data-skin] .fd-foot.sidebar-health strong { color: var(--text); font-size: 12px; font-weight: 600; }
+:root[data-skin] .fd-foot.sidebar-health .live-dot { margin-top: 4px; }
+
+/* Topmenu og rullemenuer */
+:root[data-skin] .fd-topnav { display: flex; gap: 2px; align-items: center; }
+:root[data-skin] .fd-top { border: 0; background: transparent; cursor: pointer; font-family: inherit; text-decoration: none; }
+:root[data-skin] .fd-top:hover { background: var(--fd-chip); color: var(--text); }
+:root[data-skin] .fd-top[data-active] { color: var(--text); background: var(--primary-light); }
+:root[data-skin] .fd-top .fd-count { margin-left: 2px; }
+:root[data-skin] .fd-top-group, :root[data-skin] .fd-menu-root { position: relative; display: inline-flex; }
+:root[data-skin] .fd-drop { top: calc(100% + 6px); left: 0; display: flex; flex-direction: column; gap: 1px; }
+:root[data-skin] .fd-drop[hidden] { display: none; }
+:root[data-skin] .fd-drop-right { left: auto; right: 0; min-width: 240px; }
+:root[data-skin] .fd-drop a, :root[data-skin] .fd-menu-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 6.67px 12px; border: 0; border-radius: var(--r-default);
+  background: transparent; color: var(--text); font: 400 14px/1.55 var(--font); text-align: left; text-decoration: none; cursor: pointer; }
+:root[data-skin] .fd-drop a:hover, :root[data-skin] .fd-menu-item:hover, :root[data-skin] .fd-drop a[data-active] { background: var(--menu-hover); }
+:root[data-skin] .fd-menu-item small, :root[data-skin] .fd-drop a small { color: var(--dimmed); font-size: 12px; }
+:root[data-skin] .fd-search-results a small { margin-left: auto; padding-left: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+:root[data-skin] .fd-menu-item.danger { color: var(--red-t); }
+:root[data-skin] .fd-menu-check { width: 14px; display: inline-flex; color: var(--primary); }
+:root[data-skin] .fd-menu-check.right { margin-left: auto; }
+:root[data-skin] .fd-menu-divider { height: 1px; margin: 4px 0; background: var(--menu-bd); }
+:root[data-skin] .fd-drop-badge { margin-left: auto; }
+:root[data-skin] .fd-user-head { display: grid; padding: 6px 12px 4px; }
+:root[data-skin] .fd-user-head strong { color: var(--bright); font-size: 14px; }
+:root[data-skin] .fd-user-head small { color: var(--dimmed); font-size: 12px; }
+
+/* Søgefeltet (Ctrl K) */
+:root[data-skin] .fd-search { position: relative; }
+:root[data-skin] .fd-search input { flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 13px; padding: 0; }
+:root[data-skin] .fd-search input::placeholder { color: var(--dimmed); }
+:root[data-skin] .fd-search input::-webkit-search-cancel-button { display: none; }
+:root[data-skin] .fd-search:focus-within { border-color: var(--primary); }
+:root[data-skin] .fd-search-results { top: 42px; left: 0; right: 0; min-width: 0; }
+
+/* Topbjælkens højre side: vejr som Button default, forbindelse som .fd-activity, tema som ActionIcon, avatar */
+:root[data-skin] .topbar-actions { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; }
+:root[data-skin] .topbar-weather-button { height: 36px; display: inline-flex; align-items: center; gap: 8px; padding: 0 14px 0 12px; border: 1px solid var(--default-border); border-radius: var(--r-btn);
+  background: var(--default); color: var(--default-color); box-shadow: none; font: 600 14px/1 var(--font); }
+:root[data-skin] .topbar-weather-button:hover { background: var(--default-hover); transform: none; }
+:root[data-skin] .topbar-weather-button .topbar-weather-aqi { border-left: 0; padding-left: 4px; color: var(--dimmed); }
+:root[data-skin] .topbar-weather-picker { background: var(--default); border: 1px solid var(--menu-bd); border-radius: var(--r-default); box-shadow: var(--shadow-md); color: var(--text); }
+:root[data-skin] .topbar-clock { display: grid; gap: 0; padding: 0 4px; color: var(--dimmed); font-size: 11px; line-height: 1.25; text-align: right; }
+:root[data-skin] .topbar-clock strong { color: var(--text); font-size: 13px; font-weight: 600; }
+:root[data-skin] .topbar-clock span { color: var(--dimmed); }
+:root[data-skin] .fd-header .status-chip { height: 34px; padding: 0 12px; gap: 8px; border: 0; border-radius: 999px; box-shadow: none; font-size: 13px; font-weight: 600; text-decoration: none;
+  color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, transparent); }
+:root[data-skin] .fd-header .status-chip.ok, :root[data-skin] .fd-header .ha-chip.tone-ok { color: var(--fd-ok); background: color-mix(in srgb, var(--fd-ok) 12%, transparent); }
+:root[data-skin] .fd-header .status-chip.muted, :root[data-skin] .fd-header .ha-chip.tone-muted { color: var(--dimmed); background: var(--fd-chip); }
+:root[data-skin] .fd-header .ha-chip.tone-warn { color: var(--fd-warn); background: color-mix(in srgb, var(--fd-warn) 12%, transparent); }
+:root[data-skin] .fd-header .ha-chip.tone-bad { color: var(--fd-bad); background: color-mix(in srgb, var(--fd-bad) 12%, transparent); }
+:root[data-skin] .fd-header .status-chip small { color: inherit; opacity: .8; font-size: 12px; }
+:root[data-skin] .fd-header .live-dot, :root[data-skin] .fd-foot .live-dot { width: 8px; height: 8px; flex: 0 0 8px; background: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent); animation: none; }
+:root[data-skin] .fd-foot .live-dot { color: var(--fd-ok); }
+:root[data-skin] .fd-foot .live-dot.offline { color: var(--fd-warn); }
+:root[data-skin] .topbar-control-notice { max-width: 260px; display: grid; gap: 0; padding: 4px 10px; border: 0; border-radius: var(--r-default); background: var(--primary-light); color: var(--primary-lc); font-size: 12px; line-height: 1.35; box-shadow: none; }
+:root[data-skin] .topbar-control-notice strong { font-size: 11px; font-weight: 700; }
+:root[data-skin] .topbar-control-notice span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--bright); }
+:root[data-skin] .topbar-control-notice.error { background: var(--red-l); color: var(--red-lc); }
+:root[data-skin] .topbar-update-tab { height: 34px; display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; border: 0; border-radius: var(--r-btn); background: var(--primary-light); color: var(--primary-lc);
+  font-size: 13px; font-weight: 600; text-decoration: none; box-shadow: none; }
+:root[data-skin] .topbar-update-tab small { color: inherit; opacity: .8; }
+:root[data-skin] .fd-icon-btn.icon-button { width: 34px; height: 34px; border-radius: var(--r-default); border: 1px solid var(--default-border); background: var(--default); color: var(--default-color); box-shadow: none; }
+:root[data-skin] .fd-icon-btn.icon-button:hover { transform: none; background: var(--default-hover); border-color: var(--default-border); }
+:root[data-skin] .topbar-user { padding: 0; border: 0; background: transparent; box-shadow: none; }
+:root[data-skin] .fd-avatar { border: 0; cursor: pointer; font-family: inherit; }
+:root[data-skin] .fd-mobile-brand { display: inline-flex; align-items: center; gap: 10px; }
+:root[data-skin] .fd-mobile-brand strong { color: var(--bright); font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
+
+/* ---------- Byggeklodser på alle sider ---------- */
+/* Paper withBorder */
+:root[data-skin] .surface { border: 1px solid var(--fd-border); border-radius: var(--r-default); background: var(--fd-card); box-shadow: var(--fd-shadow); color: var(--text); }
+:root[data-skin][data-skin="aurora"] .surface { backdrop-filter: blur(16px); }
+:root[data-skin] .surface::before, :root[data-skin] .surface::after, :root[data-skin] .page-hero::after { display: none; }
+/* Sidens egen indledning: titlen står i skallen, så her bliver den et rolig kortoverskrift */
+:root[data-skin] .page-hero { margin-bottom: 16px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; overflow: visible; }
+:root[data-skin] .page-hero h1 { margin: 2px 0 4px; color: var(--bright); font-size: 18px; font-weight: 650; letter-spacing: -.01em; }
+:root[data-skin] .page-hero p { color: var(--dimmed); font-size: 14px; }
+:root[data-skin] .eyebrow { color: var(--dimmed); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; opacity: .9; }
+:root[data-skin] :is(.pro-card-head, .section-head) h2 { color: var(--bright); font-size: 16px; font-weight: 650; letter-spacing: 0; }
+:root[data-skin] :is(.pro-card-head, .section-head) p { color: var(--dimmed); }
+:root[data-skin] :is(.pro-card-head, .section-head) > svg { color: var(--dimmed); }
+:root[data-skin] h1, :root[data-skin] h2, :root[data-skin] h3 { color: var(--bright); }
+/* Badge light (sidernes statuschips) */
+:root[data-skin] .fd-main .status-chip { height: 22px; padding: 0 9px; gap: 5px; border: 0; border-radius: var(--r-badge); box-shadow: none; font-size: 11px; font-weight: 700; letter-spacing: .25px;
+  text-transform: uppercase; color: var(--primary-lc); background: var(--primary-light); }
+:root[data-skin] .fd-main .status-chip.muted { color: var(--gray-lc); background: var(--gray-l); }
+:root[data-skin] .fd-main .status-chip .live-dot { width: 7px; height: 7px; flex: 0 0 7px; background: var(--fd-ok); box-shadow: none; animation: none; }
+:root[data-skin] .fd-main .status-chip.muted .live-dot { background: var(--fd-off); }
+/* Button: filled (primær), default (sekundær), light (rød) */
+:root[data-skin] :is(.primary-action, .secondary-action, .danger-outline, .standby-on-action) { min-height: 36px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 18px;
+  border-radius: var(--r-btn); font: 600 14px/1 var(--font); box-shadow: none; text-shadow: none; transform: none; text-decoration: none; cursor: pointer; }
+:root[data-skin] :is(.primary-action, .standby-on-action) { border: 1px solid transparent; background: var(--primary); color: #fff; }
+:root[data-skin] :is(.primary-action, .standby-on-action):hover:not(:disabled) { background: var(--primary-hover); }
+:root[data-skin][data-skin="aurora"] :is(.primary-action, .standby-on-action) { border: 0; background-image: linear-gradient(135deg, var(--fd-logo-a), var(--fd-logo-b)); }
+:root[data-skin] .secondary-action { border: 1px solid var(--default-border); background: var(--default); color: var(--default-color); }
+:root[data-skin] .secondary-action:hover:not(:disabled) { background: var(--default-hover); }
+:root[data-skin] .danger-outline { border: 1px solid transparent; background: var(--red-l); color: var(--red-lc); }
+:root[data-skin] :is(.primary-action, .secondary-action, .danger-outline):disabled { opacity: .6; cursor: not-allowed; }
+:root[data-skin] .fd-main .icon-button { width: 34px; height: 34px; border-radius: var(--r-default); border: 1px solid var(--default-border); background: var(--default); color: var(--default-color); box-shadow: none; }
+:root[data-skin] .fd-main .icon-button:hover { transform: none; background: var(--default-hover); border-color: var(--default-border); }
+/* SegmentedControl */
+:root[data-skin] :is(.pro-segment, .segmented-v2, .settings-segment) { display: flex; gap: 0; padding: 4px; border: 0; border-radius: var(--r-default); background: var(--sc-root); box-shadow: none; }
+:root[data-skin] :is(.pro-segment, .segmented-v2, .settings-segment) button { flex: 1; min-height: 30px; border: 0; border-radius: calc(var(--r-default) - 4px); background: transparent; box-shadow: none; text-shadow: none;
+  color: var(--sc-label); font: 600 13px/1.2 var(--font); transform: none; }
+:root[data-skin] :is(.pro-segment, .segmented-v2, .settings-segment) button:hover:not(:disabled):not(.active) { color: var(--sc-active); background: transparent; }
+:root[data-skin] :is(.pro-segment, .segmented-v2) button.active, :root[data-skin] :is(.pro-segment, .segmented-v2) button[aria-pressed="true"], :root[data-skin] .settings-segment button.is-active { background: var(--sc-ind); border-color: transparent; color: var(--sc-active); box-shadow: var(--sc-ind-shadow); }
+/* Knapper i rækker: Button default, det aktive valg Button light. Ingen glød, ingen skygge. */
+:root[data-skin] :is(.pro-levels, .mini-buttons, .fireplace-actions, .function-buttons, .standby-choices, .setpoint-stepper, .thermostat-actions, .thermostat-confirm-adjust, .thermostat-confirm-actions) button,
+:root[data-skin] .status-action-card > button, :root[data-skin] .quick-card button, :root[data-skin] .text-action {
+  border: 1px solid var(--default-border); border-radius: var(--r-btn); background: var(--default); color: var(--default-color); box-shadow: none; text-shadow: none;
+  font-family: var(--font); font-weight: 600; transform: none; }
+:root[data-skin] :is(.pro-levels, .mini-buttons, .fireplace-actions, .function-buttons, .standby-choices, .setpoint-stepper, .thermostat-actions, .thermostat-confirm-adjust, .thermostat-confirm-actions) button:hover:not(:disabled),
+:root[data-skin] .status-action-card > button:hover:not(:disabled), :root[data-skin] .quick-card button:hover:not(:disabled) { background: var(--default-hover); border-color: var(--default-border); color: var(--default-color); }
+:root[data-skin] :is(.pro-levels, .mini-buttons, .fireplace-actions, .function-buttons, .standby-choices) button.active,
+:root[data-skin] .status-action-card > button.active, :root[data-skin] .thermostat-actions .thermostat-power.on, :root[data-skin] .thermostat-confirm .thermostat-ok {
+  background: var(--primary-light); border-color: transparent; color: var(--primary-lc); box-shadow: none; }
+:root[data-skin] :is(.pro-levels, .mini-buttons, .fireplace-actions, .function-buttons, .standby-choices) button.active:hover:not(:disabled) { background: var(--primary-light-hover); color: var(--primary-lc); }
+:root[data-skin] :is(.pro-levels, .mini-buttons, .fireplace-actions, .function-buttons) button.stop, :root[data-skin] .status-action-card button.stop { background: var(--red-l); border-color: transparent; color: var(--red-lc); }
+:root[data-skin] :is(.pro-levels, .mini-buttons, .fireplace-actions, .function-buttons, .standby-choices) button:disabled { opacity: .55; }
+:root[data-skin] .pro-levels button.is-normal { border-style: dashed; border-color: var(--primary); }
+/* Input, Select, Textarea */
+:root[data-skin] .fd-main :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea),
+:root[data-skin] .standby-dialog :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+  min-height: 36px; border: 1px solid var(--input-bd); border-radius: var(--r-default); background: var(--input); color: var(--text); box-shadow: none; font-size: 14px; }
+:root[data-skin] .fd-main :is(input, select, textarea):focus { outline: 0; border-color: var(--primary); }
+:root[data-skin] .fd-main input[type="checkbox"], :root[data-skin] .fd-main input[type="radio"] { accent-color: var(--primary); }
+/* Table */
+:root[data-skin] .settings-table { border-collapse: collapse; font-size: 14px; }
+:root[data-skin] .settings-table th { color: var(--text); font-weight: 700; border-bottom: 1px solid var(--fd-border); background: transparent; }
+:root[data-skin] .settings-table td { border-bottom: 1px solid var(--fd-border); }
+:root[data-skin] .settings-table tbody tr:hover { background: var(--table-hover); }
+:root[data-skin] .settings-table-wrap { border: 1px solid var(--fd-border); border-radius: var(--r-default); background: transparent; }
+/* Alert light */
+:root[data-skin] :is(.control-notice, .settings-warning, .settings-inline-notice) { border: 0; border-radius: var(--r-default); background: var(--primary-light); color: var(--primary-lc); box-shadow: none; }
+:root[data-skin] .control-notice.error { background: var(--red-l); color: var(--red-lc); }
+:root[data-skin] .settings-warning { background: var(--orange-l); color: var(--orange-lc); }
+:root[data-skin] .control-notice.update-ahead { display: block; margin-top: 10px; padding: 12px 14px; font-weight: 600; }
+/* Fremdrift: Fleetdecks .fd-minibar */
+:root[data-skin] .update-progress-track { height: 5px; border-radius: 3px; background: var(--fd-chip); box-shadow: none; }
+:root[data-skin] .update-progress-track i { border-radius: 3px; background: var(--primary); box-shadow: none; }
+/* Små indlejrede felter (nøgletal i kort): Fleetdecks .fd-machine-flade */
+:root[data-skin] :is(.control-summary, .settings-summary > span, .hero-status-grid > div, .panel-card, .quick-card) { border-color: var(--fd-border); box-shadow: none; }
+:root[data-skin] :is(.control-summary, .hero-status-grid > div) { border: 1px solid var(--fd-border); border-radius: var(--r-md); background: var(--fd-tile); }
+:root[data-skin] .quick-icon { border-radius: var(--r-default); background: var(--primary-light); color: var(--primary-lc); }
+:root[data-skin] .quick-icon.green { background: var(--teal-l); color: var(--teal-lc); }
+:root[data-skin] .quick-icon.warm { background: var(--orange-l); color: var(--orange-lc); }
+/* Dialoger: Modal */
+:root[data-skin] .sensor-history-backdrop { background: rgb(0 0 0 / 55%); backdrop-filter: blur(2px); }
+:root[data-skin] :is(.standby-dialog, .sensor-history-dialog) { border: 1px solid var(--fd-border); border-radius: var(--r-lg); background: var(--default); box-shadow: var(--shadow-md); }
+:root[data-skin][data-theme="light"] :is(.standby-dialog, .sensor-history-dialog) { background: #fff; }
+:root[data-skin] .standby-choices button strong { color: inherit; }
+:root[data-skin] .standby-choices button small { color: var(--dimmed); }
+:root[data-skin] .standby-choices button.active small { color: inherit; opacity: .8; }
+:root[data-skin] .sensor-history-heading button { border: 1px solid var(--default-border); border-radius: var(--r-default); background: var(--default); color: var(--default-color); }
+
+/* ---------- Mobil ---------- */
+:root[data-skin] .fd-tabbar button { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 0; border: 0; background: transparent; color: var(--dimmed); font: 500 10.5px/1.3 var(--font); }
+:root[data-skin] .fd-tabbar a { text-decoration: none; }
+:root[data-skin] .fd-sheet .fd-nav-danger { width: 100%; border: 0; background: transparent; color: var(--red-t); font-family: inherit; cursor: pointer; }
+:root[data-skin] .fd-sheet-appearance { display: flex; flex-direction: column; gap: 1px; }
+:root[data-skin] .fd-sheet-appearance .lbl { font-size: 12px; color: var(--dimmed); font-weight: 600; padding: 8px 12px 2px; }
+:root[data-skin] .fd-sheet-appearance .fd-menu-item { min-height: 40px; font-size: 15px; }
+@media (max-width: 48em) {
+  :root[data-skin] .fd-header { padding: 0 12px; }
+  :root[data-skin] .fd-main.content-stage, :root[data-skin][data-nav="top"] .fd-main.content-stage { padding: 72px 12px calc(76px + env(safe-area-inset-bottom)); }
+  :root[data-skin] .fd-navbar { display: none; }
+  :root[data-skin] .topbar-actions { gap: 6px; }
+  :root[data-skin] .fd-header .status-chip { height: 30px; padding: 0 9px; font-size: 12px; }
+  :root[data-skin] .fd-header .status-chip.fd-activity { display: none; }
+  :root[data-skin] .topbar-weather-button { height: 32px; padding: 0 9px; font-size: 13px; }
+  :root[data-skin] .topbar-control-notice { position: fixed; left: 12px; right: 12px; top: 64px; max-width: none; z-index: 110; }
+  :root[data-skin] :is(.primary-action, .secondary-action, .danger-outline) { min-height: 36px; }
+  :root[data-skin] .fd-main :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea) { font-size: 16px; }
+  :root[data-skin] .fd-sheet .fd-nav { min-height: 44px; font-size: 16px; }
+}
