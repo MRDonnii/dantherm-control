@@ -110,6 +110,9 @@ button:disabled{opacity:.42!important;cursor:not-allowed!important;transform:non
 .thermostat-readings small { display: block; color: #6f8898; font-size: 12.5px; font-weight: 700; }
 .thermostat-readings strong { color: #dff6ff; font-size: 15.5px; font-weight: 800; }
 .thermostat-note { margin: 0; padding: 8px 10px; border: 1px solid #5a4a22; border-radius: 9px; background: rgb(255 173 85 / 9%); color: #ffc98a; font-size: 14px; line-height: 1.35; }
+.thermostat-note.frost { border-color: #2b5a78; background: rgb(88 185 255 / 10%); color: #a9dcff; }
+.thermostat-floor { stroke: #58b9ff; stroke-width: 3; stroke-linecap: round; }
+.thermostat-confirm-box .thermostat-note { margin-top: 8px; }
 .thermostat-actions { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; gap: 6px; }
 .thermostat-actions button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid #294658; border-radius: 12px; background: #0c1b25; color: #cfe6f2; font-size: 20px; font-weight: 700; cursor: pointer; transition: .18s ease; }
 .thermostat-actions button:hover:not(:disabled) { border-color: var(--tone); color: #fff; }
@@ -122,6 +125,7 @@ button:disabled{opacity:.42!important;cursor:not-allowed!important;transform:non
   .thermostat-side { width: 100%; }
 }
 :root[data-theme="light"] .thermostat-track { stroke: #dbe7ee; }
+:root[data-theme="light"] .thermostat-note.frost { border-color: #9cc8e6; background: rgb(88 185 255 / 10%); color: #1d5d8a; }
 :root[data-theme="light"] .thermostat-tick { stroke: #c3d4de; }
 :root[data-theme="light"] .thermostat-center strong, :root[data-theme="light"] .thermostat-head span, :root[data-theme="light"] .thermostat-readings strong { color: #0f2733; }
 :root[data-theme="light"] .thermostat-readings div, :root[data-theme="light"] .thermostat-actions button { background: var(--surface); border-color: #c3d6e2; color: #20394a; }

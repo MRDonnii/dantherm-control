@@ -4,6 +4,7 @@ import { InfoList } from "../components/InfoList";
 import { requestJson } from "../lib/api";
 import { usePollHealth, useSinglePoll } from "../lib/connection";
 import { bypassTravel, formatRemaining } from "../lib/bypass";
+import { frostLockStatus, readFrostLock } from "../lib/frostLock";
 import "../styles/panels.css";
 
 type Data = Record<string, unknown>;
@@ -149,6 +150,8 @@ export function TechniquePage() {
             ]}/>
             <InfoList rows={[
               { label: "Eftervarme aktiv", value: bool(controller.actual_afterheat, "Ja", "Nej") },
+              // The Pi holds a water coil on while it freezes; see the settings.
+              { label: "Frostlås", value: frostLockStatus(readFrostLock(controller)) },
               // HAC1 locks the afterheat at 15 C outdoor or above; not a fault.
               { label: `Sommerstop (ude ≥ ${text(controller.afterheat_outdoor_cutoff ?? 15)} °C)`, value: bool(controller.actual_afterheat_outdoor_lockout, "Spærret af HAC1", "Nej") },
               { label: "RS485 eftervarmevalg", value: controller.actual_afterheat_selection === "off" ? "OFF" : controller.actual_afterheat_selection !== null && controller.actual_afterheat_selection !== undefined ? `${text(controller.actual_afterheat_selection)} °C` : "—" },

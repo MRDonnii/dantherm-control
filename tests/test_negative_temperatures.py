@@ -39,7 +39,7 @@ def test_fc04_paths_never_decode_unsigned():
 
 def test_afterheat_block_encodes_negative_temperatures_as_words():
     source = (ROOT / "gateway/dantherm_gateway.py").read_text()
-    assert 'words.append(round(float(self.state[key]) * 100) & 0xFFFF)' in source
+    assert 'words.append(round(value * 100) & 0xFFFF)' in source
     assert decode_temperature(round(-0.35 * 100) & 0xFFFF) == pytest.approx(-0.35)
 
 

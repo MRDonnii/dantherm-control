@@ -158,6 +158,8 @@ body[data-sidebar="collapsed"] .app-shell { grid-template-columns: 78px minmax(0
 .hch-bypass-countdown { fill: #d7c3ad; font-size: 14px; font-weight: 700; paint-order: stroke; stroke: #08141c; stroke-width: 4px; stroke-linejoin: round; }
 .hch-lockout-badge rect { fill: rgb(40 26 8 / 90%); stroke: #e9a54a; stroke-width: 1.2; }
 .hch-lockout-badge text { fill: #ffd08a; font-size: 13.5px; font-weight: 800; letter-spacing: .01em; }
+.hch-frost-lock-badge rect { fill: rgb(8 26 40 / 90%); stroke: #58b9ff; }
+.hch-frost-lock-badge text { fill: #a9dcff; }
 .hch-channel-label { fill: #7f98a6; font-size: 14px; font-weight: 700; letter-spacing: .02em; }
 .hch-core-port { fill: #d3dde2; font-size: 16px; font-weight: 800; opacity: .9; }
 .hch-coil rect { fill: #112631; stroke: #506f80; stroke-width: 2; }

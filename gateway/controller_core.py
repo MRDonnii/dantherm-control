@@ -51,6 +51,23 @@ COOL_BOOST_AFTERHEAT_SETPOINT = 10
 # Which indoor humidity the winter dry-air mode looks at.
 WINTER_RH_BASES = ("average", "lowest")
 VALID_AFTERHEAT_COILS = {"electric", "water"}
+# Frost lock: the water afterheat coil sits in a cold attic. While it freezes
+# the afterheat stays on (at least frost_lock_min_setpoint_c) whatever anybody
+# asks for. It releases only when every known value has been above its limit
+# plus the margin for the whole release time.
+FROST_LOCK_RELEASE_MARGIN_C = 2.0
+FROST_LOCK_RELEASE_SECONDS = 30 * 60
+# A cold value must persist this long before the lock latches, so a single
+# glitched reading (e.g. T1 = 0 after a bus fault) cannot lock in summer.
+FROST_LOCK_ENGAGE_SECONDS = 120
+# While locked, the outdoor word in HAC1 register 180 never reaches HAC1's own
+# 15 C summer lockout, so a stale or glitched T1 cannot lock the afterheat out.
+FROST_LOCK_OUTDOOR_WORD_CAP_C = 10.0
+# A failed afterheat write under the frost lock is retried at least this often.
+FROST_LOCK_RETRY_MAX_SECONDS = 60.0
+FROST_LOCK_OFF_ERROR = "Frostsikring: eftervarmen kan ikke slukkes, mens det fryser."
+FROST_LOCK_FLOOR_ERROR = "Frostsikring: eftervarmen kan ikke sættes under {floor} °C, mens det fryser."
+FROST_LOCK_COOL_ERROR = "Frostsikring: Køl kan ikke startes, mens det fryser."
 # Bonfire in the garden: the unit is switched off (standby pattern) for the
 # chosen time so no smoke is drawn in, then starts again by itself.
 BONFIRE_PROFILE = {"extract": 0, "supply": 0, "name": "Bål"}
@@ -171,6 +188,12 @@ def _time_window_active(now: datetime, start: str, end: str) -> bool:
     if first < last:
         return first <= current < last
     return current >= first or current < last
+
+
+def _danish_number(value: float, digits: int | None = None) -> str:
+    """18 -> "18", 2.5 -> "2,5"; with digits a fixed number of decimals."""
+    text = f"{value:.{digits}f}" if digits is not None else f"{float(value):g}"
+    return text.replace(".", ",")
 
 
 def _round(value: float | None, digits: int = 2) -> float | None:
@@ -308,6 +331,16 @@ class ControllerState:
         "afterheat_room_max": 24,
         "afterheat_room_step_minutes": 10,
         "afterheat_room_source": "auto",
+        # Frost lock for a water afterheat coil (see FROST_LOCK_*): T1 or the
+        # attic at or below frost_lock_outdoor_c, or the water-side frost
+        # sensor at or below frost_lock_coil_c, keeps the afterheat on.
+        "frost_lock_enabled": True,
+        "frost_lock_outdoor_c": 3.0,
+        "frost_lock_coil_c": 8.0,
+        "frost_lock_min_setpoint_c": 18.0,
+        # Set by the engine only: it has been freezing and has not thawed for
+        # long enough yet. Saved so a restart without readings stays locked.
+        "frost_lock_latched": False,
         # Fireplace mode held by a stove sensor or an external switch.
         "fireplace_auto_enabled": False,
         "fireplace_auto_source": "",
@@ -606,11 +639,12 @@ class ControllerState:
 
     BOOL_KEYS = ("sizing_enabled", "afterheat_room_enabled", "fireplace_auto_enabled",
                  "humidity_smart_enabled", "dry_protection_enabled", "balance_enabled", "pm25_enabled",
-                 "bathroom_night_drying", "winter_dry_enabled")
+                 "bathroom_night_drying", "winter_dry_enabled", "frost_lock_enabled")
 
     def _sanitize_advanced(self) -> None:
         for key in self.BOOL_KEYS:
             self.data[key] = bool(self.data.get(key, False))
+        self.data["frost_lock_latched"] = self.data.get("frost_lock_latched") is True
         if self.data.get("balance_ratio_mode") not in BALANCE_RATIO_MODES:
             self.data["balance_ratio_mode"] = "auto"
         if self.data.get("winter_rh_basis") not in WINTER_RH_BASES:
@@ -671,6 +705,8 @@ class ControllerState:
         ("bathroom_rise_percent", 3.0, 20.0),
         ("winter_outdoor_max", -25.0, 15.0), ("winter_outdoor_hysteresis", 0.5, 10.0),
         ("winter_rh_limit", 20.0, 55.0), ("winter_rh_hysteresis", 1.0, 10.0),
+        ("frost_lock_outdoor_c", -10.0, 10.0), ("frost_lock_coil_c", 3.0, 15.0),
+        ("frost_lock_min_setpoint_c", 15.0, 25.0),
     )
     ADVANCED_INTS = (
         ("house_bathrooms", 0, 10), ("house_utility_rooms", 0, 10),
@@ -946,6 +982,8 @@ class ControllerState:
 
     def _configure(self, patch: dict[str, object]) -> dict[str, object]:
         with self.lock:
+            # What the frost lock compares a resent form against.
+            before_afterheat = (self.data.get("afterheat_enabled"), int(self.data.get("afterheat_setpoint", 20)))
             allowed = {
                 "mode", "manual_level", "local_normal_level", "local_min_level", "local_max_level", "air_quality_max_level",
                 "rh_setpoint", "rh_hysteresis", "co2_setpoint", "co2_hysteresis", "co2_offset",
@@ -1212,6 +1250,7 @@ class ControllerState:
                 # Six steps: switching the balance off keeps the balanced supply.
                 self.data["six_step_profiles"] = _copy_profiles(self.data["profiles"])
             self._configure_advanced(patch)
+            self._check_frost_lock(patch, *before_afterheat)
             self._sanitize()
             self._rebalance(strict=True)
             self.data["updated_at"] = time.time()
@@ -1237,6 +1276,7 @@ class ControllerState:
         "bathroom_max_minutes", "bathroom_rooms",
         "winter_dry_enabled", "winter_outdoor_max", "winter_outdoor_hysteresis", "winter_rh_limit",
         "winter_rh_hysteresis", "winter_rh_basis", "winter_level", "winter_hold_minutes",
+        "frost_lock_enabled", "frost_lock_outdoor_c", "frost_lock_coil_c", "frost_lock_min_setpoint_c",
     )
     ADVANCED_LABELS = {
         "house_area_m2": "Boligareal", "ceiling_height_m": "Loftshøjde",
@@ -1259,7 +1299,37 @@ class ControllerState:
         "winter_outdoor_max": "Vinter: koldt ude under", "winter_outdoor_hysteresis": "Vinter: hysterese ude",
         "winter_rh_limit": "Vinter: tør luft under", "winter_rh_hysteresis": "Vinter: hysterese fugt",
         "winter_level": "Vinter: grundtrin", "winter_hold_minutes": "Vinter: mindste tid",
+        "frost_lock_outdoor_c": "Frostlås: ude eller loft ved højst",
+        "frost_lock_coil_c": "Frostlås: frostføler ved højst",
+        "frost_lock_min_setpoint_c": "Frostlås: mindste setpunkt",
     }
+
+    def frost_lock_in_force(self) -> bool:
+        """The frost lock holds the afterheat: enabled, a water coil and frost latched by the engine."""
+        d = self.data
+        return (d.get("frost_lock_enabled") is True and d.get("afterheat_coil") == "water"
+                and d.get("frost_lock_latched") is True)
+
+    def frost_lock_floor(self) -> float:
+        return float(self.data.get("frost_lock_min_setpoint_c", self.DEFAULTS["frost_lock_min_setpoint_c"]))
+
+    def _check_frost_lock(self, patch: dict[str, object], enabled_before: object, setpoint_before: int) -> None:
+        """Refuse what would switch the afterheat off while it freezes.
+
+        Forms resend every field, so a value equal to the stored one is fine.
+        The stored choices are never rewritten; the engine enforces the floor.
+        """
+        if not self.frost_lock_in_force():
+            return
+        if patch.get("afterheat_enabled") is False and enabled_before is not False:
+            raise ControllerError(FROST_LOCK_OFF_ERROR)
+        if "afterheat_setpoint" in patch:
+            floor = self.frost_lock_floor()
+            value = int(patch["afterheat_setpoint"])
+            if value < floor and value < setpoint_before:
+                raise ControllerError(FROST_LOCK_FLOOR_ERROR.format(floor=_danish_number(floor)))
+        if "cool_boost_minutes" in patch and int(patch["cool_boost_minutes"]) > 0:
+            raise ControllerError(FROST_LOCK_COOL_ERROR)
 
     def _configure_six_steps(self, patch: dict[str, object]) -> None:
         """Six steps: extract and supply gear set per step, as before."""
@@ -1627,6 +1697,12 @@ class ControllerEngine:
         self.winter_pause_until = 0.0
         self.winter_pause_reason: str | None = None
         self.winter_state = "disabled"
+        # Frost lock (see _update_frost_lock); the latch itself is saved in the config.
+        self.frost_lock_active = False
+        self.frost_lock_reason: str | None = None
+        self.frost_release_since: float | None = None
+        self.frost_cold_since: float | None = None
+        self.frost_engage_seconds = FROST_LOCK_ENGAGE_SECONDS
         self.last_applied: dict[str, object] = {}
         self.last_applied_at: dict[str, float] = {}
         self.last_write_at: float | None = None
@@ -2049,6 +2125,84 @@ class ControllerEngine:
             return level, f"Vinter: tør luft – holder trin {base} ({self._winter_text()})"
         return level, f"Vinter: tør luft – grundtrin {base} ({self._winter_text()}); {reason}"
 
+    def frost_readings(self) -> list[tuple[str, float, float]]:
+        """Known (label, temperature, limit) values the frost lock looks at."""
+        d = self.config.data
+        outdoor_limit = float(d["frost_lock_outdoor_c"])
+        if "outdoor_temperature" in self.external:
+            outdoor = self.external.get("outdoor_temperature")
+        else:
+            outdoor = self.measurements.get("outdoor")
+        readings = []
+        for label, value, limit in (
+            ("ude", outdoor, outdoor_limit),
+            ("loft", self.external.get("attic_temperature"), outdoor_limit),
+            ("frostføler", self.external.get("afterheat_frost_temperature"), float(d["frost_lock_coil_c"])),
+        ):
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
+                readings.append((label, float(value), limit))
+        return readings
+
+    def _update_frost_lock(self, now: float) -> bool:
+        """Decide the afterheat frost lock; the one place this is decided.
+
+        Any known value at or below its limit for FROST_LOCK_ENGAGE_SECONDS
+        latches the frost state (a lone glitched reading does not).
+        It releases only when every known value has been above its limit plus
+        FROST_LOCK_RELEASE_MARGIN_C for FROST_LOCK_RELEASE_SECONDS without a
+        break. With no known value the previous state is kept (fail-safe).
+        The lock acts only when enabled and the coil is a water coil.
+        """
+        d = self.config.data
+        readings = self.frost_readings()
+        latched = d.get("frost_lock_latched") is True
+        cold = [(label, value, limit) for label, value, limit in readings if value <= limit]
+        reason: str | None = None
+        if not cold:
+            self.frost_cold_since = None
+        if cold:
+            self.frost_release_since = None
+            reason = "Frost: " + ", ".join(
+                f"{label} {_danish_number(value, 1)} °C (grænse {_danish_number(limit)} °C)" for label, value, limit in cold)
+            if not latched:
+                if self.frost_cold_since is None:
+                    self.frost_cold_since = now
+                if now - self.frost_cold_since >= self.frost_engage_seconds:
+                    latched = True
+                    self.frost_cold_since = None
+        elif not readings:
+            self.frost_release_since = None
+            reason = "Frost: ingen temperaturer kendt, frostlåsen holdes for en sikkerheds skyld"
+        elif latched:
+            waiting = [(label, value, limit + FROST_LOCK_RELEASE_MARGIN_C) for label, value, limit in readings
+                       if value <= limit + FROST_LOCK_RELEASE_MARGIN_C]
+            if waiting:
+                self.frost_release_since = None
+                reason = "Frost: venter på tø, " + ", ".join(
+                    f"{label} {_danish_number(value, 1)} °C (slipper over {_danish_number(limit)} °C)"
+                    for label, value, limit in waiting)
+            else:
+                if self.frost_release_since is None:
+                    self.frost_release_since = now
+                left = FROST_LOCK_RELEASE_SECONDS - (now - self.frost_release_since)
+                if left <= 0:
+                    latched = False
+                    self.frost_release_since = None
+                else:
+                    reason = f"Frost: tøvejr, frostlåsen slipper om ca. {max(1, math.ceil(left / 60))} min"
+        else:
+            self.frost_release_since = None
+        if latched != (d.get("frost_lock_latched") is True):
+            d["frost_lock_latched"] = latched
+            d["updated_at"] = now
+            try:
+                self.config.save()
+            except OSError:
+                pass  # the latch still works in memory
+        self.frost_lock_active = self.config.frost_lock_in_force()
+        self.frost_lock_reason = reason if self.frost_lock_active else None
+        return self.frost_lock_active
+
     def _afterheat_setpoint(self, now: float) -> tuple[int, str]:
         """Afterheat setpoint, moved one degree per interval toward the room target."""
         d = self.config.data
@@ -2092,6 +2246,12 @@ class ControllerEngine:
             self.config._expire_max_level(now)
             d = self.config.data
             self._update_winter(now)
+            frost_lock = self._update_frost_lock(now)
+            if frost_lock and d.get("cool_boost_until"):
+                # Køl lets freezing air past the coil: it ends when the frost lock engages.
+                d["cool_boost_until"], d["cool_boost_minutes"] = None, 0
+                d["updated_at"] = now
+                self.config.save()
             if d["mode"] == "manual":
                 source, level, reason = "manual", int(d["manual_level"]), "Manuelt valgt niveau"
                 if self.config.dantherm_steps() and level == MAX_LEVEL and d.get("max_level_until"):
@@ -2121,6 +2281,15 @@ class ControllerEngine:
             if flags.get("cool_boost_active"):
                 # Cool lets cold outdoor air in on purpose: the afterheat must not warm it up again.
                 afterheat_setpoint, afterheat_reason = COOL_BOOST_AFTERHEAT_SETPOINT, "Køl: eftervarme holdt nede"
+            frost_floor = self.config.frost_lock_floor()
+            if frost_lock and afterheat_setpoint < frost_floor:
+                afterheat_setpoint = math.ceil(frost_floor)
+                afterheat_reason = f"Frostsikring: mindst {_danish_number(frost_floor)} °C, mens det fryser"
+            # With the fans stopped (standby or bonfire) the water coil would heat
+            # still air, so the afterheat is switched off and restored afterwards.
+            # The frost lock keeps it on whatever was chosen.
+            fans_stopped = bool(flags.get("standby_active") or flags.get("bonfire_active"))
+            afterheat_on = frost_lock or (bool(d["afterheat_enabled"]) and not fans_stopped)
             d["effective_source"] = source
             d["effective_level"] = level
             d["effective_reason"] = reason
@@ -2157,6 +2326,13 @@ class ControllerEngine:
                 "next_retry_at": min(self._retry_at.values(), default=None),
                 "controller_uptime_seconds": round(now - self.started_at, 1),
                 "afterheat_effective_setpoint": afterheat_setpoint,
+                "afterheat_command": afterheat_setpoint if afterheat_on else None,
+                "afterheat_frost_lock": frost_lock,
+                "afterheat_frost_lock_reason": self.frost_lock_reason,
+                "afterheat_frost_lock_floor": frost_floor,
+                "afterheat_frost_lock_release_seconds": (
+                    max(0, math.ceil(FROST_LOCK_RELEASE_SECONDS - (now - self.frost_release_since)))
+                    if frost_lock and self.frost_release_since is not None else None),
                 "afterheat_room_state": self.afterheat_room_state,
                 "afterheat_room_reason": afterheat_reason,
                 "afterheat_room_temperature": self.external.get("afterheat_room_temperature"),
@@ -2179,6 +2355,7 @@ class ControllerEngine:
         fn: Callable | None,
         *args,
         refresh_seconds: float | None = None,
+        keep_retrying: bool = False,
     ) -> None:
         now = time.time()
         unchanged = self.last_applied.get(key) == value
@@ -2191,7 +2368,8 @@ class ControllerEngine:
             self._failure_values[key] = value
             self._failure_counts[key] = 0
             self._retry_at[key] = 0.0
-        if self._failure_counts.get(key, 0) >= self.retry_limit or now < self._retry_at.get(key, 0.0):
+        gave_up = self._failure_counts.get(key, 0) >= self.retry_limit and not keep_retrying
+        if gave_up or now < self._retry_at.get(key, 0.0):
             return
         if fn is None:
             error = RuntimeError(f"Hardware binding mangler: {key}")
@@ -2206,7 +2384,10 @@ class ControllerEngine:
             self.last_error = f"{key}: {error}"
             self.write_failures += 1
             self._failure_counts[key] = self._failure_counts.get(key, 0) + 1
-            self._retry_at[key] = now + self.retry_base_seconds * 2 ** (self._failure_counts[key] - 1)
+            delay = self.retry_base_seconds * 2 ** (self._failure_counts[key] - 1)
+            if keep_retrying:
+                delay = min(delay, FROST_LOCK_RETRY_MAX_SECONDS)
+            self._retry_at[key] = now + delay
             raise
         else:
             self.last_applied[key] = value
@@ -2216,9 +2397,28 @@ class ControllerEngine:
             self._failure_counts[key] = 0
             self._retry_at.pop(key, None)
 
+    def _apply_afterheat(self, snapshot: dict[str, object]) -> None:
+        command = snapshot.get("afterheat_command")
+        frost_lock = snapshot.get("afterheat_frost_lock") is True
+        self._call(
+            "afterheat_setpoint",
+            None if command is None else int(command),
+            self.hardware.set_afterheat_setpoint,
+            None if command is None else int(command),
+            refresh_seconds=4.0,
+            keep_retrying=frost_lock,
+        )
+
     def apply(self) -> dict[str, object]:
         """Apply only changed desired values; arbitration is enforced below this layer."""
         snapshot = self.resolve()
+        frost_error: Exception | None = None
+        if snapshot.get("afterheat_frost_lock") is True:
+            # Frost: the afterheat goes first, so a failing write below can never skip it.
+            try:
+                self._apply_afterheat(snapshot)
+            except Exception as error:  # the other writes still run; raised at the end
+                frost_error = error
         # Standby and bonfire both switch the unit off with the standby pattern.
         standby = snapshot.get("standby_active") is True or snapshot.get("bonfire_active") is True
         previous_standby = self.last_applied.get("standby")
@@ -2240,16 +2440,9 @@ class ControllerEngine:
         if profile and not standby:
             pair = (int(profile["extract"]), int(profile["supply"]))
             self._call("fan_pair", pair, self.hardware.write_fan_pair, *pair)
-        enabled = bool(snapshot["afterheat_enabled"])
-        setpoint = int(snapshot.get("afterheat_effective_setpoint") or snapshot["afterheat_setpoint"])
-        # With the fans stopped (standby or bonfire) the water coil would heat
-        # still air, so the afterheat is switched off and restored afterwards.
-        command = setpoint if enabled and not standby else None
-        self._call(
-            "afterheat_setpoint",
-            command,
-            self.hardware.set_afterheat_setpoint,
-            command,
-            refresh_seconds=4.0,
-        )
+        if snapshot.get("afterheat_frost_lock") is True:
+            if frost_error is not None:
+                raise frost_error
+        else:
+            self._apply_afterheat(snapshot)
         return self.resolve()

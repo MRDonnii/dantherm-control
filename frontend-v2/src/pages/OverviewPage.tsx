@@ -7,6 +7,7 @@ import { ArrowRight, CloudFog, Flame, Gauge, House, Leaf, Power, Snowflake, Wind
 import { Hch5UnitDiagram } from "../components/Hch5UnitDiagram";
 import { AfterheatThermostat } from "../components/AfterheatThermostat";
 import { describeControl } from "../lib/control";
+import { FROST_COOL_HINT, FROST_COOL_MESSAGE, FROST_OFF_MESSAGE, frostFloorMessage, frostLockRefuses, readFrostLock } from "../lib/frostLock";
 import { SENSOR_HISTORY, SensorHistoryDialog } from "../components/SensorHistoryDialog";
 import { postJson, requestJson } from "../lib/api";
 import { usePollHealth, useSinglePoll } from "../lib/connection";
@@ -218,7 +219,12 @@ export function OverviewPage() {
   const level = number(controller.effective_level) ?? 3;
   const afterheatSetpoint = number(controller.afterheat_setpoint) ?? 20;
   const afterheatEnabled = controller.afterheat_enabled !== false;
-  const committedAfterheat: AfterheatValue = afterheatSent ?? (afterheatEnabled ? afterheatSetpoint : "off");
+  // While it freezes the Pi keeps the afterheat on at the floor or above, even
+  // when the stored choice is OFF or lower; show what is actually sent to HAC1.
+  const frostLock = readFrostLock(controller);
+  const committedAfterheat: AfterheatValue = afterheatSent ?? (frostLock.locked
+    ? Math.max(afterheatSetpoint, frostLock.floor)
+    : afterheatEnabled ? afterheatSetpoint : "off");
   const shownAfterheat: AfterheatValue = afterheatDraft ?? committedAfterheat;
   if (typeof afterheatSetpoint === "number") lastAfterheatOn.current = afterheatSetpoint;
   const actualAfterheatSelectionNumber = number(controller.actual_afterheat_selection);
@@ -248,11 +254,18 @@ export function OverviewPage() {
   // +/-, the dial and the power button only move a draft; nothing is sent
   // before the user confirms, so a slip cannot change the afterheat.
   const setAfterheatTarget = (next: AfterheatValue) => {
+    if (frostLockRefuses(frostLock, next)) return;
     if (next !== "off") lastAfterheatOn.current = next;
     setAfterheatDraft(next === committedAfterheat ? null : next);
   };
   const confirmAfterheat = () => {
     if (afterheatDraft === null) return;
+    // The lock may have engaged while a draft was open; the Pi would refuse it.
+    if (frostLockRefuses(frostLock, afterheatDraft)) {
+      setNotice(afterheatDraft === "off" ? FROST_OFF_MESSAGE : frostFloorMessage(frostLock.floor));
+      setAfterheatDraft(null);
+      return;
+    }
     const seq = ++afterheatSeq.current;
     setAfterheatSent(afterheatDraft);
     setAfterheatDraft(null);
@@ -269,7 +282,8 @@ export function OverviewPage() {
       <AfterheatThermostat value={shownAfterheat} onChange={setAfterheatTarget} heating={heating} lockout={afterheatLockout}
         cutoff={afterheatCutoff} outdoor={outdoor} airBefore={correctedT2 ?? number(controller.actual_supply_before_heater_temperature)} airAfter={afterHeater}
         registered={actualAfterheatSelection} lastOn={lastAfterheatOn.current}
-        current={committedAfterheat} onConfirm={confirmAfterheat} onCancel={() => setAfterheatDraft(null)} busy={busy !== null}/>
+        current={committedAfterheat} onConfirm={confirmAfterheat} onCancel={() => setAfterheatDraft(null)} busy={busy !== null}
+        frostLock={frostLock.locked} floor={frostLock.floor}/>
     </article>
   );
 
@@ -310,7 +324,7 @@ export function OverviewPage() {
             frost={frost} flowWater={flowWater} returnWater={returnWater}
             supplyRpm={supplyRpm} extractRpm={extractRpm} supplyPercent={supplyPercent} extractPercent={extractPercent}
             bypassActual={bypassActual} bypassRequest={bypassRequest} heating={heating} recovery={recovery} supplyRecovery={t2Recovery}
-            busActive={busHealthy} bypassRaw={bypassRaw} afterheatLockout={afterheatLockout} afterheatCoil={controller.afterheat_coil === "water" ? "water" : "electric"}
+            busActive={busHealthy} bypassRaw={bypassRaw} afterheatLockout={afterheatLockout} afterheatFrostLock={frostLock.locked} afterheatCoil={controller.afterheat_coil === "water" ? "water" : "electric"}
             bypassTravelDirection={bypassTravelDirection} bypassTravelSeconds={bypassTravelSeconds} bypassTravelTotal={bypassTravelTotal}
             control={online ? describeControl(controller) : null}
           />
@@ -351,8 +365,8 @@ export function OverviewPage() {
           </FunctionTile>
           <FunctionTile active={controller.cooling_enabled === true || coolActive} icon={<Snowflake size={22}/>} label="Frikøling"
             state={coolActive ? "Køl aktiv" : coolingLabel(controller.cooling_state)}
-            hint={coolActive ? `${remaining(controller.cool_boost_remaining_seconds)} · bypass åben og boost` : controller.cooling_enabled === true ? "Automatik aktiv" : "Automatik slået fra"}>
-            <button className={coolActive ? "active" : ""} aria-haspopup="dialog" disabled={busy !== null || fireplace || standbyActive} title={fireplace ? "Ikke under pejsefunktion" : "Åbn bypass og kør boost i en periode"} onClick={() => setCoolDialog(true)}>Køl</button>
+            hint={coolActive ? `${remaining(controller.cool_boost_remaining_seconds)} · bypass åben og boost` : frostLock.locked ? FROST_COOL_HINT : controller.cooling_enabled === true ? "Automatik aktiv" : "Automatik slået fra"}>
+            <button className={coolActive ? "active" : ""} aria-haspopup="dialog" disabled={busy !== null || fireplace || standbyActive || frostLock.locked} title={frostLock.locked ? FROST_COOL_HINT : fireplace ? "Ikke under pejsefunktion" : "Åbn bypass og kør boost i en periode"} onClick={() => setCoolDialog(true)}>Køl</button>
             {coolActive && <button className="stop" disabled={busy !== null} onClick={() => void command("cool-stop", { cool_boost_minutes: 0 }, "Køl stoppet.")}>Stop</button>}
             <button className={controller.cooling_enabled === true ? "active" : ""} aria-pressed={controller.cooling_enabled === true} disabled={busy !== null} onClick={() => controller.cooling_enabled !== true && void command("cooling", { cooling_enabled: true }, "Frikøling aktiveret.")}>Til</button>
             <button className={controller.cooling_enabled !== true ? "active" : ""} aria-pressed={controller.cooling_enabled !== true} disabled={busy !== null} onClick={() => controller.cooling_enabled === true && void command("cooling", { cooling_enabled: false }, "Frikøling deaktiveret.")}>Fra</button>
@@ -441,9 +455,10 @@ export function OverviewPage() {
           <div className="sensor-history-heading"><div><span className="eyebrow">FRIKØLING</span><h2 id="cool-dialog-title">{coolActive ? "Køl kører" : "Køl huset"}</h2></div><button type="button" aria-label="Luk" onClick={() => setCoolDialog(false)}><X size={20}/></button></div>
           <p className="standby-dialog-lead">{coolActive
             ? `Bypass er åben og anlægget kører boost · ${remaining(controller.cool_boost_remaining_seconds)}. Derefter går det tilbage til normal drift.`
+            : frostLock.locked ? FROST_COOL_MESSAGE
             : `Bypass åbnes, anlægget kører boost, og eftervarmen holdes nede. Bagefter går det selv tilbage til normal drift.${outdoor === null ? "" : ` Udeluft lige nu ${temp(outdoor)}.`}`}</p>
           <div className="standby-choices">
-            {COOL_CHOICES.map(([minutes, label]) => <button key={minutes} type="button" className={coolActive && number(controller.cool_boost_minutes) === minutes ? "active" : ""} disabled={busy !== null} onClick={() => { setCoolDialog(false); void command(`cool-${minutes}`, { cool_boost_minutes: minutes }, `Køl startet i ${label}.`); }}><strong>{label}</strong><small>Bypass åben og boost</small></button>)}
+            {COOL_CHOICES.map(([minutes, label]) => <button key={minutes} type="button" className={coolActive && number(controller.cool_boost_minutes) === minutes ? "active" : ""} disabled={busy !== null || frostLock.locked} title={frostLock.locked ? FROST_COOL_HINT : undefined} onClick={() => { setCoolDialog(false); void command(`cool-${minutes}`, { cool_boost_minutes: minutes }, `Køl startet i ${label}.`); }}><strong>{label}</strong><small>Bypass åben og boost</small></button>)}
           </div>
           {coolActive && <button type="button" className="standby-on-action" disabled={busy !== null} onClick={() => { setCoolDialog(false); void command("cool-stop", { cool_boost_minutes: 0 }, "Køl stoppet."); }}>Stop køl</button>}
         </section>

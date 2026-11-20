@@ -42,6 +42,8 @@ export interface Hch5UnitDiagramProps {
   bypassTravelTotal?: number | null;
   /** HAC1 outdoor lockout: afterheat never runs at 15 C outdoor or above. */
   afterheatLockout?: boolean;
+  /** Pi frost lock: the afterheat is held on while it freezes and cannot be switched off. */
+  afterheatFrostLock?: boolean;
   /** Afterheater drawn after the unit: an electric element (default) or a water coil fed with flow/return water. */
   afterheatCoil?: AfterheatCoil;
   /** What currently decides the ventilation, shown bottom-right below T4. */
@@ -408,9 +410,18 @@ function LockoutBadge() {
   return <g className="hch-lockout-badge"><rect x="-58" y="-25" width="116" height="50" rx="10"/><text x="0" y="-4" textAnchor="middle">Sommerstop</text><text x="0" y="15" textAnchor="middle">ude ≥ 15 °C</text></g>;
 }
 
+// The Pi's frost lock keeps the afterheat on while it freezes; it takes the
+// place of the summer stop badge (the Pi also keeps HAC1 out of that lockout).
+function FrostLockBadge() {
+  return <g className="hch-lockout-badge hch-frost-lock-badge"><rect x="-58" y="-25" width="116" height="50" rx="10"/><text x="0" y="-4" textAnchor="middle">Frostlås</text><text x="0" y="15" textAnchor="middle">altid tændt</text></g>;
+}
+function CoilBadge({ lockout, frostLock }: { lockout: boolean; frostLock: boolean }) {
+  return frostLock ? <FrostLockBadge/> : lockout ? <LockoutBadge/> : null;
+}
+
 // Electric afterheater: heating elements across the duct that glow while it heats.
-function ElectricCoil({ heating, lockout }: { heating: boolean; lockout: boolean }) {
-  return <g className={`hch-external-coil${heating?" active":""}`} transform={`translate(${COIL_AT[0]} ${COIL_AT[1]})`}><rect className="coil-case" x="-48" y="-68" width="96" height="136" rx="12"/><rect className="coil-duct" x="-61" y="-48" width="122" height="96" rx="20"/>{[-27,-14,-1,12,25].map(o=><path key={o} className="coil-pipe" d={`M${o} -42 C${o-12} -24 ${o+12} -8 ${o} 10 C${o-12} 27 ${o+12} 36 ${o} 43`}/>) }<circle className="water-port" cx="34" cy="-75" r="5"/><circle className="water-port" cx="-34" cy="75" r="5"/><text className="hch-part-label" x="0" y="93" textAnchor="middle">Ekstern eftervarme · HAC1</text>{lockout&&<LockoutBadge/>}</g>;
+function ElectricCoil({ heating, lockout, frostLock }: { heating: boolean; lockout: boolean; frostLock: boolean }) {
+  return <g className={`hch-external-coil${heating?" active":""}`} transform={`translate(${COIL_AT[0]} ${COIL_AT[1]})`}><rect className="coil-case" x="-48" y="-68" width="96" height="136" rx="12"/><rect className="coil-duct" x="-61" y="-48" width="122" height="96" rx="20"/>{[-27,-14,-1,12,25].map(o=><path key={o} className="coil-pipe" d={`M${o} -42 C${o-12} -24 ${o+12} -8 ${o} 10 C${o-12} 27 ${o+12} 36 ${o} 43`}/>) }<circle className="water-port" cx="34" cy="-75" r="5"/><circle className="water-port" cx="-34" cy="75" r="5"/><text className="hch-part-label" x="0" y="93" textAnchor="middle">Ekstern eftervarme · HAC1</text><CoilBadge lockout={lockout} frostLock={frostLock}/></g>;
 }
 
 // Water afterheat coil: a copper serpentine through aluminium fins. Flow water
@@ -450,7 +461,7 @@ export function waterPath(flow: Num, ret: Num): { flow: string; mid: string; ret
 function WaterCurrent({ d }: { d: string }) {
   return <g className="water-flow"><path className="water-current" d={d}/><path className="water-bubbles" d={d}/></g>;
 }
-function WaterCoil({ heating, lockout, flowWater, returnWater }: { heating: boolean; lockout: boolean; flowWater: Num; returnWater: Num }) {
+function WaterCoil({ heating, lockout, frostLock, flowWater, returnWater }: { heating: boolean; lockout: boolean; frostLock: boolean; flowWater: Num; returnWater: Num }) {
   const local = ([x, y]: Point): Point => [x - COIL_AT[0], y - COIL_AT[1]];
   const [sx, sy] = local(WATER_SUPPLY_TO), [rx, ry] = local(WATER_RETURN_TO), [vx, vy] = local(WATER_VALVE_AT);
   const colours = waterPath(flowWater, returnWater);
@@ -469,7 +480,7 @@ function WaterCoil({ heating, lockout, flowWater, returnWater }: { heating: bool
     <rect className="coil-case" x="-48" y="-68" width="96" height="136" rx="12"/><rect className="coil-duct" x="-61" y="-48" width="122" height="96" rx="20"/>
     {WATER_FINS.map(y => <path key={y} className="coil-fin" d={`M-44 ${y} H44`}/>)}
     <path className="water-tube-shell" d={WATER_TUBE}/><path className="water-tube-core" d={WATER_TUBE} stroke="url(#waterCoilTint)"/><WaterCurrent d={WATER_TUBE}/>
-    {lockout && <LockoutBadge/>}
+    <CoilBadge lockout={lockout} frostLock={frostLock}/>
   </g>;
 }
 
@@ -524,7 +535,7 @@ function sameProps(a: Hch5UnitDiagramProps, b: Hch5UnitDiagramProps) {
 export const Hch5UnitDiagram = memo(Hch5UnitDiagramView, sameProps);
 
 function Hch5UnitDiagramView(props:Hch5UnitDiagramProps) {
-  const {outdoor,extract,exhaust,afterHeater,beforeHeater=null,t2Corrected=false,beforeHeaterEstimate=null,frost,flowWater,returnWater,supplyRpm,extractRpm,supplyPercent,extractPercent,bypassActual,bypassRequest,heating,recovery,supplyRecovery=null,busActive=false,bypassRaw=null,bypassTravelDirection=null,bypassTravelSeconds=null,bypassTravelTotal=null,afterheatLockout=false,afterheatCoil="electric",control=null,onTemperatureClick}=props;
+  const {outdoor,extract,exhaust,afterHeater,beforeHeater=null,t2Corrected=false,beforeHeaterEstimate=null,frost,flowWater,returnWater,supplyRpm,extractRpm,supplyPercent,extractPercent,bypassActual,bypassRequest,heating,recovery,supplyRecovery=null,busActive=false,bypassRaw=null,bypassTravelDirection=null,bypassTravelSeconds=null,bypassTravelTotal=null,afterheatLockout=false,afterheatFrostLock=false,afterheatCoil="electric",control=null,onTemperatureClick}=props;
   const water = afterheatCoil === "water";
   const waterDelta = flowWater === null || returnWater === null ? null : flowWater - returnWater;
   // The unit reports only closed/opening/closing/open and needs about three
@@ -658,7 +669,7 @@ function Hch5UnitDiagramView(props:Hch5UnitDiagramProps) {
             <rect className="bypass-actuator" x="-15" y="13" width="30" height="11" rx="4"/>
           </g>
       </g>
-      {water ? <WaterCoil heating={heating} lockout={afterheatLockout} flowWater={flowWater} returnWater={returnWater}/> : <ElectricCoil heating={heating} lockout={afterheatLockout}/>}
+      {water ? <WaterCoil heating={heating} lockout={afterheatLockout} frostLock={afterheatFrostLock} flowWater={flowWater} returnWater={returnWater}/> : <ElectricCoil heating={heating} lockout={afterheatLockout} frostLock={afterheatFrostLock}/>}
       <Rs485Wiring active={busActive} valveAt={water ? [WATER_VALVE_AT[0], WATER_VALVE_AT[1] + 14] : [23, 446]}/>
     </svg>
       {/* The core looks solid unless the user has opened it: the air layers are
@@ -736,6 +747,6 @@ function Hch5UnitDiagramView(props:Hch5UnitDiagramProps) {
       </div>
       <div className="hch-mobile-subreadings"><button onClick={() => onTemperatureClick?.("frost")}>Frost <strong>{fmt(frost)}</strong></button><button onClick={() => onTemperatureClick?.("flowWater")}>Vand frem <strong>{fmt(flowWater)}</strong></button><button onClick={() => onTemperatureClick?.("returnWater")}>Vand retur <strong>{fmt(returnWater)}</strong></button><button onClick={() => onTemperatureClick?.("waterDelta")}>Afkøl <strong>{fmt(waterDelta)}</strong></button></div>
     </div>
-    <div className="unit-readback-row"><div className="unit-readback"><span className="readback-icon fan"/><div><small>Tilluft ventilator</small><strong>{int(supplyRpm)} RPM</strong><em>{int(supplyPercent)}%</em></div></div><div className="unit-readback"><span className="readback-icon fan"/><div><small>Fraluft ventilator</small><strong>{int(extractRpm)} RPM</strong><em>{int(extractPercent)}%</em></div></div><div className="unit-readback"><span className={`readback-icon damper ${bypassOpen?"active":""}`}/><div><small>Bypass-spjæld</small><strong>{bypassPhase?bypassLabel:bypassOpen?"Åbent":"Lukket"}</strong><em>{bypassAwaitingEnd?"Afventer endestilling":bypassRemaining===null?`Ønske: ${bypassWanted?"On":"Auto"}`:`ca. ${formatRemaining(bypassRemaining)} tilbage`}</em></div></div><div className="unit-readback"><span className={`readback-icon heater ${heating?"active":""}`}/><div><small>Ekstern eftervarme</small><strong>{heating?"Aktiv":afterheatLockout?"Spærret":"Ikke aktiv"}</strong><em>{afterheatLockout?"Sommerstop: ude ≥ 15 °C":"Kun setpunkt styres"}</em></div></div></div>
+    <div className="unit-readback-row"><div className="unit-readback"><span className="readback-icon fan"/><div><small>Tilluft ventilator</small><strong>{int(supplyRpm)} RPM</strong><em>{int(supplyPercent)}%</em></div></div><div className="unit-readback"><span className="readback-icon fan"/><div><small>Fraluft ventilator</small><strong>{int(extractRpm)} RPM</strong><em>{int(extractPercent)}%</em></div></div><div className="unit-readback"><span className={`readback-icon damper ${bypassOpen?"active":""}`}/><div><small>Bypass-spjæld</small><strong>{bypassPhase?bypassLabel:bypassOpen?"Åbent":"Lukket"}</strong><em>{bypassAwaitingEnd?"Afventer endestilling":bypassRemaining===null?`Ønske: ${bypassWanted?"On":"Auto"}`:`ca. ${formatRemaining(bypassRemaining)} tilbage`}</em></div></div><div className="unit-readback"><span className={`readback-icon heater ${heating?"active":""}`}/><div><small>Ekstern eftervarme</small><strong>{heating?"Aktiv":afterheatLockout?"Spærret":"Ikke aktiv"}</strong><em>{afterheatFrostLock?"Frostlås: kan ikke slukkes":afterheatLockout?"Sommerstop: ude ≥ 15 °C":"Kun setpunkt styres"}</em></div></div></div>
   </div>;
 }

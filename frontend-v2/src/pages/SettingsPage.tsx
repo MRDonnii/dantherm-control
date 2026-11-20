@@ -7,6 +7,7 @@ import { airflowPlan, balancedProfiles, effectiveProfiles, sideConstants, type A
 import { LEVEL_NAMES, MAX_LEVEL_HOURS, NOMINAL_RANGE, OFFSET_RANGE, baseProfiles, danthermLadder, fanSettings, fanSettingsError, levelList, stepCount, type FanSettings } from "../lib/fanSteps";
 import { LANG_KEY, currentLang, useLang, type Lang } from "../lib/i18n";
 import { useSession, type Permission } from "../lib/session";
+import { FROST_LOCK_SETTINGS, formatFloor, readFrostLock } from "../lib/frostLock";
 import { AccountPanel } from "../components/AccountPanel";
 import { MailPanel } from "../components/MailPanel";
 import { UsersPanel } from "../components/UsersPanel";
@@ -37,6 +38,7 @@ export const CONTROLLER_KEYS = [
   "night_enabled", "night_start", "night_end", "night_level", "night_air_quality_max_level",
   "afterheat_setpoint", "afterheat_coil", "afterheat_room_enabled", "afterheat_room_source", "afterheat_room_target",
   "afterheat_room_gain", "afterheat_room_min", "afterheat_room_max", "afterheat_room_step_minutes",
+  ...FROST_LOCK_SETTINGS,
   "cooling_enabled", "cooling_room_setpoint", "cooling_hysteresis", "cooling_outdoor_min", "cooling_min_delta",
   "cooling_level", "cooling_start_delay_seconds", "cooling_min_on_seconds", "cooling_min_off_seconds",
   "sizing_enabled", "house_area_m2", "ceiling_height_m", "house_bathrooms", "house_utility_rooms",
@@ -102,6 +104,43 @@ function initialSection(): SectionId {
 
 function Help({ children }: { children: ReactNode }) { return <small className="settings-field-help">{children}</small>; }
 
+
+/**
+ * Frost lock for a water afterheat coil in a cold attic. The Pi decides; this
+ * card only edits the limits and shows the state. Hidden by the caller on
+ * firmware that does not report the frost lock, so its keys are never sent there.
+ */
+export function FrostLockCard({ lang, form, controller, set }: { lang: Lang; form: Data; controller: Data; set: (key: string, value: unknown) => void }) {
+  const da = lang === "da";
+  const lock = readFrostLock(controller);
+  const num = (key: string) => (e: { target: { value: string } }) => set(key, Number(e.target.value));
+  const water = (form.afterheat_coil ?? controller.afterheat_coil) === "water";
+  const state = !lock.known ? "—"
+    : !lock.enabled ? (da ? "Slået fra" : "Off")
+    : !lock.locked ? (da ? "Ikke aktiv" : "Not active")
+    : `${da ? "Aktiv" : "Active"} · min. ${formatFloor(lock.floor)} °C`;
+  return <Card title={da ? "Frostlås" : "Frost lock"} lead={da ? "Vandfladen på loftet må ikke fryse" : "The water coil in the attic must not freeze"} icon={Snowflake}>
+    <div className="settings-grid">
+      <label className="check-row"><input type="checkbox" checked={form.frost_lock_enabled !== false} onChange={e => set("frost_lock_enabled", e.target.checked)}/> {da ? "Frostsikring af eftervarmen" : "Frost protection of the afterheat"}</label>
+      <Help>{da
+        ? "Når det fryser, holder Pi'en eftervarmen tændt på mindst minimumssetpunktet. Den kan ikke slukkes eller sættes lavere, og Køl kan ikke startes, heller ikke fra Home Assistant, standby eller bål. Dine egne valg gemmes og bruges igen, når frosten er væk. Gælder kun en vandbåren varmeflade."
+        : "While it freezes the Pi keeps the afterheat on at the minimum setpoint or above. It cannot be switched off or set lower, and Køl cannot be started, not even from Home Assistant, standby or bonfire. Your own choices are kept and used again once the frost is gone. Only applies to a water coil."}</Help>
+      <label>{da ? "Frost ude eller på loftet" : "Frost outdoors or in the attic"}<input type="number" min="-10" max="10" step="0.5" value={n(form.frost_lock_outdoor_c, 3)} onChange={num("frost_lock_outdoor_c")}/><span>°C</span><Help>{da ? "Låsen slår til, når udeluften T1 eller loftføleren er på eller under denne temperatur." : "The lock engages when outdoor air T1 or the attic sensor is at or below this temperature."}</Help></label>
+      <label>{da ? "Frost ved vandfladen" : "Frost at the water coil"}<input type="number" min="3" max="15" step="0.5" value={n(form.frost_lock_coil_c, 8)} onChange={num("frost_lock_coil_c")}/><span>°C</span><Help>{da ? "Låsen slår også til, når HAC1's frostføler på vandsiden er på eller under denne temperatur." : "The lock also engages when HAC1's frost sensor on the water side is at or below this temperature."}</Help></label>
+      <label>{da ? "Mindste setpunkt i frost" : "Lowest setpoint in frost"}<input type="number" min="15" max="25" step="0.5" value={n(form.frost_lock_min_setpoint_c, 18)} onChange={num("frost_lock_min_setpoint_c")}/><span>°C</span><Help>{da ? "Eftervarmen sendes til HAC1 med mindst denne temperatur, så længe låsen er aktiv. Et lavere grundsetpunkt, rumstyring og Køl bliver løftet hertil." : "The afterheat is sent to HAC1 with at least this temperature while the lock is active. A lower base setpoint, room control and Køl are raised to it."}</Help></label>
+      <p className="settings-help">{da
+        ? "Låsen slipper først, når alle kendte målinger har ligget mindst 2 °C over grænserne i 30 minutter. Mangler alle målinger, beholdes den hidtidige tilstand."
+        : "The lock only releases once every known reading has been at least 2 °C above its limit for 30 minutes. With no readings at all, the previous state is kept."}</p>
+    </div>
+    <div className="settings-summary">
+      <span>{T.status[lang]}<strong>{state}</strong></span>
+      <span>{da ? "Årsag" : "Reason"}<strong>{lock.locked && lock.reason ? lock.reason : "—"}</strong></span>
+      <span>{da ? "Håndhævet" : "Enforced"}<strong>{!lock.known ? "—" : lock.enforced ? (da ? "Ja · Pi styrer bussen" : "Yes · the Pi drives the bus") : (da ? "Nej · Pi er ikke busmaster" : "No · the Pi is not bus master")}</strong></span>
+    </div>
+    {!water && <p className="settings-help">{da ? "Varmefladen er sat til elvarmeflade, så frostlåsen er ikke i brug." : "The coil is set to electric, so the frost lock is not in use."}</p>}
+    {lock.locked && !lock.enforced && <p className="settings-help">{da ? "HCP4 styrer bussen lige nu og kan stadig slukke eftervarmen." : "HCP4 drives the bus right now and could still switch the afterheat off."}</p>}
+  </Card>;
+}
 
 type BathroomRoom = { type?: "auto" | "bathroom" | "normal"; rh_setpoint?: number; rh_hysteresis?: number; max_level?: number };
 type BathroomStatus = { name: string; humidity: number | null; rh_setpoint: number; rh_end: number; max_level: number; state: string; drying_minutes: number | null; webui_override: boolean };
@@ -585,6 +624,7 @@ export function SettingsPage() {
         </div>
         <p className="settings-help">{s(controller.afterheat_room_reason)}</p>
       </Card>
+      {(readFrostLock(controller).known || typeof controller.frost_lock_enabled === "boolean") && <FrostLockCard lang={lang} form={form} controller={controller} set={set}/>}
     </>,
     cooling: <Card title={t(SECTIONS[5].title)} lead={t(SECTIONS[5].lead)} icon={Snowflake}>
       <div className="settings-grid">

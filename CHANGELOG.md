@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.8.0
+
+- **Afterheat frost lock (Frostlås).** A water afterheat coil in a cold attic can freeze when its valve closes. While the
+  outdoor air or the attic is at or below 3 °C, or the water-side frost sensor is at or below 8 °C (for 2 minutes, so a
+  single glitched reading does not count), the afterheat cannot be switched off or set below 18 °C. The lock overrides a
+  stored "off", a low setpoint, room-follow, Køl (which cannot start and ends when the lock engages), standby and
+  "Bål i haven" (the coil keeps its setpoint while the fans stand still). It releases only after every known value has
+  been 2 °C above its limit for 30 minutes, survives restarts, and is written to the change log.
+- While locked, the outdoor value the Pi gives the HAC1 is capped at 10 °C, so a wrong T1 cannot trigger the HAC1's
+  own 15 °C summer stop. The afterheat command is written first, so a failing fan or bypass write cannot skip it.
+- Refusals come back with Danish reasons, for example "Frostsikring: eftervarmen kan ikke slukkes, mens det fryser."
+- WebUI: the thermostat's off button is disabled with an explanation and the dial stops at the floor; Køl is blocked;
+  Indstillinger → Eftervarme has the frost lock settings (on/off, limits, floor) for administrators; Teknik shows a
+  "Frostlås" row and the unit drawing a badge.
+- New settings: frost_lock_enabled, frost_lock_outdoor_c, frost_lock_coil_c, frost_lock_min_setpoint_c. New state keys:
+  afterheat_frost_lock, afterheat_frost_lock_reason, afterheat_frost_lock_floor, afterheat_frost_lock_enforced.
+  Works with HA integration 0.9.0-beta.5 and Smart Home Cards 0.5.276.
+
 ## 1.7.7
 
 - **History redesigned.** Every chart now has a real time axis and clean value ticks, lines break at gaps instead of

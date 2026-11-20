@@ -31,7 +31,7 @@ import paho.mqtt.client as mqtt
 import serial
 import yaml
 
-from controller_core import HardwareAdapter
+from controller_core import FROST_LOCK_OUTDOOR_WORD_CAP_C, HardwareAdapter
 from controller_dashboard_server import ControllerDashboardHttpServer
 from controller_runtime import ControllerRuntime
 from sensor_freshness import SENSOR_SAMPLE_TIMESTAMPS, fresh_sensor_value
@@ -1840,13 +1840,23 @@ class Gateway:
                 raise RuntimeError("afterheat T5 source word unavailable")
             current = [0, 0, 0, 0, cached[0]]
         keys = ("outdoor_temp", "supply_temp", "extract_temp", "exhaust_temp")
+        frost_lock = self._afterheat_frost_lock_active()
         words: list[int] = []
         for key in keys:
             if not valid(key):
                 raise RuntimeError(f"afterheat temperature unavailable: {key}")
+            value = float(self.state[key])
+            if key == "outdoor_temp" and frost_lock:
+                # HAC1 locks the afterheat out at 15 C outdoor. While it freezes a
+                # stale or glitched T1 must never reach that, so it is capped.
+                value = min(value, FROST_LOCK_OUTDOOR_WORD_CAP_C)
             # Signed hundredths as a 16-bit word: -0.35 °C is 0xFFDD (two's complement).
-            words.append(round(float(self.state[key]) * 100) & 0xFFFF)
+            words.append(round(value * 100) & 0xFFFF)
         return [*words, current[4]]
+
+    def _afterheat_frost_lock_active(self) -> bool:
+        engine = getattr(getattr(self, "controller", None), "engine", None)
+        return getattr(engine, "frost_lock_active", False) is True
 
     def write_afterheat_temperature_block(self, ser: serial.Serial) -> list[int]:
         """Refresh the verified live T1..T5 telemetry block independently."""

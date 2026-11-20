@@ -106,6 +106,8 @@ class ControllerRuntime:
         self.fireplace_auto_blocked = False
         self.fireplace_auto_reason = "disabled"
         self.afterheat_room_source_used: str | None = None
+        # Last frost lock state written to the change log (None until first seen).
+        self._frost_lock_logged: bool | None = None
         # Extra 1-Wire sensors (T2 before the coil, loft, ...), read in the background.
         self.onewire = OneWireExtras(lambda: self.config.data.get("onewire_roles") or {})
         # Heat balance of the exchanger: learns the duct ratio for the air balance.
@@ -198,6 +200,11 @@ class ControllerRuntime:
             "afterheat_room_temperature": room_temperature,
             "stove_temperature": self._source_value(self.config.data.get("fireplace_auto_source"), "temperature"),
             "max_room_co2": self._max_room_co2(),
+            # The afterheat frost lock looks at T1, the attic and the water-side frost sensor.
+            "outdoor_temperature": self._safe_number(self._first(state, "outdoor_temp", "outdoor_temperature"), -50, 60),
+            "attic_temperature": self.onewire.by_role("attic"),
+            "afterheat_frost_temperature": self._safe_number(
+                fresh_sensor_value(state, "heating_coil_frost_temperature"), -50, 100),
             **self._indoor_room_humidity(),
         })
 
@@ -1040,6 +1047,7 @@ class ControllerRuntime:
         self._expire_smart_lease()
         self._evaluate_master()
         result = self.engine.resolve()
+        self._note_frost_lock()
         result["enabled"] = True  # compatibility only; not configurable
         result.update(self.master.snapshot())
         result.update(self._smart_input_snapshot())
@@ -1073,6 +1081,8 @@ class ControllerRuntime:
         result.update({
             "hardware_writes_allowed": writes_allowed,
             "hardware_control_state": control_state,
+            # Only the bus master can hold the afterheat on; under HCP4 it could still be switched off.
+            "afterheat_frost_lock_enforced": result.get("afterheat_frost_lock") is True and writes_allowed,
             "actual_fan_extract_percent": self._first(self.gateway_state, "fan_extract_percent", "extract_fan_percent"),
             "actual_fan_supply_percent": self._first(self.gateway_state, "fan_supply_percent", "supply_fan_percent"),
             "actual_fan_extract_rpm": self._first(self.gateway_state, "fan_extract_rpm", "extract_fan_rpm"),
@@ -1111,8 +1121,12 @@ class ControllerRuntime:
                 if isinstance(self.gateway_state.get("t2ah_last_raw_sample_monotonic"), (int, float)) else None
             ),
             "actual_afterheat_frost_temperature": frost_temperature,
+            # Under the frost lock the outdoor word the Pi sends HAC1 is capped below
+            # the cutoff; only as bus master, under HCP4 HAC1 still sees the real T1.
             "actual_afterheat_outdoor_lockout": (
-                None if outdoor is None else outdoor >= AFTERHEAT_OUTDOOR_CUTOFF_C
+                None if outdoor is None
+                else outdoor >= AFTERHEAT_OUTDOOR_CUTOFF_C
+                and not (result.get("afterheat_frost_lock") is True and writes_allowed)
             ),
             "afterheat_outdoor_cutoff": AFTERHEAT_OUTDOOR_CUTOFF_C,
             "rs485_healthy": self._bus_healthy(),
@@ -1188,7 +1202,26 @@ class ControllerRuntime:
         }
         if not changes:
             return
-        event = {"timestamp": time.time(), "source": source, "changes": changes}
+        self._log_change({"timestamp": time.time(), "source": source, "changes": changes})
+
+    def _note_frost_lock(self) -> None:
+        """Write the frost lock engaging or releasing to the change log."""
+        active = self.engine.frost_lock_active
+        previous, self._frost_lock_logged = self._frost_lock_logged, active
+        if previous is None or previous == active:
+            return
+        event = {"timestamp": time.time(), "source": "Frostsikring",
+                 "changes": {"afterheat_frost_lock": [previous, active]}}
+        if self.engine.frost_lock_reason:
+            event["reason"] = self.engine.frost_lock_reason
+        self._log_change(event)
+        if active:
+            LOG.warning("Afterheat frost lock engaged: %s", self.engine.frost_lock_reason)
+        else:
+            LOG.warning("Afterheat frost lock released")
+
+    def _log_change(self, event: dict[str, object]) -> None:
+        source, changes = event["source"], event["changes"]
         self.change_log.append(event)
         del self.change_log[:-50]
         try:
@@ -1256,6 +1289,7 @@ class ControllerRuntime:
         self._evaluate_master()
         if not self.master.writes_allowed():
             self.engine.resolve()
+            self._note_frost_lock()
             self.last_tick_at = time.time()
             return
         try:
@@ -1272,6 +1306,7 @@ class ControllerRuntime:
             else:
                 self._write_error_count += 1
             self.last_tick_at = time.time()
+        self._note_frost_lock()
 
     def _run(self) -> None:
         LOG.info("Local HCH controller runtime started (automatic master=%s)", self.master.master)

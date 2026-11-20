@@ -63,6 +63,8 @@
 :root[data-theme="light"] .hch-bypass-countdown{fill:#503e2a;stroke:#e4eff6}
 :root[data-theme="light"] .hch-lockout-badge rect{fill:rgb(251 246 239 / 90%);stroke:#d78b25}
 :root[data-theme="light"] .hch-lockout-badge text{fill:#f0950d}
+:root[data-theme="light"] .hch-frost-lock-badge rect{fill:rgb(239 247 252 / 92%);stroke:#2f8fd6}
+:root[data-theme="light"] .hch-frost-lock-badge text{fill:#1d6fae}
 :root[data-theme="light"] .hch-channel-label{fill:#5b717e}
 :root[data-theme="light"] .hch-core-port{fill:#1e272b}
 :root[data-theme="light"] .hch-coil rect{fill:#f0f6f9;stroke:#819dad}
