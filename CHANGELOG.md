@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.10.0
+
+- **Adgang for programmer: named API keys.** A new page under Opsætning (administrators only) puts *Login fra
+  Kontrolrum (SSO)* and the API keys side by side. Every program gets its own key with a name and a scope: *Kun
+  læse* (`GET /api/controller/state`), *Læse og styre* (also heartbeat, inputs, signals and command) or
+  *Administrator* (also `POST /api/controller/config`). A key is shown once when it is made, then only its last four
+  characters; it is stored as a SHA-256 hash. The list shows when each key was made and by whom, when and from where
+  it was last used, a "Flyttet" badge on the moved key and an "Ubrugt i 90 dage" badge. Keys can be deleted one at a
+  time, can expire after 30, 90 or 365 days, and are limited to the home network by default (calls from outside or
+  through a proxy or tunnel are refused). New keys look like `dth_` + 43 characters.
+- **The old key keeps working.** At the first start the token Home Assistant uses today (from the WebUI or the
+  installer) is moved in as the key *Home Assistant* with *Læse og styre*, so the integration needs no change. The
+  move never edits the old file, writes the new file atomically and reads it back; if anything fails, the old token
+  keeps working exactly as before. The old file stays until the moved key is deleted, so going back to 1.8.x is safe.
+- "Vis nøgle" and "Generér ny nøgle" on the Home Assistant page are gone (a hash cannot be shown); the card now links
+  to the new page. The old `/api/integration/token/*` endpoints answer 410.
+- Keys go only in `Authorization: Bearer`, never in the URL. Per key: 120 reads, 240 heartbeat/inputs/signals and 60
+  command/config calls a minute; an address that sends 10 wrong keys in 5 minutes must wait (`Retry-After`), but a
+  valid key is never held back. Usage is written at most once a minute. The log and the change log show the key's
+  name, never the key; the diagnostics report masks `dth_` keys.
+- `update.sh` no longer reads a key in plain text. Its health check makes a one-off read key (only the hash is written,
+  127.0.0.1 only, 15 minutes), checks that the API keys survived and that Home Assistant still has a key that can
+  control the unit, and backs up the key files with the rest of the update backup. `install.sh` no longer creates a
+  new plain-text token; an existing one is kept.
+
+- **Afterheat Pi control, fixes from the live night trial.** Never sends HAC1 a setpoint above the air while the air is
+  more than 2 K too warm (it held level 2 at +5 K for 80 min and then forced a step up); under the frost lock a step
+  down is allowed after 10 min far too warm when the lower level is expected to stay at least 0.5 K above the floor.
+- **Valve opening in %.** HAC1 level x 10 % as `actual_afterheat_valve_percent` (Oversigt, Teknik, level bar).
+- **Afterheat graph.** The setpoint line is the user's target again (flat); the setpoint sent to HAC1 is its own thin
+  line; the actual valve opening (filled) and the control's decision (dashed) are drawn in the same plot on a 0-100 %
+  scale at the right; the tooltip shows all of them. History records `afterheat_level_wanted`.
+
 ## 1.9.1
 
 - **Calmer Pi afterheat control.** The first trial changed level about 30 times an hour. Now:

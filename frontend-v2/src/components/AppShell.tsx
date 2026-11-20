@@ -25,6 +25,7 @@ export const navigation = [
   ["/balancing", "Indregulering", "ruler", "configure", "Teknik og drift"],
   ["/updates", "Opdateringer", "refresh", "system", "Teknik og drift"],
   ["/settings", "Indstillinger", "settings", null, "Opsætning"],
+  ["/access", "Adgang for programmer", "key", "users", "Opsætning"],
 ] as const satisfies readonly NavItem[];
 
 /** Pages that need a role above a plain user. */
@@ -43,6 +44,7 @@ const routeTitles: Record<string, [string, string]> = {
   "/balancing": ["Indregulering", "Luftmængder pr. rum, måling og rapport"],
   "/updates": ["Opdateringer", "Software, kanal og failsafe-opdatering"],
   "/settings": ["Indstillinger", "Udseende, brugere, mail og lokale præferencer"],
+  "/access": ["Adgang for programmer", "Hvem og hvad der må tale med Dantherm Control uden at logge ind med kodeord"],
 };
 
 /** Ekstra søgeord, så søgefeltet også finder sider ud fra sensorer og indstillinger. */

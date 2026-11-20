@@ -81,6 +81,8 @@ for path in \
   /etc/dantherm-passivelink-webui/controller.yaml \
   /etc/dantherm-passivelink-webui/onewire.json \
   /var/lib/dantherm-hch5-ha/controller.json \
+  /var/lib/dantherm-hch5-ha/controller-token.json \
+  /var/lib/dantherm-hch5-ha/api-keys.json \
   /var/lib/dantherm-hch5-ha/webui-auth.json; do
   [[ -e ${path} ]] && cp -a "${path}" "${backup}/"
 done
@@ -99,7 +101,10 @@ runuser -u passivelink-webui -- /opt/dantherm-passivelink-webui/venv/bin/pip ins
 random_token(){ openssl rand -hex 32 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(32))'; }
 existing_env=/etc/dantherm-passivelink-webui/gateway.env
 reboot_token=$(random_token)
-controller_token=$(random_token)
+# Since 1.9.0 programs get named API keys in the WebUI (Opsætning → Adgang for
+# programmer). An old installer token is kept, so Home Assistant keeps working;
+# a new installation gets none.
+controller_token=""
 if [[ -f ${existing_env} ]]; then
   previous=$(sed -n 's/^DANTHERM_REBOOT_TOKEN=//p' "${existing_env}" | head -1)
   [[ -n ${previous} ]] && reboot_token=${previous}
@@ -114,9 +119,9 @@ GATEWAY_PORT=${gateway_port}
 WEBUI_BIND=0.0.0.0
 WEBUI_PORT=${web_port}
 DANTHERM_REBOOT_TOKEN=${reboot_token}
-DANTHERM_CONTROLLER_TOKEN=${controller_token}
 DANTHERM_ADMIN_URL=http://127.0.0.1:4198
 EOF
+[[ -n ${controller_token} ]] && echo "DANTHERM_CONTROLLER_TOKEN=${controller_token}" >> /etc/dantherm-passivelink-webui/gateway.env
 [[ ${onewire} -eq 1 ]] && echo 'ONEWIRE_URL=http://127.0.0.1:4197/temperatures' >> /etc/dantherm-passivelink-webui/gateway.env
 chown root:passivelink-webui /etc/dantherm-passivelink-webui/gateway.env
 chmod 0640 /etc/dantherm-passivelink-webui/gateway.env
@@ -256,6 +261,5 @@ ip=$(hostname -I | awk '{print $1}')
 echo "Installed controller gateway. Open http://${ip}:${web_port}/ and create the first owner."
 echo "Home Assistant HCH5 Control raw TCP: host ${ip}, port ${gateway_port}."
 echo "Home Assistant controller API: http://${ip}:${web_port}"
-echo "Controller token is stored in /etc/dantherm-passivelink-webui/gateway.env"
-echo "Show it with: sudo sed -n 's/^DANTHERM_CONTROLLER_TOKEN=//p' /etc/dantherm-passivelink-webui/gateway.env"
+echo "API key for Home Assistant: WebUI → Opsætning → Adgang for programmer → Ny API-nøgle (Læse og styre)."
 echo "Rollback backup: ${backup}"

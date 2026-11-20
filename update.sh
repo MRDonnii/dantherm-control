@@ -21,6 +21,7 @@ required_source=(
   gateway/webui_permissions.py
   gateway/week_schedule.py
   gateway/controller_token.py
+  gateway/api_keys.py
   gateway/event_log.py
   gateway/balancing_store.py
   gateway/webui/index.html
@@ -43,11 +44,20 @@ read_env() {
 web_port=$(read_env WEBUI_PORT); web_port=${web_port:-8080}
 raw_port=$(read_env GATEWAY_PORT); raw_port=${raw_port:-4196}
 device=$(read_env RS485_DEVICE)
-controller_token=$(read_env DANTHERM_CONTROLLER_TOKEN)
-# A token generated in the WebUI replaces the installer's token.
-if [[ -f ${state_dir}/controller-token.json ]]; then
-  webui_token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("token",""))' "${state_dir}/controller-token.json" 2>/dev/null || true)
-  [[ -n ${webui_token} ]] && controller_token=${webui_token}
+# The health check never reads an API key. Only whether one that can control
+# the unit exists before the update (old token or a key in api-keys.json), so
+# the check below can confirm Home Assistant still has one afterwards.
+expected_control_keys=0
+if [[ -s ${state_dir}/controller-token.json ]] || grep -q '^DANTHERM_CONTROLLER_TOKEN=.' "${env_file}"; then
+  expected_control_keys=1
+fi
+if [[ -f ${state_dir}/api-keys.json ]] && python3 - "${state_dir}/api-keys.json" <<'PY' 2>/dev/null
+import json, sys
+keys = json.load(open(sys.argv[1])).get("keys") or []
+raise SystemExit(0 if any(k.get("scope") in ("control", "admin") for k in keys) else 1)
+PY
+then
+  expected_control_keys=1
 fi
 [[ ${web_port} =~ ^[0-9]+$ && ${raw_port} =~ ^[0-9]+$ ]] || { echo "Invalid saved port configuration." >&2; exit 2; }
 [[ ${device} == /dev/serial/by-id/* ]] || { echo "Saved RS485 device is not a stable /dev/serial/by-id/... path; refusing restart." >&2; exit 2; }
@@ -64,7 +74,8 @@ done
 [[ -r ${state_dir} ]] || { echo "Persistent state directory ${state_dir} is not readable; refusing update." >&2; exit 2; }
 
 stage=$(mktemp -d /tmp/hch5-control-stage.XXXXXX)
-cleanup(){ rm -rf -- "${stage}"; }
+update_check=${state_dir}/update-check.json
+cleanup(){ rm -rf -- "${stage}"; rm -f -- "${update_check}"; }
 trap cleanup EXIT
 install -d "${stage}/webui"
 install -m 0755 "${source_dir}"/gateway/*.py "${stage}/"
@@ -141,6 +152,13 @@ tar -czf "${backup}/app-code.tar.gz" --exclude='venv' -C "${app}" .
 [[ -f ${admin}/diagnostics_report.py ]] && cp -a "${admin}/diagnostics_report.py" "${backup}/"
 [[ -f /etc/systemd/system/dantherm-webui-gateway.service ]] && cp -a /etc/systemd/system/dantherm-webui-gateway.service "${backup}/"
 [[ -f /etc/systemd/system/dantherm-webui-admin.service ]] && cp -a /etc/systemd/system/dantherm-webui-admin.service "${backup}/"
+# The API key files (the old token and the hashed keys) go into the root-only
+# backup too. The gateway never changes controller-token.json when it moves
+# the old token, so a rollback to 1.8.x keeps working with it.
+install -d -m 0700 "${backup}/state"
+for keyfile in controller-token.json api-keys.json; do
+  [[ -f ${state_dir}/${keyfile} ]] && cp -a "${state_dir}/${keyfile}" "${backup}/state/"
+done
 
 rollback_ready=1
 rollback() {
@@ -156,6 +174,10 @@ rollback() {
   [[ -f ${backup}/diagnostics_report.py ]] && install -o root -g root -m 0644 "${backup}/diagnostics_report.py" "${admin}/diagnostics_report.py"
   [[ -f ${backup}/dantherm-webui-gateway.service ]] && install -o root -g root -m 0644 "${backup}/dantherm-webui-gateway.service" /etc/systemd/system/
   [[ -f ${backup}/dantherm-webui-admin.service ]] && install -o root -g root -m 0644 "${backup}/dantherm-webui-admin.service" /etc/systemd/system/
+  # The previous build reads controller-token.json; put it back if it is gone.
+  if [[ -f ${backup}/state/controller-token.json && ! -f ${state_dir}/controller-token.json ]]; then
+    cp -a "${backup}/state/controller-token.json" "${state_dir}/controller-token.json"
+  fi
   systemctl daemon-reload
   systemctl restart dantherm-webui-gateway.service
   sleep 2
@@ -210,6 +232,19 @@ if [[ -n ${auth_before} ]]; then
 fi
 
 echo "[6/6] Restarting once and performing live health validation..."
+# A one-off read key for this check: only its SHA-256 is written, it works
+# from 127.0.0.1 only, expires after 15 minutes and is removed on exit.
+check_key="dth_$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n')"
+check_hash=$(printf '%s' "${check_key}" | sha256sum | awk '{print $1}')
+python3 - "${update_check}" "${check_hash}" <<'PY'
+import json, os, sys, time
+path, digest = sys.argv[1], sys.argv[2]
+tmp = path + ".tmp"
+with open(tmp, "w") as handle:
+    json.dump({"sha256": digest, "expires": time.time() + 900, "name": "Opdateringstjek"}, handle)
+os.chmod(tmp, 0o644)
+os.replace(tmp, path)
+PY
 systemctl daemon-reload
 systemctl restart dantherm-webui-gateway.service
 
@@ -237,14 +272,16 @@ expected_configured=0; [[ -n ${auth_before} ]] && expected_configured=1
 curl -fsS --max-time 3 "http://127.0.0.1:${web_port}/api/auth/status" \
   | python3 -c 'import json,sys; expected=int(sys.argv[1]); data=json.load(sys.stdin); assert isinstance(data.get("configured"), bool); assert (not expected) or data["configured"] is True' "${expected_configured}"
 
-if [[ -n ${controller_token} ]]; then
-  curl -fsS --max-time 3 -H "Authorization: Bearer ${controller_token}" \
-    "http://127.0.0.1:${web_port}/api/controller/state" \
-    | python3 -c 'import json,sys; data=json.load(sys.stdin); assert isinstance(data,dict); assert "active_master" in data'
-else
-  echo "Controller token is missing; refusing to accept an incompletely configured update." >&2
-  false
-fi
+curl -fsS --max-time 3 -H "Authorization: Bearer ${check_key}" \
+  "http://127.0.0.1:${web_port}/api/controller/state" \
+  | python3 -c 'import json,sys; data=json.load(sys.stdin); assert isinstance(data,dict); assert "active_master" in data'
+# The keys survived the update, and Home Assistant still has a key that can
+# control the unit if it had one before (moved key, or the old token in
+# fallback mode).
+curl -fsS --max-time 3 -H "Authorization: Bearer ${check_key}" \
+  "http://127.0.0.1:${web_port}/api/controller/access-health" \
+  | python3 -c 'import json,sys; need=int(sys.argv[1]); data=json.load(sys.stdin); assert data.get("store") in ("ok","legacy"), data; assert data.get("control_keys",0) >= need, data' "${expected_control_keys}"
+rm -f -- "${update_check}"
 
 python3 - "${raw_port}" <<'PY'
 import socket, sys
@@ -276,6 +313,6 @@ if [[ ${HCH5_UPDATE_FROM_ADMIN:-0} != 1 ]] && systemctl is-active --quiet danthe
 fi
 echo "HCH5 Control updated to $(cat "${source_dir}/VERSION")."
 echo "Preflight: OK · imports/config/assets/auth/device"
-echo "Live health: OK · stable process/WebUI/auth/controller API/raw TCP"
+echo "Live health: OK · stable process/WebUI/auth/controller API/API keys/raw TCP"
 echo "Persistent config and owner login: preserved"
 echo "Backup: ${backup}"

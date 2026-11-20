@@ -2,7 +2,25 @@
 
 The Raspberry Pi controller is the source of truth. Home Assistant and WebUI are clients only.
 
-All machine endpoints require `Authorization: Bearer <DANTHERM_CONTROLLER_TOKEN>`.
+All machine endpoints require `Authorization: Bearer <API key>`. Keys are made in the WebUI under
+**Opsætning → Adgang for programmer**, look like `dth_` + 43 characters, and are stored only as a SHA-256 hash.
+A key is never accepted in the URL. The token from 1.8.x and earlier (`controller-token.json` or
+`DANTHERM_CONTROLLER_TOKEN`) was moved in as the key *Home Assistant* with the scope `control` and keeps working.
+
+| Scope | WebUI name | Endpoints |
+| --- | --- | --- |
+| `read` | Kun læse | `GET /api/controller/state` |
+| `control` | Læse og styre | `read` + `POST /api/controller/heartbeat`, `/inputs`, `/signals`, `/command` |
+| `admin` | Administrator | `control` + `POST /api/controller/config` (settings, like a technician in the WebUI) |
+
+No key can manage users, keys, the Kontrolrum sign-in or the Pi itself.
+
+Answers: `401` unknown, deleted or expired key; `403` the key lacks the scope, or it is limited to the home
+network and the call came from outside or through a proxy/tunnel (`X-Forwarded-For`, `Forwarded`,
+`CF-Connecting-IP` …); `429` with `Retry-After` when a key makes more than 120 reads, 240 heartbeat/inputs/signals
+or 60 command/config calls a minute, or an address sent 10 wrong keys within 5 minutes (a valid key is never held
+back by that). Changes made with a key show the key's name in the change log (`apikey:<name>`; the moved key keeps
+`home_assistant`).
 
 ## GET /api/controller/state
 

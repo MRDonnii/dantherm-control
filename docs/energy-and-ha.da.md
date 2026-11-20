@@ -5,7 +5,7 @@
 1. Installer [HCH5 Control-integrationen i HACS](https://my.home-assistant.io/redirect/hacs_repository/?owner=MRDonnii&repository=dantherm-control-ha&category=integration). Genstart HA efter installation eller opdatering.
 2. Tilføj **Dantherm HCH5 Control** under **Indstillinger → Enheder og tjenester**. Vælg RS485 over TCP, og angiv Pi'ens lokale adresse og port **4196**.
 3. Installer [Smart Home Cards i HACS](https://my.home-assistant.io/redirect/hacs_repository/?owner=MRDonnii&repository=ha-smart-home-cards&category=plugin). Tilføj HCH5 Live Card på dit dashboard. En hård browseropdatering kan være nødvendig efter kortopdatering.
-4. Hvis controllerfunktioner ønskes, skal integrationen desuden have Pi'ens HTTP-adresse og særskilte controller-token. Det bruges kun til controller-API'en; rå TCP-forbindelse er fortsat en separat datakilde. Tokenet vises på Pi'en med `sudo sed -n 's/^DANTHERM_CONTROLLER_TOKEN=//p' /etc/dantherm-passivelink-webui/gateway.env`. Opbevar det kun i HA, ikke i dashboard-YAML eller Git.
+4. Hvis controllerfunktioner ønskes, skal integrationen desuden have Pi'ens HTTP-adresse og en API-nøgle med rettigheden Læse og styre (Opsætning → Adgang for programmer). Det bruges kun til controller-API'en; rå TCP-forbindelse er fortsat en separat datakilde. Tokenet vises på Pi'en med `sudo sed -n 's/^DANTHERM_CONTROLLER_TOKEN=//p' /etc/dantherm-passivelink-webui/gateway.env`. Opbevar det kun i HA, ikke i dashboard-YAML eller Git.
 5. WebUI-siden **Opdateringer** har genveje til begge HACS-repositories. Pi-opdateringsknappen opdaterer kun WebUI/controlleren; HA-integration og kort opdateres i HACS.
 
 ## HA-sensorer til Pi
@@ -50,7 +50,7 @@ Bruger du integrationens felter ovenfor, er dette afsnit ikke nødvendigt. Andre
 }
 ```
 
-Kaldet kræver samme bearer-token som controller-API'en. Send højst én gang pr. minut og forny inden fem minutter; efter udløb skjules de eksterne værdier automatisk. Hver værdi kan udelades. Tilføj ikke rå HA-token eller Pi-token i et offentligt dashboard eller repository. HCH5-kortet kan bruge HA-sensorerne direkte, også uden dette valgfrie push til WebUI.
+Kaldet kræver en API-nøgle med rettigheden Læse og styre. Send højst én gang pr. minut og forny inden fem minutter; efter udløb skjules de eksterne værdier automatisk. Hver værdi kan udelades. Tilføj ikke rå HA-token eller Pi-token i et offentligt dashboard eller repository. HCH5-kortet kan bruge HA-sensorerne direkte, også uden dette valgfrie push til WebUI.
 
 ## Kortfelter
 

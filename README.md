@@ -232,15 +232,11 @@ Home Assistant now has temperatures, fans, CO₂, humidity, bypass, filter and a
 
 ### 2. Connect the controller API
 
-1. Get the controller address and API key: in the WebUI open **Home Assistant → Forbindelse fra Home Assistant** (technician or administrator), where you can show, copy or generate a new key. Generating a new key stops the old one at once. Over SSH you can also show the token the installer generated:
+1. Make an API key: in the WebUI open **Opsætning → Adgang for programmer** (administrator) and choose **Ny API-nøgle**, give it the name *Home Assistant* and the scope **Læse og styre**. The key is shown once; copy it straight into Home Assistant. The controller address is on **Home Assistant → Forbindelse fra Home Assistant**.
 
-   ```bash
-   sudo sed -n 's/^DANTHERM_CONTROLLER_TOKEN=//p' /etc/dantherm-passivelink-webui/gateway.env
-   ```
-
-   Keep it secret: store it only in Home Assistant, never in dashboard YAML or Git.
+   Keys are stored only as a SHA-256 hash, so a lost key cannot be shown again: make a new one and delete the old. A key made before 1.9.0 was moved in as *Home Assistant* and keeps working unchanged. Keep keys secret: store them only in Home Assistant, never in dashboard YAML or Git.
 2. In Home Assistant open the integration → **Configure**, keep **Connect to the Raspberry Pi controller API** on and continue.
-3. Enter the Pi's address, port **8080** and the token. Optional fields in the same step:
+3. Enter the Pi's address, port **8080** and the API key. Optional fields in the same step:
    - **Use Home Assistant sensors in Smart Auto** — turn on to send room sensors;
    - **Power meter on the unit** — live W, used for SFP and the filter power check;
    - **Unit energy today**, **Electricity price**, **Heat price** — see [Energy and kr values](#energy-and-kr-values).
@@ -304,7 +300,7 @@ The verified bypass request is FC06 to slave `0x01`, register `0x0044` (68): `0x
 | --- | --- |
 | *Bus* not healthy, no temperatures | `19200 8E1`, A/B swapped (power off, swap only A/B), correct `/dev/serial/by-id/...` path, no other process on the port |
 | Pi never becomes master | HCP4 still connected and writing (see **Teknik → Master-arbitrering**) |
-| Smart inputs *stale* | Home Assistant controller API not configured, wrong token, or room sensors unavailable |
+| Smart inputs *stale* | Home Assistant controller API not configured, wrong or deleted API key (see *Sidst afvist* under **Adgang for programmer**), or room sensors unavailable |
 | Energy tiles show `—` | No power meter/energy sensor selected in the integration, or price sensors not in kr/kWh |
 | WebUI unreachable | `systemctl status dantherm-webui-gateway.service dantherm-webui-admin.service` and `ss -ltn | grep -E ':(4196|8080) '` |
 

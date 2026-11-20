@@ -16,6 +16,8 @@ REDACTIONS = (
     (re.compile(r"(?i)((?:token|password|passwd|secret|authorization|cookie)(?:[-_ ]?(?:key|value))?[\"']?\s*[:=]\s*)(?!\[REDACTED\])(?:\"[^\"]*\"|'[^']*'|\S+)"), r"\1[REDACTED]"),
     (re.compile(r"(?im)^([^\n=]*(?:token|password|passwd|secret|authorization|cookie)[^\n=]*=).*$"), r"\1[REDACTED]"),
     (re.compile(r"(?i)(dantherm_session=)[^;\s]+"), r"\1[REDACTED]"),
+    # API keys anywhere in the text, e.g. pasted into a config or a log line.
+    (re.compile(r"\bdth_[A-Za-z0-9_-]{20,}"), "dth_[REDACTED]"),
 )
 
 

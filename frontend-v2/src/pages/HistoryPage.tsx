@@ -33,6 +33,7 @@ const SETTING_LABELS: Record<string, string> = {
 function sourceLabel(source: string) {
   if (source === "home_assistant") return "Home Assistant";
   if (source.startsWith("webui:")) return `WebUI · ${source.slice(6)}`;
+  if (source.startsWith("apikey:")) return `API-nøgle · ${source.slice(7)}`;
   return source === "api" ? "API" : source;
 }
 function valueLabel(value: unknown) {

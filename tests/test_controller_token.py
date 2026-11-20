@@ -36,7 +36,7 @@ class TokenStoreTests(unittest.TestCase):
 
 
 class TokenHttpTests(unittest.TestCase):
-    def test_generate_over_http_switches_machine_auth(self):
+    def test_old_endpoints_are_gone_and_the_installer_token_still_works(self):
         with tempfile.TemporaryDirectory() as tmp:
             old = os.environ.get("DANTHERM_CONTROLLER_TOKEN")
             os.environ["DANTHERM_CONTROLLER_TOKEN"] = "installer-token-123456789"
@@ -82,16 +82,15 @@ class TokenHttpTests(unittest.TestCase):
                     return error.code, None
 
             try:
-                self.assertTrue(state("installer-token-123456789"))
-                self.assertEqual(post(login("bruger"), "/api/integration/token/generate")[0], 403)
+                server.api_keys.path = Path(tmp) / "api-keys.json"
+                self.assertTrue(state("installer-token-123456789"))  # moved in as "Home Assistant"
+                self.assertEqual(post(login("bruger"), "/api/access/keys/create")[0], 403)  # administrators only
                 admin = login("admin")
-                status, body = post(admin, "/api/integration/token/generate")
-                self.assertEqual(status, 200)
-                self.assertEqual(body["source"], "webui")
-                self.assertTrue(state(body["token"]))
-                self.assertFalse(state("installer-token-123456789"))  # the old token stops working
-                self.assertEqual(post(admin, "/api/integration/token/reveal")[1]["token"], body["token"])
-                self.assertIn("token_generated", {e["kind"] for e in server.events.list()})
+                # Keys are hashed now: the old endpoints are gone, nothing can be shown again.
+                self.assertEqual(post(admin, "/api/integration/token/generate")[0], 410)
+                self.assertEqual(post(admin, "/api/integration/token/reveal")[0], 410)
+                self.assertTrue(state("installer-token-123456789"))
+                self.assertFalse(state("wrong-token-123456789012"))
             finally:
                 server.stop()
 

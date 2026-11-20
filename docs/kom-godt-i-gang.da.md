@@ -91,13 +91,9 @@ Nu har Home Assistant temperaturer, blæsere, CO₂, fugt, bypass, filter og ala
 
 ## 6. Home Assistant: med i styringen
 
-1. Find adresse og API-nøgle: i WebUI under **Home Assistant → Forbindelse fra Home Assistant** (tekniker eller administrator) kan du vise, kopiere eller generere en ny nøgle. En ny nøgle stopper den gamle med det samme. Over SSH kan du også vise den nøgle, installationen lavede:
+1. Lav en API-nøgle: i WebUI under **Opsætning → Adgang for programmer** (administrator) vælger du **Ny API-nøgle**, kalder den *Home Assistant* og vælger **Læse og styre**. Nøglen vises kun én gang, så kopiér den direkte ind i Home Assistant. Adressen står under **Home Assistant → Forbindelse fra Home Assistant**. Har du mistet nøglen, laver du en ny og sletter den gamle. En nøgle fra før version 1.9.0 er flyttet over som *Home Assistant* og virker uændret.
 
-   ```bash
-   sudo sed -n 's/^DANTHERM_CONTROLLER_TOKEN=//p' /etc/dantherm-passivelink-webui/gateway.env
-   ```
-
-   Hold det hemmeligt. Det gemmes kun i integrationen – aldrig i dashboard-YAML eller Git.
+   Hold nøglen hemmelig. Den gemmes kun i integrationen – aldrig i dashboard-YAML eller Git.
 2. Åbn integrationen → **Konfigurér**. Lad **Forbind til Raspberry Pi-controllerens API** være slået til og gå videre.
 3. I trinnet **Raspberry Pi-controller og Smart Auto** skriver du Pi'ens IP, port **8080** og tokenet. Slå **Brug Home Assistant-sensorer i Smart Auto** til. Vælg evt. også:
    - **Effektmåler på anlægget** (W) – giver forbrug, SFP og filtertjek;
@@ -136,7 +132,7 @@ Eftervarme og genvundet varme er beregnet ud fra luftens temperaturer og anslåe
 
 - **Ingen data / bus ikke sund:** kontrollér `19200 8E1`, adapterstien og A/B.
 - **Pi'en bliver ikke master:** HCP4 skriver stadig på bussen – se **Teknik → Master-arbitrering**.
-- **Smart inputs "stale":** forkert token/adresse i integrationen, eller rum-sensorerne er utilgængelige.
+- **Smart inputs "stale":** forkert eller slettet API-nøgle/adresse i integrationen (se *Sidst afvist* under **Adgang for programmer**), eller rum-sensorerne er utilgængelige.
 - **Energifelter viser —:** ingen effekt-/energisensor valgt, eller priserne er ikke i kr/kWh.
 - **Diagnostik → Download rapport** laver én tekstfil med status og logs. Hemmeligheder maskeres, men gennemse filen før du deler den.
 

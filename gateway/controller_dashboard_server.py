@@ -21,6 +21,7 @@ from controller_core import ControllerError
 from dashboard_server import ASSET_TYPES, DashboardHttpServer, WEBUI_CSP
 from balancing_store import BalancingError, BalancingStore
 from controller_token import ControllerTokenStore
+from api_keys import ApiKeyStore, SCOPE_LABELS
 from event_log import ALARM_KINDS, EventLog
 from webui_auth import ROLE_LABELS
 from webui_mail import AlarmMailer, MailError, MailService
@@ -66,6 +67,10 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
             os.getenv("DANTHERM_CONTROLLER_TOKEN_FILE", str(self.auth.path.with_name("controller-token.json"))),
             os.getenv("DANTHERM_CONTROLLER_TOKEN"),
         )
+        # Named API keys. The file follows the state directory (auth.path), and
+        # the old token above is moved in the first time a key is checked.
+        keys_file = os.getenv("DANTHERM_API_KEYS_FILE")
+        self.api_keys = ApiKeyStore(keys_file or (lambda: self.auth.path.with_name("api-keys.json")), self.tokens)
         self.mail = MailService(os.getenv(
             "DANTHERM_WEBUI_MAIL_FILE", str(self.auth.path.with_name("webui-mail.json"))))
         self.events = EventLog(os.getenv(
@@ -185,24 +190,47 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                     return None
                 return session if self._need(session, capability) else None
 
-            def _machine_auth(self):
-                supplied = self.headers.get("Authorization", "")
-                if not supplied.startswith("Bearer "):
-                    return False
-                token = dashboard.tokens.current()
-                ok = bool(token) and hmac.compare_digest(supplied, f"Bearer {token}")
-                if ok:
+            def _api_key(self, method, path):
+                """Check the API key on a program's request. Never fails open."""
+                try:
+                    result = dashboard.api_keys.authenticate(
+                        self.headers.get("Authorization", ""), self.client_address[0], method, path, self.headers)
+                except Exception:  # noqa: BLE001 - a bug here must not crash the request thread
+                    LOG.exception("API key check failed")
+                    from api_keys import AuthResult
+                    return AuthResult(False, 503, "API-nøglen kunne ikke kontrolleres")
+                if result.ok and result.scope in ("control", "admin"):
                     dashboard.ha_last_ok = time.time()
-                else:
+                elif not result.ok and result.status in (401, 429):
                     dashboard.ha_last_rejected = time.time()
                     dashboard.ha_rejected_ip = self.client_address[0]
-                return ok
+                return result
+
+            def _api_key_error(self, result):
+                body = json.dumps({"error": result.error}).encode()
+                self.send_response(result.status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                if result.retry_after:
+                    self.send_header("Retry-After", str(result.retry_after))
+                if result.status == 401:
+                    self.send_header("WWW-Authenticate", 'Bearer realm="dantherm"')
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers(); self.wfile.write(body)
 
             def do_GET(self):
                 parsed = urlparse(self.path)
-                if parsed.path == "/api/controller/state" and self._machine_auth():
-                    self._json(self._controller_state(dashboard.controller_runtime.snapshot(), parsed))
-                    return
+                if parsed.path in ("/api/controller/state", "/api/controller/access-health") \
+                        and self.headers.get("Authorization", "").startswith("Bearer "):
+                    result = self._api_key("GET", parsed.path)
+                    if result.ok:
+                        if parsed.path == "/api/controller/access-health":
+                            return self._json(dashboard.api_keys.health())
+                        return self._json(self._controller_state(dashboard.controller_runtime.snapshot(), parsed))
+                    # A browser with a session still gets the page's own answer below.
+                    if parsed.path == "/api/controller/access-health" or (
+                            self._session() is None and dashboard.auth.configured() and dashboard.auth.enabled()):
+                        return self._api_key_error(result)
                 if parsed.path == "/api/onewire/water" and self.client_address[0] in ("127.0.0.1", "::1"):
                     # Read by the local 1-Wire service so its flow/return follow the WebUI.
                     self._json(dashboard.controller_runtime.onewire.water_assignment())
@@ -299,8 +327,14 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                 elif parsed.path == "/api/integration":
                     if self._require("configure") is None:
                         return
-                    self._json({**dashboard.tokens.status(), "port": dashboard.port,
+                    health = dashboard.api_keys.health()
+                    self._json({"configured": health["control_keys"] > 0, "control_keys": health["control_keys"],
+                                "keys": health["keys"], "store": health["store"], "port": dashboard.port,
                                 "address": dashboard._system_snapshot().get("network_ipv4")})
+                elif parsed.path == "/api/access/keys":
+                    if self._require("users") is None:
+                        return
+                    self._json(dashboard.api_keys.list())
                 elif parsed.path == "/api/mail":
                     if self._require("mail") is None:
                         return
@@ -445,15 +479,18 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
 
                 # Machine-to-machine endpoints for Home Assistant. HA sends
                 # intent and room measurements only; Pi remains source of truth.
-                if self.path in ("/api/controller/heartbeat", "/api/controller/command", "/api/controller/inputs", "/api/controller/signals"):
-                    if not self._machine_auth():
-                        return self._json_error(401, "Controller token mangler eller er ugyldigt")
+                # The settings endpoint also takes an administrator API key.
+                api_config = self.path == "/api/controller/config" and self.headers.get("Authorization", "").startswith("Bearer ")
+                if api_config or self.path in ("/api/controller/heartbeat", "/api/controller/command", "/api/controller/inputs", "/api/controller/signals"):
+                    result = self._api_key("POST", self.path)
+                    if not result.ok:
+                        return self._api_key_error(result)
                     data = self._read_json() or {}
                     try:
                         if self.path == "/api/controller/heartbeat":
                             return self._json(dashboard.controller_runtime.heartbeat(str(data.get("demand", "normal"))))
-                        if self.path == "/api/controller/command":
-                            return self._json(dashboard.controller_runtime.configure(data, source="home_assistant"))
+                        if self.path in ("/api/controller/command", "/api/controller/config"):
+                            return self._json(dashboard.controller_runtime.configure(data, source=result.source))
                         if self.path == "/api/controller/signals":
                             return self._json(dashboard.controller_runtime.external_signals(data))
                         return self._json(dashboard.controller_runtime.room_inputs(data))
@@ -514,20 +551,12 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                         return self._json_error(500, "Kunne ikke gemme indreguleringen")
                     return self.send_error(404)
                 if self.path in ("/api/integration/token/generate", "/api/integration/token/reveal"):
-                    if not self._need(session, "configure"):
+                    # Keys are stored as a hash now and can never be shown again.
+                    return self._json_error(410, "Brug Opsætning → Adgang for programmer")
+                if self.path.startswith("/api/access/keys/"):
+                    if not self._need(session, "users"):
                         return
-                    if self.path.endswith("/generate"):
-                        try:
-                            token = dashboard.tokens.generate(session.get("username"))
-                        except OSError:
-                            LOG.exception("Could not save the controller token")
-                            return self._json_error(500, "Kunne ikke gemme API-nøglen")
-                        dashboard.events.add("token_generated", "Ny API-nøgle til Home Assistant genereret", user=session.get("username"))
-                        return self._json({"token": token, **dashboard.tokens.status()})
-                    token = dashboard.tokens.current()
-                    if not token:
-                        return self._json_error(404, "Der er ingen API-nøgle endnu")
-                    return self._json({"token": token, **dashboard.tokens.status()})
+                    return self._access_keys_action(session, self._read_json() or {})
                 if self.path in ("/api/mail/settings", "/api/mail/test"):
                     if not self._need(session, "mail"):
                         return
@@ -683,6 +712,33 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                     LOG.warning("Kontrolrum sign-in failed: %s", type(error).__name__)
                     return self._json_error(503, "unavailable")
                 return self._login_reply(sid, csrf)
+
+            def _access_keys_action(self, session, data):
+                who = session.get("username")
+                action = self.path.rsplit("/", 1)[-1]
+                try:
+                    if action == "create":
+                        key, entry = dashboard.api_keys.create(
+                            data.get("name"), data.get("scope"), data.get("lan_only") is not False,
+                            data.get("expires_days") or 0, who)
+                        dashboard.events.add("token_generated",
+                                             f"Ny API-nøgle \"{entry['name']}\" ({SCOPE_LABELS[entry['scope']]})", user=who)
+                        # The only time the key itself leaves the Pi.
+                        return self._json({"key": key, "id": entry["id"], **dashboard.api_keys.list()})
+                    if action == "delete":
+                        found = dashboard.api_keys.delete(str(data.get("id", "")))
+                        dashboard.events.add("token_deleted", f"API-nøglen \"{found['name']}\" er slettet", user=who)
+                        return self._json(dashboard.api_keys.list())
+                except KeyError:
+                    return self._json_error(404, "Nøglen findes ikke")
+                except ValueError as error:
+                    return self._json_error(400, str(error))
+                except RuntimeError as error:
+                    return self._json_error(503, str(error))
+                except OSError:
+                    LOG.warning("Could not save the API keys")
+                    return self._json_error(500, "Kunne ikke gemme nøglerne. Den gamle nøgle virker stadig.")
+                return self.send_error(404)
 
             def _kontrolrum_admin(self, session, data):
                 sso = dashboard.kontrolrum_sso
