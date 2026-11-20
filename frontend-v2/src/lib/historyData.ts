@@ -11,6 +11,7 @@ const PLAUSIBLE: Record<string, [number, number]> = {
   heating_coil_frost_temperature: [-40, 80], flow_temperature: [-10, 95], return_temperature: [-10, 95],
   co2: [250, 5000], fan_supply_percent: [0, 100], fan_extract_percent: [0, 100],
   heat_recovery_efficiency: [0, 100], afterheat_active: [0, 1], afterheat_setpoint: [5, 40],
+  afterheat_level: [0, 10], afterheat_level_target: [0, 10], afterheat_target: [5, 40],
 };
 
 export function clean(samples: Sample[]): Sample[] {

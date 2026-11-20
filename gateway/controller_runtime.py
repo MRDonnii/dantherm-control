@@ -20,6 +20,7 @@ from pathlib import Path
 from advanced_control import absolute_humidity, fan_curve, fit_fan_curve, side_constants, source_room, supply_after_core, supply_air_metrics
 from air_balance import HeatBalanceLearner, adopt, balance_from_temperatures, summarize, window_record
 from onewire_extras import OneWireExtras
+from afterheat_pilot import robust_temperature
 from diagnostics import Diagnostics
 from controller_core import AFTERHEAT_OUTDOOR_CUTOFF_C, ControllerEngine, ControllerError, ControllerState, HardwareAdapter
 from master_arbitration import MasterArbitrator, RtuFrameStream
@@ -106,6 +107,8 @@ class ControllerRuntime:
         self.fireplace_auto_blocked = False
         self.fireplace_auto_reason = "disabled"
         self.afterheat_room_source_used: str | None = None
+        # Raw HAC1 T2AH readings (monotonic time, value) for the afterheat control.
+        self._t2ah_raw_samples: deque[tuple[float, float]] = deque()
         # Last frost lock state written to the change log (None until first seen).
         self._frost_lock_logged: bool | None = None
         # Extra 1-Wire sensors (T2 before the coil, loft, ...), read in the background.
@@ -207,6 +210,50 @@ class ControllerRuntime:
                 fresh_sensor_value(state, "heating_coil_frost_temperature"), -50, 100),
             **self._indoor_room_humidity(),
         })
+        self.engine.set_afterheat_inputs(self._afterheat_inputs())
+
+    # Raw T2AH readings this recent make the glitch-robust value HAC1 decides on.
+    T2AH_RAW_WINDOW_SECONDS = 10.0
+
+    def _afterheat_inputs(self) -> dict[str, object]:
+        """HAC1 level, T2AH (filtered and raw), fan and water flow for the Pi afterheat control."""
+        state = self.gateway_state
+        mono, wall = time.monotonic(), time.time()
+
+        def wall_time(key: str) -> float | None:
+            value = state.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            return wall - (mono - float(value))
+
+        raw = state.get("t2ah_last_raw_temperature")
+        raw_at = state.get("t2ah_last_raw_sample_monotonic")
+        samples = self._t2ah_raw_samples
+        if (isinstance(raw, (int, float)) and not isinstance(raw, bool) and isinstance(raw_at, (int, float))
+                and (not samples or samples[-1][0] != raw_at)):
+            samples.append((float(raw_at), float(raw)))
+        while samples and mono - samples[0][0] > self.T2AH_RAW_WINDOW_SECONDS:
+            samples.popleft()
+        t2ah_age = sensor_sample_age(state, "heating_coil_after_temperature", now=mono)
+        level = state.get("hac1_output_level")
+        return {
+            "level": level if isinstance(level, int) and not isinstance(level, bool) else None,
+            "level_at": wall_time("hac1_output_level_monotonic"),
+            "level_changed_at": wall_time("hac1_output_level_changed_monotonic"),
+            "t2ah": self._safe_number(state.get("heating_coil_after_temperature"), -30, 80),
+            "t2ah_at": None if t2ah_age is None else wall - t2ah_age,
+            "t2ah_raw": robust_temperature(value for _at, value in samples),
+            "fan_supply": self._safe_number(self._first(state, "fan_supply_percent", "supply_fan_percent"), 0, 100),
+            "water_flow": self.onewire.by_role("water_flow"),
+            "master": self.master.writes_allowed(),
+        }
+
+    # Controller values kept in the gateway state for the history (dashboard_server.HISTORY_FIELDS).
+    HISTORY_KEYS = ("afterheat_level", "afterheat_level_target", "afterheat_target")
+
+    def _publish_history_values(self, snapshot: dict[str, object]) -> None:
+        for key in self.HISTORY_KEYS:
+            self.gateway_state[key] = snapshot.get(key)
 
     def _with_room_overrides(self, rooms: dict[str, dict[str, object]]) -> dict[str, dict[str, object]]:
         """Room settings made in the WebUI win over what Home Assistant sends."""
@@ -1294,12 +1341,12 @@ class ControllerRuntime:
             self._recalculate_smart_demand()
         self._evaluate_master()
         if not self.master.writes_allowed():
-            self.engine.resolve()
+            self._publish_history_values(self.engine.resolve())
             self._note_frost_lock()
             self.last_tick_at = time.time()
             return
         try:
-            self.apply_once()
+            self._publish_history_values(self.apply_once())
         except Exception as error:
             # A missed ack is retried on the next refresh; one line per
             # 15 minutes keeps the journal readable.

@@ -118,3 +118,7 @@
   .hx-figures strong { font-size: 18px; }
   .hx-dialog-range { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
+
+/* A small chart under another in the same card, sharing its crosshair (e.g. HAC1 levels under the afterheat). */
+.hx-subchart { display: grid; gap: 2px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.hx-subchart h3 { margin: 0; color: var(--text); font-size: 13.5px; font-weight: 700; }

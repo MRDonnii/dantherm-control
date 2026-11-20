@@ -17,7 +17,7 @@
 :root[data-skin] .ov-card .pro-air-card { border-top: 0; }
 
 /* Indlejrede felter: kant --fd-border, radius md, baggrund som .fd-machine. Ingen venstrekant, ingen glød. */
-:root[data-skin] .ov-card :is(.unit-readback, .climate-metric, .status-action-card, .overview-status-pills > div, .hch-mobile-subreadings > button, .hch-mobile-water, .hch-mobile-reading, .active-decision, .thermostat-readings > div, .hch-mobile-core) {
+:root[data-skin] .ov-card :is(.unit-readback, .climate-metric, .status-action-card, .overview-status-pills > div, .hch-mobile-subreadings > button, .hch-mobile-water, .hch-mobile-reading, .active-decision, .thermostat-readings > div, .afterheat-level, .hch-mobile-core) {
   border: 1px solid var(--fd-border); border-radius: var(--r-md); background: var(--fd-tile); box-shadow: none; backdrop-filter: none; }
 :root[data-skin] .ov-card .status-action-card.active { border-color: color-mix(in srgb, var(--primary) 45%, var(--fd-border)); }
 :root[data-skin] .ov-card .overview-status-pills { display: flex; flex-wrap: wrap; gap: 8px; }

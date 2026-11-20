@@ -5,6 +5,8 @@ import { requestJson } from "../lib/api";
 import { usePollHealth, useSinglePoll } from "../lib/connection";
 import { bypassTravel, formatRemaining } from "../lib/bypass";
 import { frostLockStatus, readFrostLock } from "../lib/frostLock";
+import { controlLabel, formatError, formatLevel, formatTarget, modeLabel, nextActionText, readAfterheatControl, type AfterheatControl } from "../lib/afterheatControl";
+import type { InfoRow } from "../components/InfoList";
 import "../styles/panels.css";
 
 type Data = Record<string, unknown>;
@@ -42,6 +44,25 @@ function masterLabel(value: unknown) {
   if (value === "pi") return "Raspberry Pi";
   if (value === "hcp4") return "HCP4";
   return "Afventer";
+}
+
+/** HAC1 level rows; only on firmware with the Pi level control (gateway 1.9.0). */
+export function afterheatControlRows(control: AfterheatControl): InfoRow[] {
+  if (!control.known) return [];
+  const pi = control.active === "pi";
+  const level = control.level === null ? "—" : `${formatLevel(control.level)}/${control.levelMax}`;
+  const wanted = pi && control.levelTarget !== null
+    ? ` · mål ${formatLevel(control.levelTarget)}${control.levelWanted !== null ? ` (${formatLevel(control.levelWanted, 1)})` : ""}`
+    : "";
+  const chosen = control.mode !== null && control.active !== null && control.active !== control.mode ? ` · valgt: ${modeLabel(control.mode)}` : "";
+  const sent = control.hac1Setpoint !== null ? ` · HAC1-setpunkt ${formatLevel(control.hac1Setpoint)} °C` : "";
+  return [
+    { label: "HAC1 trin", value: `${level}${wanted}` },
+    { label: "Styring", value: `${controlLabel(control)}${chosen}${sent}`, tone: control.active === "fallback" ? "warn" : undefined },
+    { label: "Næste handling", value: pi ? nextActionText(control, control.nextTickSeconds) : "—" },
+    { label: "Mål og afvigelse", value: control.target === null ? "—" : `${formatTarget(control.target)} · ${formatError(control.error)}` },
+    { label: "Styringens begrundelse", value: control.reason ?? "—" },
+  ];
 }
 
 export function TechniquePage() {
@@ -152,6 +173,7 @@ export function TechniquePage() {
               { label: "Eftervarme aktiv", value: bool(controller.actual_afterheat, "Ja", "Nej") },
               // The Pi holds a water coil on while it freezes; see the settings.
               { label: "Frostlås", value: frostLockStatus(readFrostLock(controller)) },
+              ...afterheatControlRows(readAfterheatControl(controller)),
               // HAC1 locks the afterheat at 15 C outdoor or above; not a fault.
               { label: `Sommerstop (ude ≥ ${text(controller.afterheat_outdoor_cutoff ?? 15)} °C)`, value: bool(controller.actual_afterheat_outdoor_lockout, "Spærret af HAC1", "Nej") },
               { label: "RS485 eftervarmevalg", value: controller.actual_afterheat_selection === "off" ? "OFF" : controller.actual_afterheat_selection !== null && controller.actual_afterheat_selection !== undefined ? `${text(controller.actual_afterheat_selection)} °C` : "—" },

@@ -6,6 +6,8 @@ import { createPortal } from "react-dom";
 import { ArrowRight, CloudFog, Flame, Gauge, House, Leaf, Power, Snowflake, Wind, X, Zap } from "lucide-react";
 import { Hch5UnitDiagram } from "../components/Hch5UnitDiagram";
 import { AfterheatThermostat } from "../components/AfterheatThermostat";
+import { AfterheatLevelPanel } from "../components/AfterheatLevel";
+import { readAfterheatControl } from "../lib/afterheatControl";
 import { describeControl } from "../lib/control";
 import { FROST_COOL_HINT, FROST_COOL_MESSAGE, FROST_OFF_MESSAGE, frostFloorMessage, frostLockRefuses, readFrostLock } from "../lib/frostLock";
 import { SENSOR_HISTORY, SensorHistoryDialog } from "../components/SensorHistoryDialog";
@@ -222,6 +224,8 @@ export function OverviewPage() {
   // While it freezes the Pi keeps the afterheat on at the floor or above, even
   // when the stored choice is OFF or lower; show what is actually sent to HAC1.
   const frostLock = readFrostLock(controller);
+  // HAC1's level 0..10 and who regulates it (Pi or HAC1); absent on older firmware.
+  const afterheatControl = readAfterheatControl(controller);
   const committedAfterheat: AfterheatValue = afterheatSent ?? (frostLock.locked
     ? Math.max(afterheatSetpoint, frostLock.floor)
     : afterheatEnabled ? afterheatSetpoint : "off");
@@ -284,6 +288,7 @@ export function OverviewPage() {
         registered={actualAfterheatSelection} lastOn={lastAfterheatOn.current}
         current={committedAfterheat} onConfirm={confirmAfterheat} onCancel={() => setAfterheatDraft(null)} busy={busy !== null}
         frostLock={frostLock.locked} floor={frostLock.floor}/>
+      {afterheatControl.known && <AfterheatLevelPanel control={afterheatControl}/>}
     </article>
   );
 

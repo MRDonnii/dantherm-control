@@ -2660,6 +2660,7 @@ class Gateway:
     def restore_on_exit(self, ser: serial.Serial):
         if not self.control_enabled:
             return
+        self.restore_afterheat_on_exit(ser)
         if self.fireplace_gateway_active:
             try:
                 self.stop_fireplace(ser, clear_saved_state=False)
@@ -2674,6 +2675,26 @@ class Gateway:
             LOG.info("Værdier gendannet ved stop: %s/%s", *self.restore_pair)
         except Exception:
             LOG.exception("Kunne ikke gendanne værdier ved stop")
+
+    def restore_afterheat_on_exit(self, ser: serial.Serial):
+        """Leave HAC1 the plain whole-degree target so it keeps control on its own.
+
+        Under the Pi afterheat control the setpoint in HAC1 is a step command
+        (e.g. 2 K above the air); after a stop it would otherwise stay there.
+        """
+        controller = getattr(self, "controller", None)
+        if controller is None:
+            return
+        try:
+            if not controller.master.writes_allowed():
+                return
+            target = controller.engine.afterheat_native_setpoint()
+            if target is None or controller.engine.last_applied.get("afterheat_setpoint") == target:
+                return
+            self.write_afterheat_setpoint(ser, target)
+            LOG.info("Eftervarme-setpunkt sat til %s °C ved stop (HAC1 styrer selv)", target)
+        except Exception:
+            LOG.exception("Kunne ikke sætte eftervarme-setpunktet ved stop")
 
     def unit_generation(self) -> str:
         unit_cfg = self.cfg.get("unit") if isinstance(self.cfg.get("unit"), dict) else {}

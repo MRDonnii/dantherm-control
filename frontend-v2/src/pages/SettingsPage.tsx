@@ -8,6 +8,7 @@ import { LEVEL_NAMES, MAX_LEVEL_HOURS, NOMINAL_RANGE, OFFSET_RANGE, baseProfiles
 import { LANG_KEY, currentLang, useLang, type Lang } from "../lib/i18n";
 import { useSession, type Permission } from "../lib/session";
 import { FROST_LOCK_SETTINGS, formatFloor, readFrostLock } from "../lib/frostLock";
+import { AFTERHEAT_CONTROL_SETTINGS, controlLabel, readAfterheatControl } from "../lib/afterheatControl";
 import { AccountPanel } from "../components/AccountPanel";
 import { MailPanel } from "../components/MailPanel";
 import { UsersPanel } from "../components/UsersPanel";
@@ -38,7 +39,7 @@ export const CONTROLLER_KEYS = [
   "night_enabled", "night_start", "night_end", "night_level", "night_air_quality_max_level",
   "afterheat_setpoint", "afterheat_coil", "afterheat_room_enabled", "afterheat_room_source", "afterheat_room_target",
   "afterheat_room_gain", "afterheat_room_min", "afterheat_room_max", "afterheat_room_step_minutes",
-  ...FROST_LOCK_SETTINGS,
+  ...FROST_LOCK_SETTINGS, ...AFTERHEAT_CONTROL_SETTINGS,
   "cooling_enabled", "cooling_room_setpoint", "cooling_hysteresis", "cooling_outdoor_min", "cooling_min_delta",
   "cooling_level", "cooling_start_delay_seconds", "cooling_min_on_seconds", "cooling_min_off_seconds",
   "sizing_enabled", "house_area_m2", "ceiling_height_m", "house_bathrooms", "house_utility_rooms",
@@ -139,6 +140,37 @@ export function FrostLockCard({ lang, form, controller, set }: { lang: Lang; for
     </div>
     {!water && <p className="settings-help">{da ? "Varmefladen er sat til elvarmeflade, så frostlåsen er ikke i brug." : "The coil is set to electric, so the frost lock is not in use."}</p>}
     {lock.locked && !lock.enforced && <p className="settings-help">{da ? "HCP4 styrer bussen lige nu og kan stadig slukke eftervarmen." : "HCP4 drives the bus right now and could still switch the afterheat off."}</p>}
+  </Card>;
+}
+
+/**
+ * Who regulates HAC1's afterheat level: the Pi from the chosen temperature, or
+ * HAC1 on its own. Hidden by the caller on firmware without the setting; the
+ * tuning fields only show when the Pi reports them.
+ */
+export function AfterheatControlCard({ lang, form, controller, set }: { lang: Lang; form: Data; controller: Data; set: (key: string, value: unknown) => void }) {
+  const da = lang === "da";
+  const pi = form.afterheat_control_mode === "pi";
+  const control = readAfterheatControl(controller);
+  const num = (key: string) => (e: { target: { value: string } }) => set(key, Number(e.target.value));
+  const hasGain = typeof controller.afterheat_pi_gain === "number";
+  const hasIntegral = typeof controller.afterheat_pi_integral_minutes === "number";
+  return <Card title={da ? "Regulering" : "Control"} lead={da ? "Hvem styrer varmefladens trin" : "Who drives the coil's levels"} icon={Gauge}>
+    <div className="settings-grid">
+      <div className="settings-segment" role="radiogroup" aria-label={da ? "Regulering af eftervarmen" : "Afterheat control"}>
+        <button type="button" role="radio" aria-checked={pi} className={pi ? "is-active" : undefined} onClick={() => set("afterheat_control_mode", "pi")}>{da ? "Pi-styring" : "Pi control"}</button>
+        <button type="button" role="radio" aria-checked={!pi} className={!pi ? "is-active" : undefined} onClick={() => set("afterheat_control_mode", "native")}>{da ? "HAC1 styrer selv" : "HAC1 on its own"}</button>
+      </div>
+      <Help>{da
+        ? "HAC1 åbner vandventilen i trin fra 0 til 10 og flytter højst ét trin i minuttet. Selv regulerer den kun på hele grader og svinger, når ventilatorerne skifter trin. Med Pi-styring vælger Pi'en trinnet ud fra den ønskede temperatur, også med decimaler, og tager højde for ventilatorernes luftmængde. Er en måling forældet, er Pi'en ikke busmaster, eller kører Køl, frikøling, standby eller bål, overlader Pi'en straks styringen til HAC1. Frostsikringen gælder stadig."
+        : "HAC1 opens the water valve in levels from 0 to 10 and moves at most one level a minute. On its own it only regulates on whole degrees and swings when the fans change speed. With Pi control the Pi picks the level from the wanted temperature, decimals included, and allows for the fans' airflow. With a stale reading, when the Pi is not bus master, or while Køl, free cooling, standby or bonfire runs, the Pi hands control straight back to HAC1. The frost protection still applies."}</Help>
+      {pi && hasGain && <label>{da ? "Forstærkning" : "Gain"}<input type="number" min="0.3" max="2" step="0.1" value={n(form.afterheat_pi_gain, 1)} onChange={num("afterheat_pi_gain")}/><span>×</span><Help>{da ? "Ganger Pi'ens beregnede forstærkning (1,0 = som designet, 0,3–2,0). Højere reagerer hurtigere, men kan svinge." : "Scales the Pi's computed gain (1.0 = as designed, 0.3–2.0). Higher reacts faster but may swing."}</Help></label>}
+      {pi && hasIntegral && <label>{da ? "Integraltid" : "Integral time"}<input type="number" min="1" max="20" step="0.5" value={n(form.afterheat_pi_integral_minutes, 2)} onChange={num("afterheat_pi_integral_minutes")}/><span>min</span><Help>{da ? "Hvor hurtigt en vedvarende afvigelse rettes. Kortere retter hurtigere, men kan svinge." : "How fast a lasting deviation is corrected. Shorter corrects faster but may swing."}</Help></label>}
+    </div>
+    <div className="settings-summary">
+      <span>{T.status[lang]}<strong>{control.known ? controlLabel(control) : "—"}</strong></span>
+      <span>{da ? "Begrundelse" : "Reason"}<strong>{control.reason ?? "—"}</strong></span>
+    </div>
   </Card>;
 }
 
@@ -624,6 +656,7 @@ export function SettingsPage() {
         </div>
         <p className="settings-help">{s(controller.afterheat_room_reason)}</p>
       </Card>
+      {typeof controller.afterheat_control_mode === "string" && <AfterheatControlCard lang={lang} form={form} controller={controller} set={set}/>}
       {(readFrostLock(controller).known || typeof controller.frost_lock_enabled === "boolean") && <FrostLockCard lang={lang} form={form} controller={controller} set={set}/>}
     </>,
     cooling: <Card title={t(SECTIONS[5].title)} lead={t(SECTIONS[5].lead)} icon={Snowflake}>

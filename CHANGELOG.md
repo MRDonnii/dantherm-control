@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.9.0
+
+- **Pi afterheat control (Eftervarme · Pi-styring).** Measurements showed the HAC1 is a floating step controller: one
+  output level (0..10) per 60 s tick, decided on its own after-coil sensor against the whole-degree setpoint with a
+  ~1 K deadband, so it always overshoots and cycles. In the new mode `afterheat_control_mode = "pi"` the Pi becomes the
+  regulator and the HAC1 the actuator: each tick the Pi sends the whole-degree setpoint that makes the HAC1 step up,
+  hold or step down, toward the level its own controller wants.
+  - PI with a Smith predictor (dead time ~60 s, lag ~120 s), heat per level learned online and scaled by supply fan %
+    and the water temperature, feed-forward on fan and water changes, sigma-delta between neighbouring levels, at most
+    one step per tick, decision 15 s before the learned tick, few setpoint changes.
+  - Your target may have decimals; only the command to the HAC1 is whole degrees.
+  - Safe: HAC1 controls by itself (native) whenever data is stale, the Pi is not master, Køl/free cooling, standby or
+    bonfire is active, the afterheat is off or a supervised override is running; three ignored ticks hand control back
+    for 30 minutes; under the frost lock the level never goes below 1 and the setpoint never below the frost floor; on
+    stop the plain target is written.
+  - Default stays "native" (HAC1 as before); switch in Indstillinger → Eftervarme.
+- **See what happens:** Oversigt shows the HAC1 level as a 0..10 bar with the wanted level, who controls, the target,
+  the next action with a countdown and the reason; Teknik has rows for it; Historik has a "HAC1-trin" chart under the
+  afterheat chart; history records the level, target level and target.
+- Afterheat setpoint accepts 0.1 °C steps.
+- Tested against a simulator fitted to supervised measurements (tests/afterheat_sim.py, tests/data).
+
 ## 1.8.2
 
 - **HAC1 output level.** The gateway now reads HAC1 register 101 every master poll. It is the afterheat output level

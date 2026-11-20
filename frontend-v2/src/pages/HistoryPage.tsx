@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type React from "react";
 import { Activity, Fan, Leaf, Recycle, SlidersHorizontal } from "lucide-react";
 import { AlarmHistory } from "../components/AlarmHistory";
@@ -15,6 +15,7 @@ type ChangeEvent = { timestamp: number; source: string; changes: Record<string, 
 const SETTING_LABELS: Record<string, string> = {
   afterheat_setpoint: "Eftervarme setpunkt",
   afterheat_enabled: "Eftervarme tændt",
+  afterheat_control_mode: "Eftervarme regulering",
   mode: "Driftstilstand",
   manual_level: "Manuelt trin",
   local_normal_level: "Normaltrin",
@@ -149,6 +150,14 @@ export function HistoryPage() {
   const span = (item: ReturnType<typeof summary>, decimals: number, unit: string) =>
     item.low === null ? "Ingen data" : `${format(item.low, decimals)}–${format(item.high, decimals)}${unit} i perioden`;
   const shared = { samples, range: window_, hoverTs: hover, onHover: setHover, loading };
+  // Gateway 1.9.0 logs HAC1's level and the Pi's target; older history has neither.
+  const hasLevels = samples.some(sample => finite(sample.afterheat_level) || finite(sample.afterheat_level_target));
+  const hasTarget = samples.some(sample => finite(sample.afterheat_target));
+  // Right after the update the period mixes both: older buckets only have the
+  // whole-degree setpoint, which was the target then, so the line stays whole.
+  const afterheatSamples = useMemo(() => hasTarget
+    ? samples.map(sample => ({ ...sample, afterheat_goal: finite(sample.afterheat_target) ? sample.afterheat_target : sample.afterheat_setpoint ?? null }))
+    : samples, [samples, hasTarget]);
 
   return (
     <section className="dashboard-overview page-enter">
@@ -184,15 +193,27 @@ export function HistoryPage() {
       <div className="history-grid">
         <ChartCard wide title="Indblæsning og eftervarme" subtitle="Luften efter varmefladen mod setpunktet, og hvornår ventilen er åben" icon={<Activity size={20}/>}>
           <HistoryChart
-            {...shared} title="Indblæsning og eftervarme" unit="°C" height={270} minSpan={4}
+            {...shared} samples={afterheatSamples} title="Indblæsning og eftervarme" unit="°C" height={270} minSpan={4}
             series={[
               { key: AFTER, label: "Indblæsning · T2AH", slot: 1 },
               { key: "extract_temp", label: "Udsugning · T3", slot: 2 },
             ]}
             band={{ seriesKey: AFTER, minKey: `${AFTER}_min`, maxKey: `${AFTER}_max`, label: "Udsving T2AH" }}
-            reference={{ key: "afterheat_setpoint", label: "Setpunkt" }}
+            reference={hasTarget ? { key: "afterheat_goal", label: "Mål", decimals: 1 } : { key: "afterheat_setpoint", label: "Setpunkt" }}
             strip={{ key: "afterheat_active", label: "Ventil åben" }}
           />
+          {hasLevels && (
+            <div className="hx-subchart">
+              <h3>HAC1-trin</h3>
+              <HistoryChart
+                {...shared} title="HAC1-trin" unit="" decimals={1} height={140} yDomain={{ lo: 0, hi: 10, step: 2 }}
+                series={[
+                  { key: "afterheat_level", label: "Trin", slot: 1, stepped: true },
+                  { key: "afterheat_level_target", label: "Mål-trin", slot: 2, stepped: true },
+                ]}
+              />
+            </div>
+          )}
         </ChartCard>
 
         <ChartCard title="Eftervarmevand" subtitle="Fremløb, retur og frostføleren på vandsiden" icon={<Activity size={20}/>}>

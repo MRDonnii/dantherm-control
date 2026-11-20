@@ -17,6 +17,15 @@ import fan_steps
 import week_schedule
 from fan_steps import MAX_LEVEL, MAX_LEVEL_HOURS, NOMINAL_LEVEL, STEP_COUNTS
 from onewire_extras import clean_roles
+from afterheat_pilot import (
+    CONTROL_MODES as AFTERHEAT_CONTROL_MODES,
+    PI_GAIN_DEFAULT,
+    PI_GAIN_RANGE,
+    PI_INTEGRAL_MINUTES_DEFAULT,
+    PI_INTEGRAL_MINUTES_RANGE,
+    AfterheatPilot,
+    PilotInputs,
+)
 from advanced_control import (
     BALANCE_EXCESS_DEFAULT,
     BALANCE_RATIO_MODES,
@@ -202,6 +211,12 @@ def _danish_number(value: float, digits: int | None = None) -> str:
     return text.replace(".", ",")
 
 
+def _clean_afterheat_setpoint(value: object) -> int | float:
+    """Afterheat setpoint 10..35 °C in 0.1 °C; whole degrees stay ints (older clients)."""
+    number = min(35.0, max(10.0, round(float(value), 1)))
+    return int(number) if number.is_integer() else number
+
+
 def _round(value: float | None, digits: int = 2) -> float | None:
     return None if value is None else round(value, digits)
 
@@ -347,6 +362,11 @@ class ControllerState:
         # Set by the engine only: it has been freezing and has not thawed for
         # long enough yet. Saved so a restart without readings stays locked.
         "frost_lock_latched": False,
+        # Who steers the afterheat level: HAC1 alone ("native") or the Pi's
+        # PI controller through HAC1's whole-degree setpoint ("pi"), see afterheat_pilot.
+        "afterheat_control_mode": "native",
+        "afterheat_pi_gain": PI_GAIN_DEFAULT,
+        "afterheat_pi_integral_minutes": PI_INTEGRAL_MINUTES_DEFAULT,
         # Fireplace mode held by a stove sensor or an external switch.
         "fireplace_auto_enabled": False,
         "fireplace_auto_source": "",
@@ -533,7 +553,7 @@ class ControllerState:
             self.data["ha_valid_for_seconds"] = 180
         self.data["ha_reason"] = str(self.data.get("ha_reason") or "No Home Assistant room data")[:160]
         try:
-            self.data["afterheat_setpoint"] = min(35, max(10, int(self.data.get("afterheat_setpoint", 20))))
+            self.data["afterheat_setpoint"] = _clean_afterheat_setpoint(self.data.get("afterheat_setpoint", 20))
         except (TypeError, ValueError):
             self.data["afterheat_setpoint"] = 20
         self.data["afterheat_enabled"] = bool(self.data.get("afterheat_enabled", True))
@@ -655,6 +675,8 @@ class ControllerState:
             self.data["balance_ratio_mode"] = "auto"
         if self.data.get("winter_rh_basis") not in WINTER_RH_BASES:
             self.data["winter_rh_basis"] = "average"
+        if self.data.get("afterheat_control_mode") not in AFTERHEAT_CONTROL_MODES:
+            self.data["afterheat_control_mode"] = "native"
         self.data["balance_learned"] = self._clean_learned(self.data.get("balance_learned"))
         for key, low, high in self.ADVANCED_FLOATS:
             try:
@@ -713,6 +735,8 @@ class ControllerState:
         ("winter_rh_limit", 20.0, 55.0), ("winter_rh_hysteresis", 1.0, 10.0),
         ("frost_lock_outdoor_c", -10.0, 10.0), ("frost_lock_coil_c", 3.0, 15.0),
         ("frost_lock_min_setpoint_c", 15.0, 25.0),
+        ("afterheat_pi_gain", *PI_GAIN_RANGE),
+        ("afterheat_pi_integral_minutes", *PI_INTEGRAL_MINUTES_RANGE),
     )
     ADVANCED_INTS = (
         ("house_bathrooms", 0, 10), ("house_utility_rooms", 0, 10),
@@ -989,7 +1013,7 @@ class ControllerState:
     def _configure(self, patch: dict[str, object]) -> dict[str, object]:
         with self.lock:
             # What the frost lock compares a resent form against.
-            before_afterheat = (self.data.get("afterheat_enabled"), int(self.data.get("afterheat_setpoint", 20)))
+            before_afterheat = (self.data.get("afterheat_enabled"), float(self.data.get("afterheat_setpoint", 20)))
             allowed = {
                 "mode", "manual_level", "local_normal_level", "local_min_level", "local_max_level", "air_quality_max_level",
                 "rh_setpoint", "rh_hysteresis", "co2_setpoint", "co2_hysteresis", "co2_offset",
@@ -1207,10 +1231,13 @@ class ControllerState:
                     self.data["bonfire_until"] = None
                     self.data["bonfire_minutes"] = 0
             if "afterheat_setpoint" in patch:
-                value = int(patch["afterheat_setpoint"])
-                if not 10 <= value <= 35:
+                try:
+                    value = float(patch["afterheat_setpoint"])
+                except (TypeError, ValueError) as error:
+                    raise ControllerError("Eftervarme-setpunkt skal være 10..35 °C") from error
+                if isinstance(patch["afterheat_setpoint"], bool) or not 10 <= value <= 35:
                     raise ControllerError("Eftervarme-setpunkt skal være 10..35 °C")
-                self.data["afterheat_setpoint"] = value
+                self.data["afterheat_setpoint"] = _clean_afterheat_setpoint(value)
                 self.data["afterheat_enabled"] = True
             for key, label in (("t3_setpoint", "T3"), ("t5_setpoint", "T5")):
                 if key in patch:
@@ -1283,6 +1310,7 @@ class ControllerState:
         "winter_dry_enabled", "winter_outdoor_max", "winter_outdoor_hysteresis", "winter_rh_limit",
         "winter_rh_hysteresis", "winter_rh_basis", "winter_level", "winter_hold_minutes",
         "frost_lock_enabled", "frost_lock_outdoor_c", "frost_lock_coil_c", "frost_lock_min_setpoint_c",
+        "afterheat_control_mode", "afterheat_pi_gain", "afterheat_pi_integral_minutes",
     )
     ADVANCED_LABELS = {
         "house_area_m2": "Boligareal", "ceiling_height_m": "Loftshøjde",
@@ -1308,6 +1336,8 @@ class ControllerState:
         "frost_lock_outdoor_c": "Frostlås: ude eller loft ved højst",
         "frost_lock_coil_c": "Frostlås: frostføler ved højst",
         "frost_lock_min_setpoint_c": "Frostlås: mindste setpunkt",
+        "afterheat_pi_gain": "Eftervarme: forstærkning",
+        "afterheat_pi_integral_minutes": "Eftervarme: integraltid",
     }
 
     def frost_lock_in_force(self) -> bool:
@@ -1319,7 +1349,7 @@ class ControllerState:
     def frost_lock_floor(self) -> float:
         return float(self.data.get("frost_lock_min_setpoint_c", self.DEFAULTS["frost_lock_min_setpoint_c"]))
 
-    def _check_frost_lock(self, patch: dict[str, object], enabled_before: object, setpoint_before: int) -> None:
+    def _check_frost_lock(self, patch: dict[str, object], enabled_before: object, setpoint_before: float) -> None:
         """Refuse what would switch the afterheat off while it freezes.
 
         Forms resend every field, so a value equal to the stored one is fine.
@@ -1331,7 +1361,7 @@ class ControllerState:
             raise ControllerError(FROST_LOCK_OFF_ERROR)
         if "afterheat_setpoint" in patch:
             floor = self.frost_lock_floor()
-            value = int(patch["afterheat_setpoint"])
+            value = float(patch["afterheat_setpoint"])
             if value < floor and value < setpoint_before:
                 raise ControllerError(FROST_LOCK_FLOOR_ERROR.format(floor=_danish_number(floor)))
         if "cool_boost_minutes" in patch and int(patch["cool_boost_minutes"]) > 0:
@@ -1383,6 +1413,10 @@ class ControllerState:
             if patch["balance_ratio_mode"] not in BALANCE_RATIO_MODES:
                 raise ControllerError("balance_ratio_mode skal være auto eller fixed")
             self.data["balance_ratio_mode"] = patch["balance_ratio_mode"]
+        if "afterheat_control_mode" in patch:
+            if patch["afterheat_control_mode"] not in AFTERHEAT_CONTROL_MODES:
+                raise ControllerError("afterheat_control_mode skal være native eller pi")
+            self.data["afterheat_control_mode"] = patch["afterheat_control_mode"]
         if "winter_rh_basis" in patch:
             if patch["winter_rh_basis"] not in WINTER_RH_BASES:
                 raise ControllerError("winter_rh_basis skal være average eller lowest")
@@ -1689,6 +1723,10 @@ class ControllerEngine:
         self.afterheat_effective: int | None = None
         self.afterheat_last_step_at: float | None = None
         self.afterheat_room_state = "disabled"
+        # Pi-side afterheat level control (afterheat_pilot) and what it is fed with.
+        self.afterheat_pilot = AfterheatPilot()
+        self.afterheat_inputs: dict[str, object] = {}
+        self.last_afterheat: dict[str, object] = {}
         self.current_auto_level: int | None = None
         self.last_level_change = 0.0
         self.boost_until = 0.0
@@ -1733,6 +1771,15 @@ class ControllerEngine:
     def set_external(self, values: dict[str, float | None]) -> None:
         with self.lock:
             self.external = dict(values)
+
+    def set_afterheat_inputs(self, values: dict[str, object]) -> None:
+        """Live HAC1 values for the Pi afterheat control (replaced as a whole).
+
+        Keys: level, level_at, level_changed_at, t2ah, t2ah_at, t2ah_raw,
+        fan_supply, water_flow (wall-clock times) and master (bool).
+        """
+        with self.lock:
+            self.afterheat_inputs = dict(values)
 
     def outdoor_absolute_humidity(self) -> float | None:
         outdoor = self.measurements.get("outdoor")
@@ -2232,20 +2279,21 @@ class ControllerEngine:
             return None
         return round(value * 256) / 256
 
-    def _afterheat_setpoint(self, now: float) -> tuple[int, str]:
+    def _afterheat_setpoint(self, now: float) -> tuple[int | float, str]:
         """Afterheat setpoint, moved one degree per interval toward the room target."""
         d = self.config.data
-        base = int(d["afterheat_setpoint"])
+        fixed = _clean_afterheat_setpoint(d["afterheat_setpoint"])
+        base = math.floor(float(fixed) + 0.5)
         if not d.get("afterheat_room_enabled"):
             self.afterheat_effective, self.afterheat_last_step_at = None, None
             self.afterheat_room_state = "disabled"
-            return base, "Fast setpunkt"
+            return fixed, "Fast setpunkt"
         room = self.external.get("afterheat_room_temperature")
         wanted = afterheat_room_target(d, room)
         if wanted is None:
             self.afterheat_effective, self.afterheat_last_step_at = None, None
             self.afterheat_room_state = "no_room_temperature"
-            return base, "Ingen rumtemperatur: fast setpunkt"
+            return fixed, "Ingen rumtemperatur: fast setpunkt"
         low, high = int(d["afterheat_room_min"]), int(d["afterheat_room_max"])
         current = self.afterheat_effective
         if current is None:
@@ -2264,6 +2312,39 @@ class ControllerEngine:
             self.afterheat_room_state = "rising" if wanted > current else "falling"
         target = float(d["afterheat_room_target"])
         return current, f"Rum {room:.1f}°C / mål {target:.1f}°C → indblæsning {current}°C (mål {wanted}°C)"
+
+    def _afterheat_pilot(self, now: float, d: dict, target: float, afterheat_on: bool, frost_lock: bool,
+                         frost_floor: float, flags: dict, fans_stopped: bool, override: bool) -> dict[str, object]:
+        """Run the Pi afterheat control on the latest HAC1 values (see afterheat_pilot)."""
+        values = self.afterheat_inputs
+
+        def age(key: str) -> float | None:
+            stamp = values.get(key)
+            return now - float(stamp) if isinstance(stamp, (int, float)) and not isinstance(stamp, bool) else None
+
+        return self.afterheat_pilot.update(PilotInputs(
+            now=now, mode=str(d.get("afterheat_control_mode") or "native"),
+            afterheat_on=afterheat_on, target=target,
+            frost_lock=frost_lock, frost_floor=frost_floor,
+            level=values.get("level"), level_age=age("level_at"),
+            level_changed_at=values.get("level_changed_at"),
+            t2ah=values.get("t2ah"), t2ah_age=age("t2ah_at"), t2ah_raw=values.get("t2ah_raw"),
+            fan_supply=values.get("fan_supply"), water_flow=values.get("water_flow"),
+            outdoor=self.external.get("outdoor_temperature"), extract=self.external.get("extract_temp"),
+            master=values.get("master") is True,
+            cool_boost=bool(flags.get("cool_boost_active")), free_cooling=bool(flags.get("cooling_active")),
+            fans_stopped=fans_stopped, override=override,
+            gain=float(d.get("afterheat_pi_gain", PI_GAIN_DEFAULT)),
+            integral_minutes=float(d.get("afterheat_pi_integral_minutes", PI_INTEGRAL_MINUTES_DEFAULT)),
+        ))
+
+    def afterheat_native_setpoint(self) -> int | None:
+        """The plain whole-degree target HAC1 should keep on its own (gateway stop), or None."""
+        with self.lock:
+            last = dict(self.last_afterheat)
+        if last.get("command") is None:
+            return None
+        return last.get("native")
 
     def resolve(self, now: float | None = None) -> dict[str, object]:
         now = now or time.time()
@@ -2307,10 +2388,13 @@ class ControllerEngine:
 
             level, source, reason, effective_bypass, flags = self._automation_overlay(level, source, reason, now)
             afterheat_setpoint, afterheat_reason = self._afterheat_setpoint(now)
+            afterheat_target = float(afterheat_setpoint)
             if flags.get("cool_boost_active"):
                 # Cool lets cold outdoor air in on purpose: the afterheat must not warm it up again.
                 afterheat_setpoint, afterheat_reason = COOL_BOOST_AFTERHEAT_SETPOINT, "Køl: eftervarme holdt nede"
             frost_floor = self.config.frost_lock_floor()
+            if frost_lock:
+                afterheat_target = max(afterheat_target, frost_floor)
             if frost_lock and afterheat_setpoint < frost_floor:
                 afterheat_setpoint = math.ceil(frost_floor)
                 afterheat_reason = f"Frostsikring: mindst {_danish_number(frost_floor)} °C, mens det fryser"
@@ -2323,6 +2407,19 @@ class ControllerEngine:
             if override is not None:
                 afterheat_setpoint = max(override, frost_floor) if frost_lock else override
                 afterheat_reason = f"Forsøg: setpunkt {_danish_number(afterheat_setpoint, 2)} °C"
+            elif not float(afterheat_setpoint).is_integer():
+                # HAC1 uses whole degrees: natively the target is rounded.
+                afterheat_setpoint = math.floor(float(afterheat_setpoint) + 0.5)
+            pilot = self._afterheat_pilot(now, d, afterheat_target, afterheat_on, frost_lock, frost_floor,
+                                          flags, fans_stopped, override is not None)
+            afterheat_command = afterheat_setpoint if afterheat_on else None
+            if pilot["afterheat_control_active"] == "pi" and pilot["afterheat_hac1_setpoint"] is not None:
+                afterheat_command = int(pilot["afterheat_hac1_setpoint"])
+                if frost_lock:
+                    afterheat_command = max(afterheat_command, math.ceil(frost_floor))
+            # What HAC1 is given (also natively); a fractional override is not a whole degree.
+            pilot["afterheat_hac1_setpoint"] = (
+                int(afterheat_command) if afterheat_command is not None and float(afterheat_command).is_integer() else None)
             d["effective_source"] = source
             d["effective_level"] = level
             d["effective_reason"] = reason
@@ -2359,7 +2456,8 @@ class ControllerEngine:
                 "next_retry_at": min(self._retry_at.values(), default=None),
                 "controller_uptime_seconds": round(now - self.started_at, 1),
                 "afterheat_effective_setpoint": afterheat_setpoint,
-                "afterheat_command": afterheat_setpoint if afterheat_on else None,
+                "afterheat_command": afterheat_command,
+                **pilot,
                 "afterheat_override_setpoint": override,
                 "afterheat_frost_lock": frost_lock,
                 "afterheat_frost_lock_reason": self.frost_lock_reason,
@@ -2380,6 +2478,10 @@ class ControllerEngine:
                 "winter_indoor_rh": _round(self.winter_indoor_rh()[0], 1),
                 "winter_indoor_rh_source": self.winter_indoor_rh()[1],
             }
+            native = math.floor(afterheat_target + 0.5)
+            if frost_lock:
+                native = max(native, math.ceil(frost_floor))
+            self.last_afterheat = {"command": afterheat_command, "native": int(min(35, max(10, native)))}
             return result
 
     def _call(

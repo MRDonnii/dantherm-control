@@ -15,6 +15,8 @@ export interface HistorySeries {
   /** Older call sites; mapped onto the validated slots. */
   color?: LegacyColor;
   decimals?: number;
+  /** Draw as steps (levels, setpoints) instead of a sloped line. */
+  stepped?: boolean;
 }
 
 /** A value shown in the legend and table only (e.g. RPM next to %). */
@@ -32,7 +34,9 @@ export interface HistoryChartProps {
   /** Min/max spread per time bucket, washed behind one series. */
   band?: { seriesKey: string; minKey: string; maxKey: string; label: string };
   /** Stepped reference line from the samples (e.g. a setpoint). */
-  reference?: { key: string; label: string };
+  reference?: { key: string; label: string; decimals?: number };
+  /** Fixed y-axis instead of fitting the data (e.g. HAC1 levels 0..10). */
+  yDomain?: { lo: number; hi: number; step: number };
   /** Fixed guide line (e.g. a recommended maximum). */
   threshold?: { value: number; label: string };
   /** 0..1 share per bucket, drawn as a strip under the plot (e.g. valve open). */
@@ -60,6 +64,12 @@ function num(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function fixedScale({ lo, hi, step }: { lo: number; hi: number; step: number }) {
+  const ticks: number[] = [];
+  for (let value = lo; value <= hi + step / 2; value += step) ticks.push(Math.round(value / step) * step);
+  return { lo, hi, ticks };
+}
+
 function lastValue(samples: Sample[], key: string): { value: number; index: number } | null {
   for (let index = samples.length - 1; index >= 0; index -= 1) {
     const value = num(samples[index][key]);
@@ -70,7 +80,7 @@ function lastValue(samples: Sample[], key: string): { value: number; index: numb
 
 export function HistoryChart({
   samples, series, unit = "", decimals = 1, height = 200, minSpan = 0, band, reference, threshold, strip,
-  extras = [], range, hoverTs, onHover, loading = false, title,
+  extras = [], range, hoverTs, onHover, loading = false, title, yDomain,
 }: HistoryChartProps) {
   const container = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(640);
@@ -110,7 +120,7 @@ export function HistoryChart({
   const from = range?.from ?? times[0] ?? 0;
   const to = range?.to ?? times[times.length - 1] ?? 1;
   const span = Math.max(1, to - from);
-  const scale = niceScale(Math.min(...domainValues), Math.max(...domainValues), minSpan);
+  const scale = yDomain ? fixedScale(yDomain) : niceScale(Math.min(...domainValues), Math.max(...domainValues), minSpan);
   const tickDecimals = scale.ticks.some(tick => !Number.isInteger(tick)) ? 1 : 0;
   const longest = Math.max(...scale.ticks.map(tick => formatNumber(tick, tickDecimals).length));
   const left = 12 + longest * 7.2;
@@ -210,7 +220,7 @@ export function HistoryChart({
         <span className="hx-item">
           <i className="hx-key hx-key-ref"/>
           <span className="hx-label">{reference.label}</span>
-          <strong>{show(valueAt(reference.key), 0, unit)}</strong>
+          <strong>{show(valueAt(reference.key), reference.decimals ?? 0, unit)}</strong>
         </span>
       )}
       {strip && (
@@ -259,7 +269,7 @@ export function HistoryChart({
                     <td>{formatMoment(times[index], span)}</td>
                     {series.map(item => <td key={item.key}>{show(num(sample[item.key]), item.decimals ?? decimals, unit)}</td>)}
                     {band && <td>{num(sample[band.minKey]) === null ? "–" : `${formatNumber(num(sample[band.minKey]) as number, decimals)}–${formatNumber(num(sample[band.maxKey]) as number, decimals)}`}</td>}
-                    {reference && <td>{show(num(sample[reference.key]), 0, unit)}</td>}
+                    {reference && <td>{show(num(sample[reference.key]), reference.decimals ?? 0, unit)}</td>}
                     {strip && <td>{num(sample[strip.key]) === null ? "–" : `${Math.round((num(sample[strip.key]) as number) * 100)} %`}</td>}
                     {extras.map(extra => <td key={extra.key}>{show(num(sample[extra.key]), extra.decimals ?? 0, extra.unit)}</td>)}
                   </tr>
@@ -305,7 +315,7 @@ export function HistoryChart({
           return <path className="hx-band" d={bandPath()} style={{ fill: owner ? colorOf(owner) : "var(--hx-1)" }}/>;
         })()}
         {reference && <path className="hx-ref" d={linePath(reference.key, true)}/>}
-        {series.map(item => <path key={item.key} className="hx-line" d={linePath(item.key)} style={{ stroke: colorOf(item) }} stroke={colorOf(item)}/>)}
+        {series.map(item => <path key={item.key} className="hx-line" d={linePath(item.key, item.stepped)} style={{ stroke: colorOf(item) }} stroke={colorOf(item)}/>)}
         {rows.length === 1 && series.map(item => {
           const value = num(rows[0][item.key]);
           return value === null ? null : <circle key={item.key} className="hx-dot" cx={xFor(times[0])} cy={yFor(value)} r={4} style={{ fill: colorOf(item) }}/>;
