@@ -42,6 +42,8 @@ describe("readAfterheatControl", () => {
 
   it("is saved with the controller settings", () => {
     expect(AFTERHEAT_CONTROL_SETTINGS).toContain("afterheat_control_mode");
+    expect(AFTERHEAT_CONTROL_SETTINGS).toContain("afterheat_pi_band");
+    expect(AFTERHEAT_CONTROL_SETTINGS).toContain("afterheat_pi_min_dwell_ticks");
   });
 });
 

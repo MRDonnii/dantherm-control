@@ -201,6 +201,8 @@ class ControllerRuntime:
             "extract_temp": extract_temp,
             "outdoor_rh": self._outdoor_humidity(),
             "afterheat_room_temperature": room_temperature,
+            # The rooms' own temperature (the rooms the RH comes from), for the indoor absolute humidity.
+            "indoor_temperature_average": self._indoor_room_temperature(),
             "stove_temperature": self._source_value(self.config.data.get("fireplace_auto_source"), "temperature"),
             "max_room_co2": self._max_room_co2(),
             # The afterheat frost lock looks at T1, the attic and the water-side frost sensor.
@@ -360,20 +362,31 @@ class ControllerRuntime:
             return self._ha_room_average_temperature(), "ha_average"
         return self._source_value(source, "temperature"), source
 
-    def _indoor_room_humidity(self) -> dict[str, float | None]:
-        """Average and lowest RH of the HA rooms, for the winter dry-air mode.
+    def _humidity_rooms(self) -> list[dict]:
+        """The HA rooms the indoor humidity is taken from (see _indoor_room_humidity).
 
         Bathrooms (showers), rooms with control off (e.g. an unheated garage)
         and rooms chosen as stove or outdoor sensors are left out.
         """
         excluded = self._source_room_names()
-        values = [
-            float(values["humidity"])
+        return [
+            values
             for name, values in self._fresh_ha_rooms().items()
             if name not in excluded and values.get("enabled", True) and values.get("control", True)
             and not self._is_bathroom(name, values)
             and isinstance(values.get("humidity"), (int, float)) and 0 < values["humidity"] <= 100
         ]
+
+    def _indoor_room_temperature(self) -> float | None:
+        """Average temperature of the rooms the indoor RH comes from, for its absolute humidity."""
+        temperatures = [float(values["temperature"]) for values in self._humidity_rooms()
+                        if isinstance(values.get("temperature"), (int, float))
+                        and not isinstance(values.get("temperature"), bool)]
+        return round(sum(temperatures) / len(temperatures), 2) if temperatures else None
+
+    def _indoor_room_humidity(self) -> dict[str, float | None]:
+        """Average and lowest RH of the HA rooms, for the winter dry-air mode."""
+        values = [float(values["humidity"]) for values in self._humidity_rooms()]
         if not values:
             return {"indoor_rh_average": None, "indoor_rh_lowest": None}
         return {"indoor_rh_average": round(sum(values) / len(values), 1), "indoor_rh_lowest": min(values)}

@@ -33,6 +33,33 @@ describe("afterheat control setting", () => {
     fireEvent.change(screen.getByLabelText(/Integraltid/), { target: { value: "12" } });
     expect(set).toHaveBeenCalledWith("afterheat_pi_integral_minutes", 12);
     expect((screen.getByLabelText(/Forstærkning/) as HTMLInputElement).value).toBe("1.5");
+    expect(screen.queryByLabelText(/Komfortbånd/)).toBeNull();  // older firmware without the setting
+  });
+
+  it("shows the comfort band and the minimum time per level when the Pi reports them", () => {
+    const controller = { afterheat_control_mode: "pi", afterheat_pi_gain: 1, afterheat_pi_integral_minutes: 2, afterheat_pi_band: 0.5, afterheat_pi_min_dwell_ticks: 3 };
+    const set = vi.fn();
+    render(<AfterheatControlCard lang="da" form={controller} controller={controller} set={set}/>);
+    const band = screen.getByLabelText(/Komfortbånd/) as HTMLInputElement;
+    expect(band.value).toBe("0.5");
+    expect(band.min).toBe("0.1");
+    expect(band.max).toBe("1.5");
+    fireEvent.change(band, { target: { value: "0.8" } });
+    expect(set).toHaveBeenCalledWith("afterheat_pi_band", 0.8);
+    const dwell = screen.getByLabelText(/Mindste tid pr. trin/) as HTMLInputElement;
+    expect(dwell.value).toBe("3");
+    expect(dwell.max).toBe("10");
+    fireEvent.change(dwell, { target: { value: "5" } });
+    expect(set).toHaveBeenCalledWith("afterheat_pi_min_dwell_ticks", 5);
+    // Whole ticks only: a fraction is rounded, an empty field is not sent as 0.
+    set.mockClear();
+    fireEvent.change(dwell, { target: { value: "2.5" } });
+    expect(set).toHaveBeenLastCalledWith("afterheat_pi_min_dwell_ticks", 3);
+    set.mockClear();
+    fireEvent.change(dwell, { target: { value: "" } });
+    expect(set).not.toHaveBeenCalled();
+    expect(screen.getByText(/skiftes der mellem de to nabotrin/)).toBeTruthy();
+    expect(screen.getByText(/lader Pi'en trinnet være i fred/)).toBeTruthy();
   });
 
   it("only appears on firmware with the setting and saves the choice", async () => {
@@ -51,5 +78,6 @@ describe("afterheat control setting", () => {
     const patch = api.postJson.mock.calls[0][1] as Record<string, unknown>;
     expect(patch.afterheat_control_mode).toBe("pi");
     expect("afterheat_pi_gain" in patch).toBe(false);
+    expect("afterheat_pi_band" in patch).toBe(false);
   });
 });

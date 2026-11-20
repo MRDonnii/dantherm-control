@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from collections import deque
 import json
 import math
 import os
@@ -19,10 +20,14 @@ from fan_steps import MAX_LEVEL, MAX_LEVEL_HOURS, NOMINAL_LEVEL, STEP_COUNTS
 from onewire_extras import clean_roles
 from afterheat_pilot import (
     CONTROL_MODES as AFTERHEAT_CONTROL_MODES,
+    PI_BAND_DEFAULT,
+    PI_BAND_RANGE,
     PI_GAIN_DEFAULT,
     PI_GAIN_RANGE,
     PI_INTEGRAL_MINUTES_DEFAULT,
     PI_INTEGRAL_MINUTES_RANGE,
+    PI_MIN_DWELL_TICKS_DEFAULT,
+    PI_MIN_DWELL_TICKS_RANGE,
     AfterheatPilot,
     PilotInputs,
 )
@@ -217,6 +222,27 @@ def _clean_afterheat_setpoint(value: object) -> int | float:
     return int(number) if number.is_integer() else number
 
 
+def _whole_number(value: object) -> int:
+    """A whole number from a settings patch; ValueError for fractions, booleans or anything else."""
+    if isinstance(value, bool):
+        raise ValueError("not a whole number")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        value = value.strip()
+        try:
+            return int(value)
+        except ValueError:
+            value = float(value)
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        return int(value)
+    raise ValueError("not a whole number")
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def _round(value: float | None, digits: int = 2) -> float | None:
     return None if value is None else round(value, digits)
 
@@ -367,6 +393,10 @@ class ControllerState:
         "afterheat_control_mode": "native",
         "afterheat_pi_gain": PI_GAIN_DEFAULT,
         "afterheat_pi_integral_minutes": PI_INTEGRAL_MINUTES_DEFAULT,
+        # Calm operation: no level change while the air is this close to the
+        # target (K), and a level is kept this many HAC1 ticks unless urgent.
+        "afterheat_pi_band": PI_BAND_DEFAULT,
+        "afterheat_pi_min_dwell_ticks": PI_MIN_DWELL_TICKS_DEFAULT,
         # Fireplace mode held by a stove sensor or an external switch.
         "fireplace_auto_enabled": False,
         "fireplace_auto_source": "",
@@ -387,8 +417,14 @@ class ControllerState:
         "t2_offset_k": 0.0,
         "humidity_margin_gm3": 0.5,
         "dry_protection_enabled": False,
+        # Dry-air limit: caps the level at dry_max_level while the Home
+        # Assistant rooms (winter_rh_basis: average or lowest) are below
+        # dry_rh_limit. It ends at limit + winter_rh_hysteresis, and every
+        # decision holds for at least dry_hold_minutes (high CO2 ends it at
+        # once). The unit's own RH is never used: it reads far too low.
         "dry_rh_limit": 30.0,
         "dry_max_level": 2,
+        "dry_hold_minutes": 10,
         # Winter dry-air mode: when the outdoor air (T1) is cold and the indoor
         # air is dry, the base level is lowered to winter_level. CO2, humidity
         # demand, bathroom drying, boost, manual control and the house minimum
@@ -737,6 +773,7 @@ class ControllerState:
         ("frost_lock_min_setpoint_c", 15.0, 25.0),
         ("afterheat_pi_gain", *PI_GAIN_RANGE),
         ("afterheat_pi_integral_minutes", *PI_INTEGRAL_MINUTES_RANGE),
+        ("afterheat_pi_band", *PI_BAND_RANGE),
     )
     ADVANCED_INTS = (
         ("house_bathrooms", 0, 10), ("house_utility_rooms", 0, 10),
@@ -746,6 +783,8 @@ class ControllerState:
         ("fireplace_max_hours", 1, 24), ("dry_max_level", 1, None), ("pm25_max_level", 1, None),
         ("bathroom_rise_minutes", 3, 30), ("bathroom_max_minutes", 0, 720),
         ("winter_level", 1, None), ("winter_hold_minutes", 5, 240),
+        ("dry_hold_minutes", 1, 240),
+        ("afterheat_pi_min_dwell_ticks", *PI_MIN_DWELL_TICKS_RANGE),
     )
 
     @staticmethod
@@ -1303,7 +1342,7 @@ class ControllerState:
         "duct_rooms_offset_k", "duct_t3_offset_k",
         "t2_offset_k",
         "humidity_margin_gm3", "dry_protection_enabled", "dry_rh_limit", "dry_max_level",
-        "onewire_roles", "pm25_enabled", "pm25_setpoint", "pm25_step", "pm25_hysteresis",
+        "dry_hold_minutes", "onewire_roles", "pm25_enabled", "pm25_setpoint", "pm25_step", "pm25_hysteresis",
         "pm25_max_level", "pm25_ignored_rooms",
         "bathroom_rise_percent", "bathroom_rise_minutes", "bathroom_night_drying",
         "bathroom_max_minutes", "bathroom_rooms",
@@ -1311,6 +1350,7 @@ class ControllerState:
         "winter_rh_hysteresis", "winter_rh_basis", "winter_level", "winter_hold_minutes",
         "frost_lock_enabled", "frost_lock_outdoor_c", "frost_lock_coil_c", "frost_lock_min_setpoint_c",
         "afterheat_control_mode", "afterheat_pi_gain", "afterheat_pi_integral_minutes",
+        "afterheat_pi_band", "afterheat_pi_min_dwell_ticks",
     )
     ADVANCED_LABELS = {
         "house_area_m2": "Boligareal", "ceiling_height_m": "Loftshøjde",
@@ -1322,7 +1362,7 @@ class ControllerState:
         "fireplace_auto_on_temp": "Pejs start", "fireplace_auto_off_temp": "Pejs stop",
         "fireplace_afterrun_minutes": "Efterløb", "fireplace_max_hours": "Maks. varighed",
         "humidity_margin_gm3": "Fugtmargin", "dry_rh_limit": "Tør luft-grænse",
-        "dry_max_level": "Maks. trin ved tør luft",
+        "dry_max_level": "Maks. trin ved tør luft", "dry_hold_minutes": "Tør luft: mindste tid",
         "balance_extract_excess_percent": "Udsugning over indblæsning", "balance_duct_ratio": "Kanalforhold",
         "duct_rooms_offset_k": "Korrektion udsugningsrum", "duct_t3_offset_k": "Korrektion T3",
         "t2_offset_k": "Korrektion T2",
@@ -1338,6 +1378,8 @@ class ControllerState:
         "frost_lock_min_setpoint_c": "Frostlås: mindste setpunkt",
         "afterheat_pi_gain": "Eftervarme: forstærkning",
         "afterheat_pi_integral_minutes": "Eftervarme: integraltid",
+        "afterheat_pi_band": "Eftervarme: komfortbånd",
+        "afterheat_pi_min_dwell_ticks": "Eftervarme: mindste tid pr. trin",
     }
 
     def frost_lock_in_force(self) -> bool:
@@ -1440,7 +1482,7 @@ class ControllerState:
             high = self.max_level() if high is None else high  # step choices
             if key in patch:
                 try:
-                    value = int(patch[key])
+                    value = _whole_number(patch[key])  # 2.5 is refused, not cut to 2
                 except (TypeError, ValueError) as error:
                     raise ControllerError(f"{self.ADVANCED_LABELS[key]} skal være et heltal") from error
                 if not low <= value <= high:
@@ -1741,6 +1783,17 @@ class ControllerEngine:
         self.winter_pause_until = 0.0
         self.winter_pause_reason: str | None = None
         self.winter_state = "disabled"
+        # Dry-air limit (see _dry_air): a held decision, so it cannot flap.
+        self.dry_active = False
+        self.dry_changed_at: float | None = None
+        self.dry_state = "disabled"
+        # After high CO2 ended the limit it waits for CO2 <= setpoint - hysteresis.
+        self.dry_co2_stopped = False
+        # Automatic level changes in the last hour (flap counter, see _count_level_change).
+        self.level_change_times: deque[float] = deque()
+        self._counted_level: int | None = None
+        self._counted_context: tuple | None = None
+        self._schedule_key: tuple | None = None
         # Frost lock (see _update_frost_lock); the latch itself is saved in the config.
         self.frost_lock_active = False
         self.frost_lock_reason: str | None = None
@@ -1789,12 +1842,17 @@ class ControllerEngine:
         )
 
     def indoor_absolute_humidity(self) -> float | None:
+        """Absolute humidity indoors: the fresh HA rooms (average RH at the room
+        temperature), else the unit's extract RH at the extract temperature."""
+        rooms = self.external.get("indoor_rh_average")
+        if _is_number(rooms):
+            return self._room_absolute_humidity(float(rooms))
         rh = self.measurements.get("rh")
         temperature = self.external.get("extract_temp")
-        if temperature is None:
+        if not _is_number(temperature):
             room = self.measurements.get("room")
-            temperature = room if isinstance(room, (int, float)) else None
-        return absolute_humidity(temperature, rh if isinstance(rh, (int, float)) else None)
+            temperature = room if _is_number(room) else None
+        return absolute_humidity(temperature, rh if _is_number(rh) else None)
 
     def humidity_dries(self, indoor_ah: float | None) -> bool:
         """False only when we know outdoor air would not dry this air."""
@@ -1873,6 +1931,7 @@ class ControllerEngine:
         now = datetime.fromtimestamp(now_ts).astimezone()
         flags = {"schedule_active": False, "night_active": False, "vacation_active": False, "quick_boost_active": False, "cooling_active": False, "cool_boost_active": False}
         effective_bypass = "on" if d["bypass"] == "on" else "off"
+        self._schedule_key = None
 
         if self.config.vacation_running(now_ts):
             flags["vacation_active"] = True
@@ -1886,6 +1945,8 @@ class ControllerEngine:
                 if planned:
                     flags["schedule_active"] = True
                     period = planned["period"]
+                    self._schedule_key = (period.get("start"), period.get("end"), period.get("label"),
+                                          planned.get("set_level"), planned.get("min_level"))
                     name = period["label"] or f"{period['start']}–{period['end']}"
                     if planned["set_level"] is not None:
                         # The period replaces the base level; air-quality demand above
@@ -1991,14 +2052,16 @@ class ControllerEngine:
             self._stop_cooling(now_ts, "manual_mode")
 
         flags["dry_protection_active"] = False
-        if d["mode"] != "manual" and not flags["cooling_active"] and self._dry_air(d):
+        dry = self._dry_air(d, now_ts)
+        if dry and d["mode"] != "manual" and not flags["cooling_active"]:
             limit = int(d["dry_max_level"])
             if level > limit:
                 level = limit
                 flags["dry_protection_active"] = True
                 source = "dry_protection"
-                rh = self.measurements.get("rh")
-                reason = f"Tør luft ({rh:.0f}% RH): begrænset til trin {limit}"
+                rh = self.ha_indoor_rh()
+                rh_text = f"{rh:.0f}" if rh is not None else "?"
+                reason = f"Tør luft (rum {rh_text}% RH): begrænset til trin {limit}"
 
         flags["sizing_floor_active"] = False
         if d.get("sizing_enabled") and d["mode"] != "manual":
@@ -2060,30 +2123,148 @@ class ControllerEngine:
             reason = f"Bål i haven · anlæg slukket · ca. {remaining} min tilbage"
         return level, source, reason, effective_bypass, flags
 
-    def _dry_air(self, d: dict) -> bool:
-        """Dry-air protection: low indoor RH, drying outdoor air, CO2 fine."""
-        if not d.get("dry_protection_enabled"):
-            return False
-        rh = self.measurements.get("rh")
-        if not isinstance(rh, (int, float)) or rh >= float(d["dry_rh_limit"]):
-            return False
-        co2_limit = int(d["co2_setpoint"])
-        for co2 in (self.measurements.get("co2"), self.external.get("max_room_co2")):
-            if isinstance(co2, (int, float)) and co2 > co2_limit:
-                return False
-        outdoor_ah, indoor_ah = self.outdoor_absolute_humidity(), self.indoor_absolute_humidity()
-        return outdoor_ah is None or indoor_ah is None or outdoor_ah < indoor_ah
-
-    def winter_indoor_rh(self) -> tuple[float | None, str | None]:
-        """Indoor RH for winter mode: HA rooms (average or lowest), else the unit's extract RH."""
+    def ha_indoor_rh(self) -> float | None:
+        """RH of the Home Assistant rooms (winter_rh_basis); None while HA has no fresh rooms."""
         key = "indoor_rh_lowest" if self.config.data.get("winter_rh_basis") == "lowest" else "indoor_rh_average"
         value = self.external.get(key)
-        if isinstance(value, (int, float)):
-            return float(value), "ha_lowest" if key == "indoor_rh_lowest" else "ha_average"
+        return float(value) if _is_number(value) else None
+
+    def _room_absolute_humidity(self, rh: float) -> float | None:
+        """Absolute humidity of room air at this RH: the HA rooms' temperature first.
+
+        The extract air (T3) is a few tenths to a degree colder than the rooms,
+        which under-estimates the indoor absolute humidity, so it is only used
+        when no room temperature is known.
+        """
+        for temperature in (self.external.get("indoor_temperature_average"),
+                            self.external.get("afterheat_room_temperature"),
+                            self.external.get("extract_temp"),
+                            self.measurements.get("room")):
+            if _is_number(temperature):
+                return absolute_humidity(float(temperature), rh)
+        return None
+
+    def _humidity_demand(self, d: dict, now: float) -> str | None:
+        """Humidity demand the dry-air limit must never block (None when there is none).
+
+        Bathroom drying and room humidity from Home Assistant, and the local RH
+        demand of the unit's own sensor (bathrooms are not in the HA room RH).
+        """
+        if self._ha_live(d, now):
+            if d.get("ha_bathroom_drying"):
+                return "bathroom_drying"
+            if d.get("ha_humidity_demand"):
+                return "ha_humidity"
         rh = self.measurements.get("rh")
-        if isinstance(rh, (int, float)):
-            return float(rh), "unit"
-        return None, None
+        if _is_number(rh) and rh > float(d["rh_setpoint"]) and self.humidity_dries(self.indoor_absolute_humidity()):
+            return "local_rh"
+        return None
+
+    def _dry_air(self, d: dict, now: float) -> bool:
+        """Dry-air limit: the HA rooms are dry, the outdoor air dries and CO2 is fine.
+
+        Uses only the Home Assistant rooms' RH: the unit's own extract RH reads
+        13-17 % while the rooms read ~40 %, which held the limit on and let
+        every CO2 wobble flip the level (626 changes on 2026-11-19). Without
+        fresh HA rooms the limit is not applied at all. Start below
+        dry_rh_limit with CO2 at or under its setpoint, stop at limit +
+        winter_rh_hysteresis; each decision holds for dry_hold_minutes. CO2
+        over its setpoint and any humidity demand (bathroom drying, HA room
+        humidity, the local RH demand) end it at once. After a CO2 stop (or CO2
+        over its setpoint while the limit is off) it only starts again with CO2
+        at or under setpoint - hysteresis.
+        """
+        if not d.get("dry_protection_enabled"):
+            self.dry_active, self.dry_changed_at, self.dry_state = False, None, "disabled"
+            self.dry_co2_stopped = False
+            return False
+        rh = self.ha_indoor_rh()
+        if rh is None:
+            if self.dry_active:
+                self.dry_changed_at = now
+            self.dry_active, self.dry_state, self.dry_co2_stopped = False, "sensor_missing", False
+            return False
+        limit = float(d["dry_rh_limit"])
+        hysteresis = float(d["winter_rh_hysteresis"])
+        hold = int(d.get("dry_hold_minutes", 10)) * 60
+        if rh >= limit + hysteresis:
+            self.dry_co2_stopped = False  # no longer dry: the next start is a first start
+        co2_limit = int(d["co2_setpoint"])
+        co2_start_limit = co2_limit - int(d["co2_hysteresis"]) if self.dry_co2_stopped else co2_limit
+        co2_values = [
+            float(co2) for co2 in (self.measurements.get("co2"), self.external.get("max_room_co2"))
+            if _is_number(co2)
+        ]
+        co2_high = any(co2 > co2_limit for co2 in co2_values)
+        co2_clear = all(co2 <= co2_start_limit for co2 in co2_values)
+        demand = self._humidity_demand(d, now)
+        outdoor_ah, indoor_ah = self.outdoor_absolute_humidity(), self._room_absolute_humidity(rh)
+        drying = outdoor_ah is None or indoor_ah is None or outdoor_ah < indoor_ah
+        dry = rh < limit and drying
+        start = dry and co2_clear and demand is None
+        stop = rh >= limit + hysteresis or not drying
+        may_change = self.dry_changed_at is None or now - self.dry_changed_at >= hold
+        if self.dry_active and (co2_high or demand):
+            self.dry_active, self.dry_changed_at = False, now
+            self.dry_co2_stopped = self.dry_co2_stopped or co2_high
+        elif not self.dry_active and start and may_change:
+            self.dry_active, self.dry_changed_at, self.dry_co2_stopped = True, now, False
+        elif self.dry_active and stop and may_change:
+            self.dry_active, self.dry_changed_at = False, now
+        if co2_high and not self.dry_active:
+            # CO2 over its setpoint while the limit is off counts as a CO2 stop
+            # too: a (re)start waits for setpoint - hysteresis.
+            self.dry_co2_stopped = True
+        if self.dry_active:
+            self.dry_state = "held" if stop else "active"
+        elif dry and demand:
+            self.dry_state = "humidity_demand"
+        elif dry and co2_high:
+            self.dry_state = "co2_high"
+        elif dry and not co2_clear:
+            self.dry_state = "co2_wait"  # under the setpoint, waiting for the restart limit
+        else:
+            self.dry_state = "waiting" if start else "standby"
+        return self.dry_active
+
+    # Automatic control only: these overlays and manual control choose the
+    # level themselves, so their changes are never counted as flapping.
+    _UNCOUNTED_FLAGS = ("vacation_active", "quick_boost_active", "cool_boost_active",
+                        "standby_active", "bonfire_active")
+
+    def _count_level_change(self, level: int | None, flags: dict[str, bool], now: float) -> int:
+        """Note an automatic level change; returns the automatic changes in the last hour.
+
+        A change is counted only when the level changes between two automatic
+        ticks with the same context: never in manual mode (manual level, the
+        max-level timeout), quick boost, Køl, standby, bonfire or vacation, and
+        not when a schedule period or the night window starts or ends.
+        """
+        d = self.config.data
+        automatic = d["mode"] != "manual" and not any(flags.get(key) for key in self._UNCOUNTED_FLAGS)
+        context = (automatic, d["mode"], bool(flags.get("night_active")), self._schedule_key, bool(d.get("fireplace")))
+        if (automatic and self._counted_level is not None and level != self._counted_level
+                and context == self._counted_context):
+            self.level_change_times.append(now)
+        self._counted_level, self._counted_context = level, context
+        while self.level_change_times and now - self.level_change_times[0] >= 3600:
+            self.level_change_times.popleft()
+        return len(self.level_change_times)
+
+    def level_change_quiet_seconds(self, now: float) -> float | None:
+        """Seconds since the last counted automatic level change (None without one this hour)."""
+        return round(now - self.level_change_times[-1], 1) if self.level_change_times else None
+
+    def winter_indoor_rh(self) -> tuple[float | None, str | None]:
+        """Indoor RH for winter mode: the fresh HA rooms (average or lowest), else none.
+
+        The unit's own extract RH reads far too low (13-17 % against ~40 % in
+        the rooms), so without fresh HA rooms winter mode reports sensor_missing.
+        """
+        rh = self.ha_indoor_rh()
+        if rh is None:
+            return None, None
+        return rh, "ha_lowest" if self.config.data.get("winter_rh_basis") == "lowest" else "ha_average"
 
     def _ha_live(self, d: dict, now: float) -> bool:
         seen = d.get("ha_last_seen")
@@ -2336,6 +2517,8 @@ class ControllerEngine:
             fans_stopped=fans_stopped, override=override,
             gain=float(d.get("afterheat_pi_gain", PI_GAIN_DEFAULT)),
             integral_minutes=float(d.get("afterheat_pi_integral_minutes", PI_INTEGRAL_MINUTES_DEFAULT)),
+            band=float(d.get("afterheat_pi_band", PI_BAND_DEFAULT)),
+            min_dwell_ticks=int(d.get("afterheat_pi_min_dwell_ticks", PI_MIN_DWELL_TICKS_DEFAULT)),
         ))
 
     def afterheat_native_setpoint(self) -> int | None:
@@ -2424,6 +2607,7 @@ class ControllerEngine:
             d["effective_level"] = level
             d["effective_reason"] = reason
             d["updated_at"] = now
+            level_changes = self._count_level_change(level, flags, now)
             profile = d["profiles"].get(level) if level else None
             if flags.get("bonfire_active"):
                 profile = dict(BONFIRE_PROFILE)
@@ -2477,6 +2661,10 @@ class ControllerEngine:
                 "winter_dry_pause_reason": self.winter_pause_reason,
                 "winter_indoor_rh": _round(self.winter_indoor_rh()[0], 1),
                 "winter_indoor_rh_source": self.winter_indoor_rh()[1],
+                "dry_protection_state": self.dry_state,
+                "dry_protection_indoor_rh": _round(self.ha_indoor_rh(), 1),
+                "level_changes_last_hour": level_changes,
+                "level_change_quiet_seconds": self.level_change_quiet_seconds(now),
             }
             native = math.floor(afterheat_target + 0.5)
             if frost_lock:

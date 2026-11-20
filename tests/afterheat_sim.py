@@ -7,6 +7,14 @@ valves, so the top levels add little). The Calefa flow temperature swings
 38-50 C over ~40 min and scales the heat per level. HAC1 itself is modelled
 as measured: a fixed tick (60.17 s), one step per tick, decided on its own
 raw T2AH against the whole-degree setpoint, with rare warm glitches on 205.
+
+The valves were opened before the 25-minute Pi trial on 2026-11-20
+(tests/data/hac1_pilot_trial_open_valves.csv, 5 s rows). Two plants stand
+for that: OPENED_VALVES, a linear coil of ~1.5 K a level at 27 % fan and
+~2.4 K at 17 % (what one level was taken to be worth), and TRIAL_VALVES,
+fitted to the trial itself with the dynamics above: level 1 gave next to
+nothing (~0.2 K) and level 2 ~6 K (a valve that only opens properly from
+level 2), see ``replay_trial``.
 """
 from __future__ import annotations
 
@@ -32,13 +40,16 @@ def level_curve(level: float, curvature: float) -> float:
 class Hac1Plant:
     """Air after the water coil plus HAC1's own step controller."""
 
-    def __init__(self, *, gain: float = 0.8, curvature: float = 3.0, base: float = 20.0,
+    def __init__(self, *, gain: float = 0.8, curvature: float = 3.0, level_heat: list[float] | None = None,
+                 base: float = 20.0,
                  dead_time: float = 60.0, tau: float = 120.0, fan: float = 27.0,
                  water_mean: float = 44.0, water_amp: float = 6.0, water_period: float = 2400.0,
                  noise: float = 0.03, seed: int = 1, tick_offset: float = 17.3,
                  period: float = TICK_PERIOD_S, level: int = 1, setpoint: float = 21.0,
                  start: float = 1_000_000.0) -> None:
         self.gain, self.curvature, self.base = gain, curvature, base
+        # Explicit heat of each level relative to level 1's (overrides the curvature).
+        self.level_heat = level_heat
         self.dead_time, self.tau, self.fan = dead_time, tau, fan
         self.water_mean, self.water_amp, self.water_period = water_mean, water_amp, water_period
         self.noise = noise
@@ -68,7 +79,12 @@ class Hac1Plant:
     def rise(self, level: float, fan: float | None = None, water: float | None = None) -> float:
         fan = self.fan if fan is None else fan
         water = self.water() if water is None else water
-        return self.gain * level_curve(level, self.curvature) * 27.0 / fan * max(0.0, water - 20.0) / 20.0
+        return self.gain * self.curve(level) * 27.0 / fan * max(0.0, water - 20.0) / 20.0
+
+    def curve(self, level: float) -> float:
+        if self.level_heat is None:
+            return level_curve(level, self.curvature)
+        return self.level_heat[int(max(0, min(10, level)))]
 
     def steady(self, level: float) -> float:
         return self.air_in() + self.rise(level)
@@ -141,14 +157,25 @@ class GatewayView:
         return robust_temperature([value for at, value in self.raw_window if now - at <= 10.0])
 
 
+# Opened valves as one level was taken to be worth: ~1.5 K at 27 % fan, ~2.4 K at 17 %
+# (water 44 C: 1.25 * 1.2 K a level at 27 %).
+OPENED_VALVES = dict(gain=1.25, curvature=0.0, base=20.0)
+# Fitted to the 2026-11-20 trial (see replay_trial): level 1 ~0.2 K, level 2 ~6.3 K at 27 %
+# fan, then flattening (assumed; the trial never went above level 2).
+TRIAL_LEVEL_HEAT = [0.0, 0.15, 5.25, 6.0, 6.6, 7.0, 7.3, 7.55, 7.75, 7.9, 8.0]
+TRIAL_VALVES = dict(gain=1.0, level_heat=TRIAL_LEVEL_HEAT, base=20.5)
+
+
 def run(pilot, plant: Hac1Plant, *, target: float, minutes: float, events=None,
         frost_lock: bool = False, frost_floor: float = 18.0, gain: float | None = None,
-        integral_minutes: float | None = None, update_every: float = 2.0, inputs_hook=None):
+        integral_minutes: float | None = None, band: float | None = None,
+        min_dwell_ticks: int | None = None, update_every: float = 2.0, inputs_hook=None):
     """Close the loop for ``minutes``; returns one row per pilot update.
 
     ``events`` maps seconds since start to a callable(plant, gateway) run once.
     """
-    from afterheat_pilot import PI_GAIN_DEFAULT, PI_INTEGRAL_MINUTES_DEFAULT, PilotInputs
+    from afterheat_pilot import (PI_BAND_DEFAULT, PI_GAIN_DEFAULT, PI_INTEGRAL_MINUTES_DEFAULT,
+                                 PI_MIN_DWELL_TICKS_DEFAULT, PilotInputs)
 
     gateway = GatewayView(plant)
     gateway.step()
@@ -176,6 +203,8 @@ def run(pilot, plant: Hac1Plant, *, target: float, minutes: float, events=None,
             outdoor=5.0, extract=21.0, master=True,
             gain=PI_GAIN_DEFAULT if gain is None else gain,
             integral_minutes=PI_INTEGRAL_MINUTES_DEFAULT if integral_minutes is None else integral_minutes,
+            band=PI_BAND_DEFAULT if band is None else band,
+            min_dwell_ticks=PI_MIN_DWELL_TICKS_DEFAULT if min_dwell_ticks is None else min_dwell_ticks,
         )
         if inputs_hook is not None:
             inputs_hook(inp, plant, gateway)
@@ -187,6 +216,7 @@ def run(pilot, plant: Hac1Plant, *, target: float, minutes: float, events=None,
             "setpoint": plant.setpoint, "state": result["afterheat_control_active"],
             "wanted": result["afterheat_level_wanted"], "action": result["afterheat_next_action"],
             "reason": result["afterheat_control_reason"], "changes": result["afterheat_setpoint_changes_10min"],
+            "fan": plant.fan,
         })
     return rows
 
@@ -236,3 +266,37 @@ def _solve3(a, b):
                 factor = m[r][col] / m[col][col]
                 m[r] = [x - factor * y for x, y in zip(m[r], m[col])]
     return [m[i][3] / m[i][i] for i in range(3)]
+
+
+def load_trial(name: str = "hac1_pilot_trial_open_valves.csv") -> list[dict[str, float]]:
+    """The Pi trial log (5 s rows, relative time): level, filtered T2AH and supply fan."""
+    with (DATA / name).open(encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    return [{"t": float(r["time"]), "level": int(r["afterheat_level"]),
+             "t2ah": float(r["actual_supply_air_temperature"]), "fan": float(r["actual_fan_supply_percent"]),
+             "wanted": float(r["afterheat_level_wanted"] or 0), "setpoint": float(r["afterheat_hac1_setpoint"]),
+             "reason": r["afterheat_control_reason"]} for r in rows]
+
+
+def replay_trial(rows, level_heat, *, gain: float = 1.0, water: float = 44.0, dead_time: float = 60.0,
+                 tau: float = 120.0) -> float:
+    """RMS error of a plant on the logged trial levels.
+
+    The air before the coil drifted during the trial; it is fitted as a
+    quadratic in time (least squares). The fan moved only once, for one row.
+    """
+    model = []
+    x = None
+    for i, row in enumerate(rows):
+        delayed_t = row["t"] - dead_time
+        j = max((k for k in range(i + 1) if rows[k]["t"] <= delayed_t), default=0)
+        u = gain * level_heat[rows[j]["level"]] * 27.0 / rows[j]["fan"] * (water - 20.0) / 20.0
+        x = u if x is None else x + (u - x) * (1 - math.exp(-(row["t"] - rows[i - 1]["t"]) / tau))
+        model.append(x)
+    basis = [(1.0, r["t"] / 1000, (r["t"] / 1000) ** 2) for r in rows]
+    residual = [r["t2ah"] - m for r, m in zip(rows, model)]
+    ata = [[sum(b[i] * b[j] for b in basis) for j in range(3)] for i in range(3)]
+    atb = [sum(b[i] * y for b, y in zip(basis, residual)) for i in range(3)]
+    coef = _solve3(ata, atb)
+    errors = [y - sum(c * v for c, v in zip(coef, b)) for b, y in zip(basis, residual)]
+    return math.sqrt(sum(e * e for e in errors) / len(errors))

@@ -17,6 +17,12 @@ Assistant show.
   unit's own counter, HAC1 block 1024, reset by the button on the unit).
 - Energy: recovered heat, afterheat and the unit's own consumption are
   integrated to kWh totals that survive restarts, plus today's values.
+- Flapping: more than LEVEL_FLAP_LIMIT automatic level changes in the last
+  hour (level_changes_last_hour from the controller) raises a warning. It
+  clears at LEVEL_FLAP_CLEAR or fewer, or after LEVEL_FLAP_QUIET_SECONDS
+  without a change (level_change_quiet_seconds), so it cannot flap itself.
+  After a quiet clear it needs a fresh burst (LEVEL_FLAP_LIMIT changes since
+  the clear) until the old burst has left the hour (LEVEL_FLAP_REARM_SECONDS).
 - Air balance: once the ducts are known (measured airflow or the learned
   heat balance), running with more supply than extract air is reported.
 """
@@ -43,6 +49,8 @@ ALARM_DELAYS = {
     "bus_unhealthy": 120,
     "filter_clogging": 3600,
     "balance_overpressure": 3600,
+    # The count already spans an hour.
+    "level_flapping": 0,
 }
 ALARM_TEXT = {
     "frost_risk": "Frostrisiko i veksleren: afkastluften (T4) er nær 0 °C",
@@ -54,6 +62,7 @@ ALARM_TEXT = {
     "bus_unhealthy": "Ingen sund RS485-forbindelse til anlægget",
     "filter_clogging": "Ventilatorernes strøm ved samme gear afviger fra rene filtre: filter eller rist stopper til",
     "balance_overpressure": "Overtryk i huset: indblæsningen giver mere luft end udsugningen, så fugtig luft kan presses ud i konstruktionen. Slå luftbalancen til",
+    "level_flapping": "Automatikken skifter trin for tit (over 12 gange i timen): en grænse eller en føler svinger",
 }
 ALARM_SEVERITY = {
     "frost_risk": "warning",
@@ -65,6 +74,7 @@ ALARM_SEVERITY = {
     "bus_unhealthy": "critical",
     "filter_clogging": "info",
     "balance_overpressure": "info",
+    "level_flapping": "warning",
 }
 FROST_WATCH_T4 = 3.0
 FROST_RISK_T4 = 0.5
@@ -80,6 +90,16 @@ FILTER_WINDOW_SAMPLES = 30
 FILTER_REFERENCE_WEIGHT = 360
 # Extract below supply by more than this (in % of supply) counts as overpressure.
 OVERPRESSURE_PERCENT = 3.0
+# More automatic level changes than this in the last hour is flapping; the
+# warning clears at LEVEL_FLAP_CLEAR or fewer, or after a quiet period.
+LEVEL_FLAP_LIMIT = 12
+LEVEL_FLAP_CLEAR = 8
+LEVEL_FLAP_QUIET_SECONDS = 900
+# After a quiet clear, the next single change must not raise it again with the
+# old burst still in the hour's count: it takes LEVEL_FLAP_LIMIT changes since
+# the clear, or this long (the old burst, older than the quiet period, has
+# then left the hour).
+LEVEL_FLAP_REARM_SECONDS = 3600 - LEVEL_FLAP_QUIET_SECONDS
 SAVE_EVERY = 300.0
 MAX_STEP = 60.0
 
@@ -99,6 +119,10 @@ class Diagnostics:
         self.path = Path(path) if path else None
         self.started: dict[str, float] = {}
         self.active: dict[str, float] = {}
+        # Level flapping after a quiet clear: re-armed at this time or after a fresh burst.
+        self.flap_rearm_at: float | None = None
+        self.flap_fresh = 0.0
+        self.flap_count: float | None = None
         self.energy = {"recovered_kwh": 0.0, "afterheat_kwh": 0.0, "unit_kwh": 0.0}
         self.today = {"date": "", "recovered_kwh": 0.0, "afterheat_kwh": 0.0, "unit_kwh": 0.0}
         # Clean power per fan gear pair ("extract/supply"), learned after each filter change.
@@ -155,6 +179,25 @@ class Diagnostics:
         self.save()
 
     # ---- update ------------------------------------------------------
+    def _level_flapping(self, flaps: float | None, quiet: float | None, now: float) -> bool:
+        """Hysteresis: raised above LEVEL_FLAP_LIMIT, held until LEVEL_FLAP_CLEAR or a quiet period.
+
+        After a quiet clear it is raised again only by a fresh burst (changes
+        counted since the clear) or once the old burst has left the hour.
+        """
+        active = "level_flapping" in self.active
+        if self.flap_rearm_at is not None:
+            if flaps is not None and self.flap_count is not None and flaps > self.flap_count:
+                self.flap_fresh += flaps - self.flap_count
+            if now >= self.flap_rearm_at or self.flap_fresh >= LEVEL_FLAP_LIMIT:
+                self.flap_rearm_at, self.flap_fresh = None, 0.0
+        self.flap_count = flaps
+        over = flaps is not None and flaps > (LEVEL_FLAP_CLEAR if active else LEVEL_FLAP_LIMIT)
+        quiet_now = quiet is not None and quiet >= LEVEL_FLAP_QUIET_SECONDS
+        if active and over and quiet_now:
+            self.flap_rearm_at, self.flap_fresh = now + LEVEL_FLAP_REARM_SECONDS, 0.0
+        return over and not quiet_now and self.flap_rearm_at is None
+
     def update(self, s: dict[str, object], now: float | None = None) -> dict[str, object]:
         now = time.time() if now is None else now
         step = 0.0 if self.last_update is None else min(MAX_STEP, max(0.0, now - self.last_update))
@@ -256,6 +299,8 @@ class Diagnostics:
             ah_setpoint is not None and ah_before is not None and ah_lift is not None
             and ah_before + ah_lift >= ah_setpoint - 1.0
         )
+        level_flapping = self._level_flapping(_num(s.get("level_changes_last_hour")),
+                                              _num(s.get("level_change_quiet_seconds")), now)
         conditions = {
             "frost_risk": frost_state == "risk",
             "recovery_low": cold and supply_recovery is not None and supply_recovery < 60,
@@ -276,6 +321,7 @@ class Diagnostics:
             "balance_overpressure": s.get("fireplace") is not True and s.get("actual_fireplace") is not True
                 and _num(s.get("balance_running_excess_percent")) is not None
                 and _num(s.get("balance_running_excess_percent")) < -OVERPRESSURE_PERCENT,
+            "level_flapping": level_flapping,
         }
         for code, holds in conditions.items():
             if holds:

@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.9.1
+
+- **Calmer Pi afterheat control.** The first trial changed level about 30 times an hour. Now:
+  - a comfort band (`afterheat_pi_band`, 0.1–1.5 K, default 0.5) where the level is left alone, and a minimum time per
+    level (`afterheat_pi_min_dwell_ticks`, 1–10 ticks, default 3; whole numbers only);
+  - heat learned per level, at most one step up within the dead time, anti-windup while a gate holds the level;
+  - persistent cold (outside the band for 4 min, or past the urgent level for 1 min) always gets more heat; when no
+    level fits, it takes turns between the two neighbouring levels with a long period (PWM).
+- **Frost lock in Pi mode.** The target is raised to at least the HAC1 frost floor (whole degree) + 1 K, and the reason
+  says so; air below the floor is urgent and never shown as "in the band"; HAC1's own frost steps up are not reverted;
+  no step down to a level that would settle below the floor, one down step at a time, and a level that settles below
+  the floor is left again at the next tick. A half-degree floor (e.g. 17.5) no longer makes the Pi and HAC1 pull
+  against each other. In a 3000-scenario simulator sweep, minutes below the floor fell from 1308 to 141.
+- **Dry-air limit uses the rooms' humidity from HA** instead of the unit's own sensor (which reads far too low), with
+  hysteresis and `dry_hold_minutes` (1–240, default 10, Indstillinger). It never blocks bathroom drying, HA humidity
+  demand or the local humidity demand; the first start needs only CO2 ≤ setpoint, a restart after a CO2 stop waits for
+  setpoint − hysteresis (state `co2_wait`). Indoor absolute humidity uses the same rooms' temperature.
+- **New alarm "Automatikken skifter trin for tit"** (`level_flapping`): more than 12 automatic level changes in an hour;
+  clears at ≤ 8 or after 15 quiet minutes, and re-arms only on a fresh burst. Manual, boost, Køl, standby, bonfire,
+  vacation, schedule and night boundaries are not counted. New snapshot field `level_changes_last_hour`.
+- Settings that must be whole numbers are now rejected when they carry decimals instead of being cut.
+
 ## 1.9.0
 
 - **Pi afterheat control (Eftervarme · Pi-styring).** Measurements showed the HAC1 is a floating step controller: one

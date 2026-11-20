@@ -137,14 +137,16 @@ class AdvancedEngineTests(unittest.TestCase):
     def test_dry_protection_caps_level_unless_co2_is_high(self):
         engine = self.make_engine()
         engine.config.configure({"dry_protection_enabled": True, "dry_rh_limit": 30, "dry_max_level": 2})
-        engine.update_measurements(rh=25, co2=600, outdoor=-5)
-        engine.set_external({"outdoor_rh": 80, "extract_temp": 21})
+        # The rooms' RH from Home Assistant decides, not the unit's own RH.
+        engine.update_measurements(rh=45, co2=600, outdoor=-5)
+        engine.set_external({"outdoor_rh": 80, "extract_temp": 21, "indoor_rh_average": 25})
         result = engine.resolve()
         self.assertTrue(result["dry_protection_active"])
         self.assertEqual(result["effective_level"], 2)
         self.assertEqual(result["effective_source"], "dry_protection")
+        self.assertEqual(result["effective_reason"], "Tør luft (rum 25% RH): begrænset til trin 2")
 
-        engine.set_external({"outdoor_rh": 80, "extract_temp": 21, "max_room_co2": 1100})
+        engine.set_external({"outdoor_rh": 80, "extract_temp": 21, "indoor_rh_average": 25, "max_room_co2": 1100})
         result = engine.resolve()
         self.assertFalse(result["dry_protection_active"])
 

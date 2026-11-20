@@ -10,7 +10,10 @@ export type AfterheatControlActive = "pi" | "native" | "fallback";
 export type AfterheatAction = "up" | "hold" | "down";
 
 /** Settings the Pi controller adds to the advanced controller settings. */
-export const AFTERHEAT_CONTROL_SETTINGS = ["afterheat_control_mode", "afterheat_pi_gain", "afterheat_pi_integral_minutes"] as const;
+export const AFTERHEAT_CONTROL_SETTINGS = [
+  "afterheat_control_mode", "afterheat_pi_gain", "afterheat_pi_integral_minutes",
+  "afterheat_pi_band", "afterheat_pi_min_dwell_ticks",
+] as const;
 
 export const AFTERHEAT_LEVEL_MAX = 10;
 
