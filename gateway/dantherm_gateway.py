@@ -1936,7 +1936,7 @@ class Gateway:
             return False
         return True
 
-    def write_afterheat_setpoint(self, ser: serial.Serial, value: int | None) -> int | None:
+    def write_afterheat_setpoint(self, ser: serial.Serial, value: float | None) -> float | None:
         """Write only the verified HAC1 thermostat block.
 
         HCP4 refreshes FC16 blocks 180..184 and 185..189 every four seconds.
@@ -1949,7 +1949,8 @@ class Gateway:
         """
         if value is not None and not 10 <= value <= 35:
             raise ValueError("afterheat setpoint must be 10..35 C or OFF")
-        command = [1, 0 if value is None else value * 256, 15, 0x17FE, 0xFF03]
+        # Register 186 is the setpoint in 1/256 °C (8.8 fixed point).
+        command = [1, 0 if value is None else int(round(value * 256)), 15, 0x17FE, 0xFF03]
         self._write_afterheat_block(
             ser, 185, command, "CONTROL_AFTERHEAT_THERMOSTAT"
         )
@@ -2201,6 +2202,14 @@ class Gateway:
         main1032 = self.read_register_block(ser, 1, 1032, 4)
         if main1032 is not None:
             self._mirror_active_block(1, 3, 1032, main1032)
+        # HAC1 register 101 is its afterheat output level (0..n, one step per
+        # ~60 s controller tick); read for diagnostics and Pi-side control.
+        hac100 = self.read_register_block(ser, 0x40, 100, 2)
+        if hac100 is not None and len(hac100) == 2:
+            if self.state.get("hac1_output_level") != hac100[1]:
+                self.state["hac1_output_level_changed_monotonic"] = time.monotonic()
+            self.state["hac1_output_level"] = hac100[1]
+            self.state["hac1_output_level_monotonic"] = time.monotonic()
         hac205 = self.read_register_block(ser, 0x40, 205, 5)
         if hac205 is not None:
             self._mirror_active_block(0x40, 3, 205, hac205)

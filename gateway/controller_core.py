@@ -60,6 +60,12 @@ FROST_LOCK_RELEASE_SECONDS = 30 * 60
 # A cold value must persist this long before the lock latches, so a single
 # glitched reading (e.g. T1 = 0 after a bus fault) cannot lock in summer.
 FROST_LOCK_ENGAGE_SECONDS = 120
+# A short-lived afterheat setpoint written by a supervised experiment or tool:
+# {"setpoint": 21.5, "expires_at": <unix time>}. Fractions are allowed (HAC1
+# register 186 is setpoint*256). It never outlives AFTERHEAT_OVERRIDE_MAX_SECONDS,
+# is ignored while the afterheat is off, and the frost floor still applies.
+AFTERHEAT_OVERRIDE_PATH = Path(os.getenv("DANTHERM_AFTERHEAT_OVERRIDE", "/var/lib/dantherm-hch5-ha/afterheat-override.json"))
+AFTERHEAT_OVERRIDE_MAX_SECONDS = 900
 # While locked, the outdoor word in HAC1 register 180 never reaches HAC1's own
 # 15 C summer lockout, so a stale or glitched T1 cannot lock the afterheat out.
 FROST_LOCK_OUTDOOR_WORD_CAP_C = 10.0
@@ -2203,6 +2209,29 @@ class ControllerEngine:
         self.frost_lock_reason = reason if self.frost_lock_active else None
         return self.frost_lock_active
 
+    def _afterheat_override(self) -> float | None:
+        """Valid experiment/tool setpoint from AFTERHEAT_OVERRIDE_PATH, else None."""
+        path = AFTERHEAT_OVERRIDE_PATH
+        try:
+            stat = path.stat()
+        except OSError:
+            self._override_cache = None
+            return None
+        cached = getattr(self, "_override_cache", None)
+        if cached is None or cached[0] != (stat.st_mtime_ns, stat.st_size):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                value = float(data["setpoint"])
+                expires = float(data["expires_at"])
+            except (OSError, ValueError, KeyError, TypeError):
+                value, expires = None, 0.0
+            cached = self._override_cache = ((stat.st_mtime_ns, stat.st_size), value, expires)
+        _key, value, expires = cached
+        wall = time.time()
+        if value is None or not 10.0 <= value <= 35.0 or not wall < expires <= wall + AFTERHEAT_OVERRIDE_MAX_SECONDS:
+            return None
+        return round(value * 256) / 256
+
     def _afterheat_setpoint(self, now: float) -> tuple[int, str]:
         """Afterheat setpoint, moved one degree per interval toward the room target."""
         d = self.config.data
@@ -2290,6 +2319,10 @@ class ControllerEngine:
             # The frost lock keeps it on whatever was chosen.
             fans_stopped = bool(flags.get("standby_active") or flags.get("bonfire_active"))
             afterheat_on = frost_lock or (bool(d["afterheat_enabled"]) and not fans_stopped)
+            override = self._afterheat_override() if afterheat_on else None
+            if override is not None:
+                afterheat_setpoint = max(override, frost_floor) if frost_lock else override
+                afterheat_reason = f"Forsøg: setpunkt {_danish_number(afterheat_setpoint, 2)} °C"
             d["effective_source"] = source
             d["effective_level"] = level
             d["effective_reason"] = reason
@@ -2327,6 +2360,7 @@ class ControllerEngine:
                 "controller_uptime_seconds": round(now - self.started_at, 1),
                 "afterheat_effective_setpoint": afterheat_setpoint,
                 "afterheat_command": afterheat_setpoint if afterheat_on else None,
+                "afterheat_override_setpoint": override,
                 "afterheat_frost_lock": frost_lock,
                 "afterheat_frost_lock_reason": self.frost_lock_reason,
                 "afterheat_frost_lock_floor": frost_floor,
@@ -2400,11 +2434,14 @@ class ControllerEngine:
     def _apply_afterheat(self, snapshot: dict[str, object]) -> None:
         command = snapshot.get("afterheat_command")
         frost_lock = snapshot.get("afterheat_frost_lock") is True
+        # Whole degrees normally; an override may carry 1/256 °C steps (HAC1 186 = sp*256).
+        value = None if command is None else (
+            int(command) if float(command).is_integer() else round(float(command) * 256) / 256)
         self._call(
             "afterheat_setpoint",
-            None if command is None else int(command),
+            value,
             self.hardware.set_afterheat_setpoint,
-            None if command is None else int(command),
+            value,
             refresh_seconds=4.0,
             keep_retrying=frost_lock,
         )

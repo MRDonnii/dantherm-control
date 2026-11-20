@@ -1117,6 +1117,10 @@ class ControllerRuntime:
             "t2ah_rejected_samples": self.gateway_state.get("t2ah_rejected_samples", 0),
             "t2ah_last_raw_temperature": self.gateway_state.get("t2ah_last_raw_temperature"),
             "frost_rejected_samples": self.gateway_state.get("frost_rejected_samples", 0),
+            "actual_afterheat_level": (
+                self.gateway_state.get("hac1_output_level")
+                if isinstance(self.gateway_state.get("hac1_output_level_monotonic"), (int, float))
+                and time.monotonic() - self.gateway_state["hac1_output_level_monotonic"] <= 30 else None),
             "frost_last_raw_temperature": self.gateway_state.get("frost_last_raw_temperature"),
             "t2ah_last_raw_age_seconds": (
                 round(time.monotonic() - self.gateway_state["t2ah_last_raw_sample_monotonic"], 1)

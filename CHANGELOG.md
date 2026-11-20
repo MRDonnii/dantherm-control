@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.8.2
+
+- **HAC1 output level.** The gateway now reads HAC1 register 101 every master poll. It is the afterheat output level
+  (0..n), which the HAC1 moves one step per ~60 s controller tick: up while its own after-coil sensor (T2AH, register
+  205) is below the setpoint, down when T2AH is about 1 K above it, otherwise it holds. Shown as actual_afterheat_level.
+- **Setpoints with decimals.** Register 186 is the setpoint in 1/256 °C, so the afterheat command may now carry fractions.
+- **Supervised afterheat experiments.** A short-lived setpoint in /var/lib/dantherm-hch5-ha/afterheat-override.json
+  ({"setpoint": 21.5, "expires_at": <unix time>}, at most 15 minutes ahead) replaces the afterheat command while the
+  afterheat is on. The frost floor still applies and nothing changes without the file. This is groundwork for a Pi-side
+  afterheat controller that steers the HAC1 step by step.
+
 ## 1.8.1
 
 - **HAC1 measurement glitches are hidden.** The HAC1 sometimes reports the air after the afterheat coil (register 205)
