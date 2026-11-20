@@ -1116,6 +1116,8 @@ class ControllerRuntime:
             "t2ah_spike_filter_enabled": self.gateway_state.get("t2ah_spike_filter_enabled") is True,
             "t2ah_rejected_samples": self.gateway_state.get("t2ah_rejected_samples", 0),
             "t2ah_last_raw_temperature": self.gateway_state.get("t2ah_last_raw_temperature"),
+            "frost_rejected_samples": self.gateway_state.get("frost_rejected_samples", 0),
+            "frost_last_raw_temperature": self.gateway_state.get("frost_last_raw_temperature"),
             "t2ah_last_raw_age_seconds": (
                 round(time.monotonic() - self.gateway_state["t2ah_last_raw_sample_monotonic"], 1)
                 if isinstance(self.gateway_state.get("t2ah_last_raw_sample_monotonic"), (int, float)) else None

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.8.1
+
+- **HAC1 measurement glitches are hidden.** The HAC1 sometimes reports the air after the afterheat coil (register 205)
+  and the water-side frost sensor (206) several degrees too warm for 3-9 s, often both at once and several times a
+  day (CRC-valid replies, so not a decoding error). Both values are now published as the lowest reading of the last
+  15 s: a glitch never shows, a real drop (e.g. towards frost) shows at once, and a real rise is delayed by at most 15 s.
+  The filter is on by default and covers the WebUI history, Home Assistant, the frost lock, the unit's T2 feed and the
+  value written to the HAC1. Suppressed readings are counted (t2ah_/frost_rejected_samples).
+- The 10 s HAC1 snapshot now applies the same plausibility windows to registers 205/206 as the 3 s block read.
+
 ## 1.8.0
 
 - **Afterheat frost lock (Frostlås).** A water afterheat coil in a cold attic can freeze when its valve closes. While the

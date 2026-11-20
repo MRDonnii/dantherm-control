@@ -131,6 +131,19 @@ PASSIVE_180_WINDOWS = {
 T2AH_WINDOW = (-35.0, 40.0)
 FROST_SENSOR_WINDOW = (-35.0, 60.0)
 
+# HAC1 sometimes reports its NTC inputs (205 T2AH, 206 frost sensor) several
+# degrees too WARM for 3-9 s, often both at once (seen several times a day; CRC-
+# valid replies, so not a decoding error). Such glitches are always upward, so
+# the published value is the lowest raw reading of the last SPIKE_WINDOW_SECONDS:
+# a glitch shorter than the window never shows, a real drop (e.g. towards frost)
+# shows at once, and a real rise is delayed by at most the window and can never
+# freeze. Readings already older than the window do not count.
+SPIKE_FILTERS = {
+    "heating_coil_after_temperature": (2.0, "t2ah"),
+    "heating_coil_frost_temperature": (1.5, "frost"),
+}
+SPIKE_WINDOW_SECONDS = 15.0
+
 
 def crc16(data: bytes) -> int:
     crc = 0xFFFF
@@ -638,11 +651,14 @@ class Gateway:
         self.device_name = config["device"].get("name", "Dantherm HCH5")
         self.retain = bool(config["mqtt"].get("retain", True))
         self.state: dict[str, object] = {}
-        self.t2ah_spike_filter_enabled = bool(config.get("serial", {}).get("t2ah_spike_filter_enabled", False))
+        serial_cfg = config.get("serial", {})
+        # On by default; serial.spike_filter_enabled (or the older
+        # t2ah_spike_filter_enabled) set to false turns it off.
+        self.t2ah_spike_filter_enabled = bool(serial_cfg.get(
+            "spike_filter_enabled", serial_cfg.get("t2ah_spike_filter_enabled", True)))
         self.state["t2ah_spike_filter_enabled"] = self.t2ah_spike_filter_enabled
-        # HAC1 T2AH can produce isolated, multi-degree glitches.
-        # Hold an implausible jump until a second consecutive reading confirms it.
-        self._t2ah_pending: tuple[float, float] | None = None
+        # key -> recent (monotonic time, raw value) readings for the spike filter
+        self._spike_window: dict[str, list[tuple[float, float]]] = {}
         self.running = True
         self.last_manual_write = 0.0
         self.control_enabled = bool(config.get("control", {}).get("enabled", False))
@@ -1271,26 +1287,31 @@ class Gateway:
         log = LOG.info if key in INFO_STATE_KEYS else LOG.debug
         log("%s=%s", key, payload)
 
+    def _filtered_temperature(self, key: str, raw: float) -> float:
+        """Lowest raw reading of the last SPIKE_WINDOW_SECONDS for HAC1 205/206.
+
+        Counts a suppressed glitch when the raw value is at least the key's
+        threshold above what is published.
+        """
+        threshold, prefix = SPIKE_FILTERS[key]
+        now = time.monotonic()
+        self.state[f"{prefix}_last_raw_temperature"] = raw
+        self.state[f"{prefix}_last_raw_sample_monotonic"] = now
+        windows = getattr(self, "_spike_window", None)
+        if windows is None:
+            windows = self._spike_window = {}
+        window = [(at, value) for at, value in windows.get(key, []) if 0 <= now - at <= SPIKE_WINDOW_SECONDS]
+        window.append((now, raw))
+        windows[key] = window
+        filtered = min(value for _at, value in window)
+        if raw - filtered >= threshold:
+            self.state[f"{prefix}_rejected_samples"] = int(self.state.get(f"{prefix}_rejected_samples") or 0) + 1
+        return filtered
+
     def publish_temperature(self, key: str, value: object, *, source: str | None = None):
-        if (key == "heating_coil_after_temperature" and getattr(self, "t2ah_spike_filter_enabled", False)
+        if (key in SPIKE_FILTERS and getattr(self, "t2ah_spike_filter_enabled", False)
                 and isinstance(value, (int, float)) and not isinstance(value, bool)):
-            now = time.monotonic()
-            raw = float(value)
-            self.state["t2ah_last_raw_temperature"] = raw
-            self.state["t2ah_last_raw_sample_monotonic"] = now
-            previous = self.state.get(key)
-            sampled_at = self.state.get("heating_coil_after_temperature_sample_monotonic")
-            if (isinstance(previous, (int, float)) and not isinstance(previous, bool)
-                    and isinstance(sampled_at, (int, float)) and 0 <= now - sampled_at <= 45
-                    and abs(raw - float(previous)) >= 0.8):
-                pending = self._t2ah_pending
-                confirmed = (pending is not None and 0 <= now - pending[1] <= 12
-                             and abs(raw - pending[0]) <= 1.0)
-                if not confirmed:
-                    self._t2ah_pending = (raw, now)
-                    self.state["t2ah_rejected_samples"] = int(self.state.get("t2ah_rejected_samples") or 0) + 1
-                    return
-            self._t2ah_pending = None
+            value = self._filtered_temperature(key, float(value))
         self.publish(key, value, source=source)
         timestamp_keys = SENSOR_SAMPLE_TIMESTAMPS.get(key)
         if (
@@ -2320,8 +2341,8 @@ class Gateway:
             "extract_temperature": temperature(values[2]),
             "exhaust_temperature": temperature(values[3]),
             "room_temperature": temperature(values[4]),
-            "heating_coil_after_temperature": temperature(values[25]),
-            "heating_coil_frost_temperature": temperature(values[26]),
+            "heating_coil_after_temperature": temperature_in(values[25], *T2AH_WINDOW),
+            "heating_coil_frost_temperature": temperature_in(values[26], *FROST_SENSOR_WINDOW),
         }
         aliases = {
             "outdoor_temperature": "outdoor_temp",

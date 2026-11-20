@@ -86,32 +86,14 @@ def discovery_map(gateway):
 
 
 class BypassAndDiscoveryTests(unittest.TestCase):
-    def test_t2ah_single_spike_is_held_but_repeated_change_is_accepted(self):
+    def test_t2ah_single_spike_is_hidden_by_the_window_minimum(self):
         gateway = make_gateway()
         gateway.t2ah_spike_filter_enabled = True
         gateway.publish_temperature("heating_coil_after_temperature", 21.2)
-        first_sample = gateway.state["heating_coil_after_temperature_sample_monotonic"]
-
         gateway.publish_temperature("heating_coil_after_temperature", 26.1)
         self.assertEqual(gateway.state["heating_coil_after_temperature"], 21.2)
-        self.assertEqual(gateway.state["heating_coil_after_temperature_sample_monotonic"], first_sample)
         self.assertEqual(gateway.state["t2ah_last_raw_temperature"], 26.1)
         self.assertEqual(gateway.state["t2ah_rejected_samples"], 1)
-
-        gateway.publish_temperature("heating_coil_after_temperature", 21.3)
-        self.assertEqual(gateway.state["heating_coil_after_temperature"], 21.3)
-        gateway.publish_temperature("heating_coil_after_temperature", 22.5)
-        self.assertEqual(gateway.state["heating_coil_after_temperature"], 21.3)
-        gateway.publish_temperature("heating_coil_after_temperature", 22.7)
-        self.assertEqual(gateway.state["heating_coil_after_temperature"], 22.7)
-
-    def test_t2ah_stale_previous_value_does_not_block_a_real_new_reading(self):
-        gateway = make_gateway()
-        gateway.t2ah_spike_filter_enabled = True
-        gateway.publish_temperature("heating_coil_after_temperature", 21.2)
-        gateway.state["heating_coil_after_temperature_sample_monotonic"] = time.monotonic() - 50
-        gateway.publish_temperature("heating_coil_after_temperature", 23.0)
-        self.assertEqual(gateway.state["heating_coil_after_temperature"], 23.0)
 
     def test_passive_afterheat_status_has_register_source_and_timestamp(self):
         gateway = make_gateway()
