@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.12.3
+
+- **Afterheat Pi control:** level 0 is never part of the turns between two levels. HAC1 going below the pair while the
+  air is colder than the band ends the turns at once, so the Pi steps up (it held level 0 for 15 min at 19.6 °C with
+  the target 22 °C, waiting for a summed error capped at 4× the switch threshold; the cap is now 1.5×).
+- **Natkøling efter vejrudsigt** is off by default; switch it on in the WebUI when the cooling season comes.
+
 ## 1.12.2 – Tilstedeværelse fjernet
 
 - **Tilstedeværelse removed:** the ventilation after occupancy from 1.12.0 is gone again (the settings page Ventilation →

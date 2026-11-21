@@ -402,7 +402,7 @@ class ControllerState:
         # The outer loop's last supply target, so a restart continues from it (set by the engine).
         "afterheat_room_value": None,
         # Night cooling from the weather forecast (night_cooling.py).
-        "night_cool_enabled": True,
+        "night_cool_enabled": False,
         "night_cool_start": "23:00",
         "night_cool_end": "07:00",
         "night_cool_forecast_c": 24.0,

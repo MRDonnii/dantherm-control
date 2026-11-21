@@ -1044,6 +1044,18 @@ class PilotDecisionTests(unittest.TestCase):
         self.assertFalse([r for r in late if r["level"] <= 1])
         self.assertEqual(pilot.follow_failures, 0)
 
+    def test_hac1_off_below_the_pair_with_cold_air_ends_the_turns(self):
+        # Live 2026-11-21 23:15-23:31: taking turns 1/2, HAC1 went to 0 and the Pi held it
+        # there 15 min at 19.6 C (target 22) waiting for a large summed error to run out.
+        pilot, inp = self.frost_pilot(level=0, t2ah=19.6, t2ah_raw=19.6)
+        pilot.pwm_low, pilot.pwm_up, pilot.pwm_debt = 1, False, 1800.0
+        pilot.error_now, pilot.band = -2.4, (0.5, 0.5)
+        self.assertIsNone(pilot._pwm(inp, 0, 0, 10))
+        self.assertIsNone(pilot.pwm_low)
+        # Level 0 is never a member of the turns' cold side.
+        pilot.pwm_low = 1
+        self.assertNotIn(0, [m for m in (0,) if pilot._pwm(inp, 0, 0, 10) is not None])
+
     def test_warm_air_into_the_coil_allows_low_levels_under_the_frost_lock(self):
         # Live 2026-11-21: air into the coil 18.4 C, floor 18; the Pi held level 2 at 25 C.
         pilot, inp = self.frost_pilot(level=2, t2ah=25.0, t2ah_raw=25.0)

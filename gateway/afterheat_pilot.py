@@ -181,7 +181,7 @@ PERSIST_URGENT_S = 60.0
 # turn has to reach this before the other level is taken (larger = longer period).
 PWM_SWITCH_KS = 450.0
 # The sum is kept within this many switch amounts (a bounded memory).
-PWM_DEBT_LIMIT = 4.0
+PWM_DEBT_LIMIT = 1.5
 # Under the frost lock a level is not stepped down to when it settles less than this above
 # the frost floor HAC1 can hold (the whole degree at or above the frost floor).
 FROST_MARGIN_K = 0.2
@@ -1200,7 +1200,7 @@ class AfterheatPilot:
         # is, is left alone: the summed error (measured) makes up for it, and
         # taking it back would cost two more level changes.
         # Never one that settles too close to the frost floor (taken back up, see _plan).
-        cold_side = [lower] + ([lower - 1] if lower - 1 >= low and not (
+        cold_side = [lower] + ([lower - 1] if lower - 1 >= max(low, 1) and not (
             level == lower - 1 and self._below_frost_floor(inp, self.error_settled)) else [])
         warm_side = [lower + 1] + ([lower + 2] if lower + 2 <= high else [])
         members = cold_side + warm_side
@@ -1209,6 +1209,9 @@ class AfterheatPilot:
             return None  # HAC1 stepped out of the pair by itself: taken back first (see _plan)
         if level not in members or not low <= lower < high or self.fan_moved:
             self._end_pwm()
+            return None
+        if level < lower and self.error_now < -self.band[0]:
+            self._end_pwm()  # HAC1 below the pair and the air too cold: no waiting for the sum
             return None
         # Where each level settles is judged on that level once the last turn
         # has (mostly) reached the air: the model's step may still be learning.

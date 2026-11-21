@@ -125,7 +125,7 @@ class NightCoolingEngineTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         state = ControllerState(Path(temp.name) / "controller.json")
-        state.configure(settings)
+        state.configure({"night_cool_enabled": True, **settings})  # off by default since 1.12.3
         engine = ControllerEngine(state, HardwareAdapter())
         engine.outdoor_history.days = [["2026-07-1%d" % day, 17.0, 24.0] for day in range(5)]
         return engine
@@ -137,7 +137,7 @@ class NightCoolingEngineTests(unittest.TestCase):
         engine.set_external(values)
         engine.update_measurements(rh=45, co2=600, outdoor=15.0, room=24.0)
 
-    def test_on_by_default_opens_bypass_raises_level_and_holds_afterheat_down(self):
+    def test_when_on_opens_bypass_raises_level_and_holds_afterheat_down(self):
         engine = self.make_engine()
         self.hot_night(engine)
         result = engine.resolve(at(23, 30).timestamp())
@@ -207,3 +207,11 @@ class ForecastSignalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NightCoolingDefaultTests(unittest.TestCase):
+    def test_off_by_default(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        state = ControllerState(Path(temp.name) / "controller.json")
+        self.assertFalse(state.data["night_cool_enabled"])
