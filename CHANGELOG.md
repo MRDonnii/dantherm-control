@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.11.1
+
+- **Afterheat low end under the frost lock:** when the air into the coil and the water-side frost sensor are both at
+  least 12 °C, nothing can freeze, so the frost floor no longer blocks steps down at all (it held level 2 at 24–25 °C
+  because the air into the coil was 17.8 °C, just under the 18 °C floor). With a cold coil the old rules apply.
+
 ## 1.11.0
 
 - **Rum sættes op på Pi'en (Opsætning → Rum).** Home Assistant sends a catalogue of its areas and their temperature,

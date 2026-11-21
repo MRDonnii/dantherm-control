@@ -1083,6 +1083,8 @@ class AfterheatPilot:
         floor: they say where the air is too cold, this says which levels are
         worth stepping down to.
         """
+        if AfterheatPilot.coil_warm(inp):
+            return False  # nothing can freeze: the floor only matters for a cold coil
         settle = float(inp.target) + error
         before = _num(inp.before_heater)
         if before is not None and -30 < before < 60:
@@ -1090,12 +1092,15 @@ class AfterheatPilot:
         return inp.frost_lock and settle < math.ceil(float(inp.frost_floor)) + FROST_MARGIN_K
 
     @staticmethod
+    def coil_warm(inp: PilotInputs) -> bool:
+        """The air into the coil and its water side are both warm enough that nothing can freeze."""
+        air, water = _num(inp.before_heater), _num(inp.frost_sensor)
+        return air is not None and water is not None and air >= FROST_ZERO_AIR_C and water >= FROST_ZERO_WATER_C
+
+    @staticmethod
     def frost_min_level(inp: PilotInputs) -> int:
         """Lowest level the Pi may use: 1 under the frost lock, 0 when the coil is warm on both sides."""
-        if not inp.frost_lock:
-            return 0
-        air, water = _num(inp.before_heater), _num(inp.frost_sensor)
-        if air is not None and water is not None and air >= FROST_ZERO_AIR_C and water >= FROST_ZERO_WATER_C:
+        if not inp.frost_lock or AfterheatPilot.coil_warm(inp):
             return 0
         return FROST_MIN_LEVEL
 
@@ -1114,7 +1119,7 @@ class AfterheatPilot:
         above level 0. One tick on a level far below the floor costs ~2 K of
         air under it (dead time), so the doubt goes to the warm side.
         """
-        if not inp.frost_lock or level <= 0:
+        if not inp.frost_lock or level <= 0 or self.coil_warm(inp):
             return False
         before = _num(inp.before_heater)
         if before is not None and before >= math.ceil(float(inp.frost_floor)) + FROST_MARGIN_K + FROST_AIR_BEFORE_MARGIN_K:

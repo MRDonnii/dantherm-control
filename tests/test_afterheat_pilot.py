@@ -1053,7 +1053,11 @@ class PilotDecisionTests(unittest.TestCase):
         self.assertFalse(pilot._down_below_frost_floor(warm, 2))
         self.assertFalse(pilot._below_frost_floor(warm, -10.0))
         cold = pilot_module.replace(inp, before_heater=16.0)
-        self.assertTrue(pilot._down_below_frost_floor(cold, 2))
+        self.assertTrue(pilot._down_below_frost_floor(cold, 2))  # water side unknown: the model rule decides
+        cold_water = pilot_module.replace(inp, before_heater=16.0, frost_sensor=9.0)
+        self.assertTrue(pilot._down_below_frost_floor(cold_water, 2))
+        warm_coil = pilot_module.replace(inp, before_heater=17.8, frost_sensor=23.0)
+        self.assertFalse(pilot._down_below_frost_floor(warm_coil, 2))
         # Level 0 (on/off) only with both the air in and the water side warm.
         self.assertEqual(AfterheatPilot.frost_min_level(pilot_module.replace(inp, before_heater=18.0, frost_sensor=17.0)), 0)
         self.assertEqual(AfterheatPilot.frost_min_level(pilot_module.replace(inp, before_heater=18.0, frost_sensor=9.0)), 1)
