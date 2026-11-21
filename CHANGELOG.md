@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.12.0
+
+- **Mål fra rummene (eftervarme, kaskade):** the room-based afterheat target now uses the rooms on the page Rum: the
+  average of the enabled normal rooms, bedrooms and kitchens with control on (bathrooms, measuring and excluded rooms
+  left out; a temperature HA has not had a report for in 3 hours is skipped; optionally weighted by priority). A slow
+  outer PI (gain, integral time) moves the supply target between the lowest and highest supply (17–24 °C) toward the
+  room target (22 °C) in steps of at most 0.2 K per 10 minutes, with a dead band (±0.3 K) and a duct loss offset
+  (Kanaltab / forskydning, added at the unit). No wind-up: it stops while the afterheat is saturated or locked
+  (frost lock, Køl, night cooling, off); the frost lock floor still wins. Off by default. Shown on Oversigt and Teknik
+  ("Mål fra rummene: 22,4 °C i rummene → indblæsning 21,6 °C"). An unused older setting gets the new defaults.
+- **Natkøling efter vejrudsigt** (Varme og køl → Frikøling og bypass): in the cooling season (5-day outdoor mean above
+  12 °C) and before a hot day (HA forecast high ≥ 24 °C) or after one (today's high ≥ 22 °C), the bypass opens, the
+  level goes to 4 (never above the night mode's limit) and the afterheat is held down during 23–07 while outdoor air
+  is at least 2 K cooler than the rooms and the rooms are above 20.5 °C. Fireplace, standby, bonfire, vacation,
+  manual level and the frost lock win. On by default; inactive outside the cooling season.
+- **Tilstedeværelse** (Ventilation → Tilstedeværelse): a presence sensor per room (picked automatically from the HA
+  area, "Ingen" respected) and home/away from HA. Two separate switches, both off by default: nobody home → at most
+  step 2 unless CO₂/humidity demand needs more; 4 or more rooms in use (after 5 min presence, released after 15 min)
+  → one step above the base level, except in the night mode window.
+- **Rumtype "Kun kanalmåling (udsugning)":** the extract type is renamed and explains that such rooms do not take part
+  in the control (stored id unchanged).
+
 ## 1.11.3
 
 - **Rum:** the weather service's sensors (DMI current temperature and humidity, sent by the HA integration as

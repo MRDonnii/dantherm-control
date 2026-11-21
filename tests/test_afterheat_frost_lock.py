@@ -188,7 +188,7 @@ class FrostLockEngineTests(unittest.TestCase):
         engine.config.configure({"afterheat_room_enabled": True, "afterheat_room_min": 12,
                                  "afterheat_room_target": 20.0, "afterheat_room_step_minutes": 2})
         engine.set_external({"outdoor_temperature": -4.0, "afterheat_room_temperature": 26.0})
-        engine.afterheat_effective = 12
+        engine.room_cascade.exact = 12.0  # the room loop has walked down to its minimum
         engine.apply()
         self.assertEqual(writes[-1], 18)
 

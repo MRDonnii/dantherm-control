@@ -2,16 +2,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { DoorOpen, Plus, RotateCcw, Save, Trash2, Wand2 } from "lucide-react";
 import { postJson, requestJson } from "../lib/api";
 import {
-  KIND_LABELS, KIND_UNITS, MAX_ROOMS, PRIORITIES, PRIORITY_LABELS, ROOM_TYPES, SENSOR_KINDS, TYPE_HELP, TYPE_LABELS,
+  KIND_LABELS, KIND_UNITS, MAX_ROOMS, MEASUREMENT_KINDS, PRIORITIES, PRIORITY_LABELS, ROOM_TYPES, SENSOR_KINDS, TYPE_HELP, TYPE_LABELS,
   addAllFromCatalog, blankRoom, isIndoor, liveValues, roomProblems, sensorGroups, sensorName, toPayload,
-  withArea, withType, withUnitSensor,
-  type CatalogArea, type Room, type RoomsView, type SensorKind,
+  withArea, withSensor, withType, withUnitSensor,
+  type CatalogArea, type MeasurementKind, type Room, type RoomsView, type SensorKind,
 } from "../lib/rooms";
 import "../styles/panels.css"; import "../styles/management.css"; import "../styles/rooms.css";
 
 type State = Record<string, unknown>;
 
-function fmt(value: number | undefined, kind: SensorKind) {
+function fmt(value: number | undefined, kind: MeasurementKind) {
   if (value === undefined) return null;
   const digits = kind === "temperature" ? 1 : 0;
   return `${value.toLocaleString("da-DK", { maximumFractionDigits: digits, minimumFractionDigits: digits })} ${KIND_UNITS[kind]}`;
@@ -22,9 +22,11 @@ const numberOrUndefined = (text: string) => (text.trim() === "" ? undefined : Nu
 /** Values the Pi uses for the room right now, as small chips. */
 function LiveChips({ state, room }: { state: State; room: Room }) {
   const live = liveValues(state, room.name);
-  const chips = SENSOR_KINDS.map(kind => [kind, fmt(live?.[kind], kind)] as const).filter(([, text]) => text);
-  if (!chips.length) return <span className="room-live room-live-empty">{room.type === "excluded" ? "Ignoreres" : "Ingen data lige nu"}</span>;
+  const chips = MEASUREMENT_KINDS.map(kind => [kind, fmt(live?.[kind], kind)] as const).filter(([, text]) => text);
+  const presence = live?.presence;
+  if (!chips.length && presence === undefined) return <span className="room-live room-live-empty">{room.type === "excluded" ? "Ignoreres" : "Ingen data lige nu"}</span>;
   return <span className="room-live">{chips.map(([kind, text]) => <span key={kind} className="room-chip" data-kind={kind} title={KIND_LABELS[kind]}>{text}</span>)}
+    {presence !== undefined && <span className="room-chip" data-kind="presence" title="Tilstedeværelse lige nu">{presence === true ? "Til stede" : presence === false ? "Tomt" : "Tilstedeværelse ukendt"}</span>}
     {live?.unit_sensor && <span className="room-chip room-chip-unit" title="Udfyldt med anlæggets egen føler">Anlæg</span>}</span>;
 }
 
@@ -50,7 +52,7 @@ function RoomCard({ room, catalog, state, bathroom, onChange, onUnitSensor, onRe
   const indoor = isIndoor(room.type);
   const excluded = room.type === "excluded";
   const set = (patch: Partial<Room>) => onChange({ ...room, ...patch });
-  const setSensor = (kind: SensorKind, value: string | null) => set({ sensors: { ...room.sensors, [kind]: value } });
+  const setSensor = (kind: SensorKind, value: string | null) => onChange(withSensor(room, kind, value));
   return <article className="surface panel-card room-setup-card" data-type={room.type} data-off={!room.control || excluded ? "" : undefined}>
     <header className="room-setup-head">
       <input className="room-name" aria-label="Rummets navn" maxLength={64} value={room.name} onChange={e => set({ name: e.target.value })}/>
@@ -82,7 +84,9 @@ function RoomCard({ room, catalog, state, bathroom, onChange, onUnitSensor, onRe
         </select>
         <small className="settings-field-help">Vælger områdets bedste følere automatisk. Du kan ændre dem herunder.</small>
       </label>
-      {!excluded && SENSOR_KINDS.map(kind => <SensorPicker key={kind} kind={kind} room={room} catalog={catalog} onChange={value => setSensor(kind, value)}/>)}
+      {!excluded && MEASUREMENT_KINDS.map(kind => <SensorPicker key={kind} kind={kind} room={room} catalog={catalog} onChange={value => setSensor(kind, value)}/>)}
+      {indoor && <div className="room-presence-field"><SensorPicker kind="presence" room={room} catalog={catalog} onChange={value => setSensor("presence", value)}/>
+        <small className="settings-field-help">Bruges af reglerne under Indstillinger → Ventilation → Tilstedeværelse. Vælges automatisk ud fra området; "Ingen" holder rummet uden for reglerne.</small></div>}
       {room.type === "bathroom" && <>
         <label>Fugt start<input inputMode="decimal" aria-label={`${room.name} fugt start`} placeholder={String(bathroom.rh)} value={room.rh_setpoint ?? ""} onChange={e => set({ rh_setpoint: numberOrUndefined(e.target.value) })}/><span>%</span></label>
         <label>Hysterese<input inputMode="decimal" aria-label={`${room.name} hysterese`} placeholder={String(bathroom.hysteresis)} value={room.rh_hysteresis ?? ""} onChange={e => set({ rh_hysteresis: numberOrUndefined(e.target.value) })}/><span>%</span></label>

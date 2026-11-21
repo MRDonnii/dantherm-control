@@ -29,15 +29,17 @@ from afterheat_pilot import (
     PI_INTEGRAL_MINUTES_RANGE,
     PI_MIN_DWELL_TICKS_DEFAULT,
     PI_MIN_DWELL_TICKS_RANGE,
+    LEVEL_MAX as AFTERHEAT_LEVEL_MAX,
     AfterheatPilot,
     PilotInputs,
 )
+from night_cooling import NightCooling, OutdoorHistory
+from room_cascade import SATURATION_MARGIN_K, RoomCascade
 from advanced_control import (
     BALANCE_EXCESS_DEFAULT,
     BALANCE_RATIO_MODES,
     HCH5_MAX_AIRFLOW_M3H,
     absolute_humidity,
-    afterheat_room_target,
     airflow_plan,
     balanced_profiles,
     rpm_at_percent,
@@ -376,14 +378,49 @@ class ControllerState:
         "balance_duct_ratio": 1.0,
         # Heat-balance windows and the learned duct ratio (air_balance.py), set by the runtime.
         "balance_learned": None,
-        # Afterheat setpoint follows the room temperature.
+        # Afterheat supply target from the rooms (room_cascade: a slow outer PI
+        # around the afterheat control). Off until the owner switches it on.
         "afterheat_room_enabled": False,
-        "afterheat_room_target": 21.0,
+        "afterheat_room_target": 22.0,
         "afterheat_room_gain": 1.5,
+        "afterheat_room_integral_minutes": 180.0,
+        "afterheat_room_max_step": 0.2,
+        # Dead band around the room target: inside it the supply target is left alone.
+        "afterheat_room_band_k": 0.3,
+        # Duct loss: added to the supply target so the air reaching the rooms is what the rooms
+        # need (the supply duct cools the air in a cold loft). Not duct_rooms_offset_k, which
+        # only corrects the room sensors in the extract duct loss figure.
+        "afterheat_room_offset_k": 0.0,
         "afterheat_room_min": 17,
         "afterheat_room_max": 24,
         "afterheat_room_step_minutes": 10,
         "afterheat_room_source": "auto",
+        # Weigh the rooms by their priority (low ½, high 1½, critical 2) in the average.
+        "afterheat_room_weighted": False,
+        # Set once the 1.12 defaults (22 °C room target) were applied to an unused older setting.
+        "afterheat_room_v2": True,
+        # The outer loop's last supply target, so a restart continues from it (set by the engine).
+        "afterheat_room_value": None,
+        # Night cooling from the weather forecast (night_cooling.py).
+        "night_cool_enabled": True,
+        "night_cool_start": "23:00",
+        "night_cool_end": "07:00",
+        "night_cool_forecast_c": 24.0,
+        "night_cool_today_c": 22.0,
+        "night_cool_season_c": 12.0,
+        "night_cool_delta_k": 2.0,
+        "night_cool_min_indoor_c": 20.5,
+        "night_cool_level": 4,
+        # Completed daily outdoor means [[date, mean, hours], ...] for the cooling season (set by the engine).
+        "outdoor_daily_means": [],
+        # Ventilation after occupancy (presence sensors per room, home/away from HA).
+        "presence_away_enabled": False,
+        "presence_away_level": 2,
+        # This many occupied rooms raise the base level by one.
+        "presence_busy_enabled": False,
+        "presence_busy_rooms": 4,
+        "presence_on_minutes": 5,
+        "presence_off_minutes": 15,
         # Frost lock for a water afterheat coil (see FROST_LOCK_*): T1 or the
         # attic at or below frost_lock_outdoor_c, or the water-side frost
         # sensor at or below frost_lock_coil_c, keeps the afterheat on.
@@ -510,6 +547,12 @@ class ControllerState:
         for key in self.DEFAULTS:
             if key in saved:
                 self.data[key] = saved[key]
+        if not saved.get("afterheat_room_v2"):
+            # The room target was never used before 1.12: give it the new defaults.
+            if not saved.get("afterheat_room_enabled"):
+                self.data.update(afterheat_room_target=22.0, afterheat_room_min=17, afterheat_room_max=24,
+                                 afterheat_room_step_minutes=10)
+            self.data["afterheat_room_v2"] = True
         if "air_quality_max_level" not in saved:
             # An existing six-step installation must keep its full range.
             self.data["air_quality_max_level"] = self.max_level()
@@ -707,12 +750,24 @@ class ControllerState:
 
     BOOL_KEYS = ("sizing_enabled", "afterheat_room_enabled", "fireplace_auto_enabled",
                  "humidity_smart_enabled", "dry_protection_enabled", "balance_enabled", "pm25_enabled",
-                 "bathroom_night_drying", "winter_dry_enabled", "frost_lock_enabled")
+                 "bathroom_night_drying", "winter_dry_enabled", "frost_lock_enabled",
+                 "afterheat_room_weighted", "night_cool_enabled", "presence_away_enabled", "presence_busy_enabled")
+    TIME_KEYS = (("night_cool_start", "Natkøling start", "23:00"), ("night_cool_end", "Natkøling slut", "07:00"))
 
     def _sanitize_advanced(self) -> None:
         for key in self.BOOL_KEYS:
             self.data[key] = bool(self.data.get(key, False))
         self.data["frost_lock_latched"] = self.data.get("frost_lock_latched") is True
+        self.data["afterheat_room_v2"] = self.data.get("afterheat_room_v2") is True
+        value = self.data.get("afterheat_room_value")
+        self.data["afterheat_room_value"] = (
+            round(float(value), 2) if _is_number(value) and 10 <= float(value) <= 35 else None)
+        self.data["outdoor_daily_means"] = OutdoorHistory.clean(self.data.get("outdoor_daily_means"))
+        for key, label, default in self.TIME_KEYS:
+            try:
+                self.data[key] = _validate_time(self.data.get(key), label)
+            except ControllerError:
+                self.data[key] = default
         if self.data.get("balance_ratio_mode") not in BALANCE_RATIO_MODES:
             self.data["balance_ratio_mode"] = "auto"
         if self.data.get("winter_rh_basis") not in WINTER_RH_BASES:
@@ -770,7 +825,12 @@ class ControllerState:
 
     ADVANCED_FLOATS = (
         ("house_area_m2", 20.0, 1000.0), ("ceiling_height_m", 1.8, 6.0),
-        ("afterheat_room_target", 15.0, 26.0), ("afterheat_room_gain", 0.5, 5.0),
+        ("afterheat_room_target", 15.0, 26.0), ("afterheat_room_gain", 0.0, 5.0),
+        ("afterheat_room_integral_minutes", 30.0, 600.0), ("afterheat_room_max_step", 0.1, 0.5),
+        ("afterheat_room_band_k", 0.0, 1.5), ("afterheat_room_offset_k", -3.0, 3.0),
+        ("night_cool_forecast_c", 15.0, 40.0), ("night_cool_today_c", 15.0, 40.0),
+        ("night_cool_season_c", 0.0, 25.0), ("night_cool_delta_k", 0.5, 8.0),
+        ("night_cool_min_indoor_c", 16.0, 26.0),
         ("fireplace_auto_on_temp", 15.0, 400.0), ("fireplace_auto_off_temp", 10.0, 399.0),
         ("humidity_margin_gm3", 0.0, 3.0), ("dry_rh_limit", 15.0, 45.0),
         ("balance_extract_excess_percent", 0.0, 20.0), ("balance_duct_ratio", 0.7, 1.5),
@@ -796,6 +856,8 @@ class ControllerState:
         ("winter_level", 1, None), ("winter_hold_minutes", 5, 240),
         ("dry_hold_minutes", 1, 240),
         ("afterheat_pi_min_dwell_ticks", *PI_MIN_DWELL_TICKS_RANGE),
+        ("night_cool_level", 1, None), ("presence_away_level", 1, None),
+        ("presence_busy_rooms", 1, 32), ("presence_on_minutes", 1, 60), ("presence_off_minutes", 1, 120),
     )
 
     @staticmethod
@@ -1362,6 +1424,13 @@ class ControllerState:
         "frost_lock_enabled", "frost_lock_outdoor_c", "frost_lock_coil_c", "frost_lock_min_setpoint_c",
         "afterheat_control_mode", "afterheat_pi_gain", "afterheat_pi_integral_minutes",
         "afterheat_pi_band", "afterheat_pi_min_dwell_ticks",
+        "afterheat_room_integral_minutes", "afterheat_room_max_step", "afterheat_room_weighted",
+        "afterheat_room_band_k", "afterheat_room_offset_k",
+        "night_cool_enabled", "night_cool_start", "night_cool_end", "night_cool_forecast_c", "night_cool_today_c",
+        "night_cool_season_c", "night_cool_delta_k", "night_cool_min_indoor_c", "night_cool_level",
+        "presence_away_enabled", "presence_busy_enabled", "presence_away_level", "presence_busy_rooms",
+        "presence_on_minutes",
+        "presence_off_minutes",
     )
     ADVANCED_LABELS = {
         "house_area_m2": "Boligareal", "ceiling_height_m": "Loftshøjde",
@@ -1370,6 +1439,13 @@ class ControllerState:
         "afterheat_room_target": "Ønsket rumtemperatur", "afterheat_room_gain": "Forstærkning",
         "afterheat_room_min": "Laveste indblæsning", "afterheat_room_max": "Højeste indblæsning",
         "afterheat_room_step_minutes": "Minutter pr. trin",
+        "afterheat_room_integral_minutes": "Integraltid (rum)", "afterheat_room_max_step": "Største trin",
+        "afterheat_room_band_k": "Dødbånd om rummålet", "afterheat_room_offset_k": "Kanaltab / forskydning",
+        "night_cool_forecast_c": "Natkøling: varm dag i morgen fra", "night_cool_today_c": "Natkøling: varm dag i dag fra",
+        "night_cool_season_c": "Natkøling: kølesæson over", "night_cool_delta_k": "Natkøling: ude køligere end inde med",
+        "night_cool_min_indoor_c": "Natkøling: inde mindst", "night_cool_level": "Natkøling: trin",
+        "presence_away_level": "Ude: højeste trin", "presence_busy_rooms": "Mange rum i brug",
+        "presence_on_minutes": "Tilstede efter", "presence_off_minutes": "Fri efter",
         "fireplace_auto_on_temp": "Pejs start", "fireplace_auto_off_temp": "Pejs stop",
         "fireplace_afterrun_minutes": "Efterløb", "fireplace_max_hours": "Maks. varighed",
         "humidity_margin_gm3": "Fugtmargin", "dry_rh_limit": "Tør luft-grænse",
@@ -1501,6 +1577,9 @@ class ControllerState:
                 self.data[key] = value
         if int(self.data["afterheat_room_min"]) > int(self.data["afterheat_room_max"]):
             raise ControllerError("Laveste indblæsning skal være under højeste")
+        for key, label, _default in self.TIME_KEYS:
+            if key in patch:
+                self.data[key] = _validate_time(patch[key], label)
         if float(self.data["fireplace_auto_off_temp"]) >= float(self.data["fireplace_auto_on_temp"]):
             raise ControllerError("Pejs stop skal være lavere end pejs start")
         for key, allow_fixed in (
@@ -1782,9 +1861,19 @@ class ControllerEngine:
         # Values from other sources (T3, HA rooms). Replaced as a whole on every
         # refresh so a vanished HA value becomes None instead of sticking.
         self.external: dict[str, float | None] = {}
-        self.afterheat_effective: int | None = None
-        self.afterheat_last_step_at: float | None = None
+        # Supply target from the rooms (outer loop, see room_cascade).
+        self.room_cascade = RoomCascade()
+        self.afterheat_room_output: float | None = None
         self.afterheat_room_state = "disabled"
+        self.afterheat_room_saved_at = 0.0
+        # Night cooling from the forecast and the outdoor history it uses (night_cooling.py).
+        self.night_cooling = NightCooling()
+        self.outdoor_history = OutdoorHistory(config.data.get("outdoor_daily_means"))
+        # Occupancy (presence_*): last decision for the snapshot.
+        self.presence_state = "disabled"
+        self.presence_reason = ""
+        # The last afterheat control snapshot (saturation for the room loop).
+        self.last_pilot: dict[str, object] = {}
         # Pi-side afterheat level control (afterheat_pilot) and what it is fed with.
         self.afterheat_pilot = AfterheatPilot()
         self.afterheat_inputs: dict[str, object] = {}
@@ -1949,9 +2038,12 @@ class ControllerEngine:
     def _automation_overlay(self, level: int, source: str, reason: str, now_ts: float) -> tuple[int, str, str, str, dict[str, bool]]:
         d = self.config.data
         now = datetime.fromtimestamp(now_ts).astimezone()
-        flags = {"schedule_active": False, "night_active": False, "vacation_active": False, "quick_boost_active": False, "cooling_active": False, "cool_boost_active": False}
+        flags = {"schedule_active": False, "night_active": False, "vacation_active": False, "quick_boost_active": False, "cooling_active": False, "cool_boost_active": False,
+                 "night_cool_active": False, "presence_away_active": False, "presence_busy_active": False}
         effective_bypass = "on" if d["bypass"] == "on" else "off"
         self._schedule_key = None
+        # The level from the air quality (CO2/RH) before any plan: above the normal level it is real demand.
+        base_level = level
 
         if self.config.vacation_running(now_ts):
             flags["vacation_active"] = True
@@ -1976,6 +2068,7 @@ class ControllerEngine:
                     if planned["min_level"] is not None:
                         level = max(level, int(planned["min_level"]))
                     reason = f"{reason}; ugeplan {name} · trin {planned['set_level'] or planned['min_level']}"
+            level, source, reason = self._presence_overlay(d, level, base_level, source, reason, now, flags)
             if d.get("night_enabled") and _time_window_active(now, str(d["night_start"]), str(d["night_end"])):
                 flags["night_active"] = True
                 rh, co2 = self.measurements.get("rh"), self.measurements.get("co2")
@@ -2070,10 +2163,32 @@ class ControllerEngine:
                     self._stop_cooling(now_ts, "disabled")
         else:
             self._stop_cooling(now_ts, "manual_mode")
+        if self.config.vacation_running(now_ts) or d["mode"] == "manual":
+            self.presence_state, self.presence_reason = (
+                ("disabled", "") if not (d.get("presence_away_enabled") or d.get("presence_busy_enabled"))
+                else ("paused", "Ferie styrer trinnet" if flags["vacation_active"] else "Manuelt valgt trin"))
+
+        night_cool = self.night_cooling.update(
+            now=now_ts, local=now, settings=d, indoor=self._night_indoor(), outdoor=self._night_outdoor(),
+            season_mean=self.outdoor_history.running_mean(), forecast_high=self.external.get("forecast_high_c"),
+            today_high=self._today_high(), blocked=self._night_cool_blocker(d, now_ts, flags))
+        if night_cool["night_cool_active"]:
+            flags["night_cool_active"] = True
+            effective_bypass = "on"
+            wanted = int(d["night_cool_level"])
+            if flags["night_active"]:
+                # Never louder than the night allows for poor air.
+                wanted = min(wanted, max(int(d["night_level"]), int(d["night_air_quality_max_level"])))
+            if wanted >= level:
+                level = wanted
+                source = "night_cooling"
+                reason = f"{night_cool['night_cool_reason']} · bypass åben · trin {wanted}"
+            else:
+                reason = f"{reason}; {night_cool['night_cool_reason']} · bypass åben"
 
         flags["dry_protection_active"] = False
         dry = self._dry_air(d, now_ts)
-        if dry and d["mode"] != "manual" and not flags["cooling_active"]:
+        if dry and d["mode"] != "manual" and not flags["cooling_active"] and not flags["night_cool_active"]:
             limit = int(d["dry_max_level"])
             if level > limit:
                 level = limit
@@ -2480,39 +2595,151 @@ class ControllerEngine:
             return None
         return round(value * 256) / 256
 
-    def _afterheat_setpoint(self, now: float) -> tuple[int | float, str]:
-        """Afterheat setpoint, moved one degree per interval toward the room target."""
+    def _night_outdoor(self) -> float | None:
+        """Outdoor air for the night cooling: the outdoor room (e.g. the house's own sensor), else T1."""
+        for key in ("outdoor_air_temperature", "outdoor_temperature"):
+            value = self.external.get(key)
+            if _is_number(value):
+                return float(value)
+        return None
+
+    def _night_indoor(self) -> float | None:
+        """The rooms' average (comfort rooms), else the room temperature used for free cooling."""
+        for value in (self.external.get("rooms_temperature"), self.measurements.get("room")):
+            if _is_number(value):
+                return float(value)
+        return None
+
+    def _today_high(self) -> float | None:
+        """Today's high from Home Assistant (DMI), else the highest outdoor value seen today."""
+        value = self.external.get("today_high_c")
+        if _is_number(value):
+            return float(value)
+        return self.outdoor_history.high
+
+    def _night_cool_blocker(self, d: dict, now_ts: float, flags: dict) -> str | None:
+        """What stops the night cooling right now (fireplace, standby, vacation, frost lock, ...)."""
+        standby_until = d.get("standby_until")
+        bonfire_until = d.get("bonfire_until")
+        if d.get("standby") is True and (standby_until is None or float(standby_until) > now_ts):
+            return "anlægget er slukket"
+        if bonfire_until and float(bonfire_until) > now_ts:
+            return "bål i haven"
+        if d.get("fireplace"):
+            return "pejs"
+        if flags.get("vacation_active"):
+            return "ferie"
+        if d["mode"] == "manual":
+            return "manuelt valgt trin"
+        if self.frost_lock_active:
+            return "frostsikring"
+        return None
+
+    def _presence_overlay(self, d: dict, level: int, base_level: int, source: str, reason: str,
+                          now: datetime, flags: dict) -> tuple[int, str, str]:
+        """Ventilation after occupancy: lower when nobody is home, one step up when many rooms are in use.
+
+        Air-quality demand (the base level above the normal level) is never cut
+        when away. At night (night mode window) occupancy never raises the level:
+        sleeping in the bedrooms keeps the night limits.
+        """
+        away_on, busy_on = d.get("presence_away_enabled") is True, d.get("presence_busy_enabled") is True
+        if not away_on and not busy_on:
+            self.presence_state, self.presence_reason = "disabled", ""
+            return level, source, reason
+        home = self.external.get("home_state")
+        occupied = list(self.external.get("occupied_rooms") or [])
+        normal = self.config.normal_level()
+        if home == "away" and away_on:
+            limit = int(d["presence_away_level"])
+            if base_level > normal:
+                self.presence_state = "away_demand"
+                self.presence_reason = f"Ingen hjemme, men luftkvaliteten kræver trin {level}"
+                return level, source, reason
+            self.presence_state = "away"
+            self.presence_reason = f"Ingen hjemme: højst trin {limit}"
+            if level > limit:
+                flags["presence_away_active"] = True
+                return limit, "presence_away", f"Ingen hjemme · højst trin {limit}"
+            return level, source, reason
+        busy = int(d["presence_busy_rooms"])
+        count = len(occupied)
+        if home == "away":
+            self.presence_state, self.presence_reason = "away", "Ingen hjemme"
+            return level, source, reason
+        if busy_on and count >= busy:
+            night = d.get("night_enabled") and _time_window_active(now, str(d["night_start"]), str(d["night_end"]))
+            if night:
+                self.presence_state = "busy_night"
+                self.presence_reason = f"{count} rum i brug, men natten bestemmer"
+                return level, source, reason
+            wanted = min(self.config.max_level(), normal + 1)
+            self.presence_state = "busy"
+            self.presence_reason = f"{count} rum i brug: mindst trin {wanted}"
+            if level < wanted:
+                flags["presence_busy_active"] = True
+                return wanted, "presence_busy", f"{reason}; {count} rum i brug · trin {wanted}"
+            return level, source, reason
+        if home is None and not self.external.get("presence_rooms"):
+            self.presence_state, self.presence_reason = "unknown", "Ingen tilstedeværelse fra Home Assistant"
+        else:
+            self.presence_state = "home"
+            self.presence_reason = f"{count} rum i brug" if count else "Hjemme"
+        return level, source, reason
+
+    def _afterheat_saturation(self) -> str | None:
+        """'high' when the afterheat is at full output and the supply is still too cold, 'low' when off and too warm."""
+        level = self.last_pilot.get("afterheat_level")
+        error = self.last_pilot.get("afterheat_control_error")
+        if not _is_number(level) or not _is_number(error):
+            return None
+        if int(level) >= AFTERHEAT_LEVEL_MAX and float(error) < -SATURATION_MARGIN_K:
+            return "high"
+        if int(level) <= 0 and float(error) > SATURATION_MARGIN_K:
+            return "low"
+        return None
+
+    def _afterheat_setpoint(self, now: float, locked: str | None = None) -> tuple[int | float, str]:
+        """The afterheat target: the fixed setpoint, or the supply target the rooms want (room_cascade)."""
         d = self.config.data
         fixed = _clean_afterheat_setpoint(d["afterheat_setpoint"])
-        base = math.floor(float(fixed) + 0.5)
         if not d.get("afterheat_room_enabled"):
-            self.afterheat_effective, self.afterheat_last_step_at = None, None
+            self.room_cascade.reset()
+            self.afterheat_room_output = None
             self.afterheat_room_state = "disabled"
             return fixed, "Fast setpunkt"
         room = self.external.get("afterheat_room_temperature")
-        wanted = afterheat_room_target(d, room)
-        if wanted is None:
-            self.afterheat_effective, self.afterheat_last_step_at = None, None
-            self.afterheat_room_state = "no_room_temperature"
-            return fixed, "Ingen rumtemperatur: fast setpunkt"
-        low, high = int(d["afterheat_room_min"]), int(d["afterheat_room_max"])
-        current = self.afterheat_effective
-        if current is None:
-            current = min(high, max(low, base))
-        current = min(high, max(low, current))
-        interval = int(d["afterheat_room_step_minutes"]) * 60
-        if wanted != current and (
-            self.afterheat_last_step_at is None or now - self.afterheat_last_step_at >= interval
-        ):
-            current += 1 if wanted > current else -1
-            self.afterheat_last_step_at = now
-        self.afterheat_effective = current
-        if current == wanted:
-            self.afterheat_room_state = "holding"
+        room = float(room) if _is_number(room) else None
+        offset = float(d.get("afterheat_room_offset_k") or 0.0)
+        if self.room_cascade.exact is None:
+            saved = d.get("afterheat_room_value")
+            base = float(saved) if _is_number(saved) else float(fixed) - offset
         else:
-            self.afterheat_room_state = "rising" if wanted > current else "falling"
-        target = float(d["afterheat_room_target"])
-        return current, f"Rum {room:.1f}°C / mål {target:.1f}°C → indblæsning {current}°C (mål {wanted}°C)"
+            base = float(fixed)
+        wanted = self.room_cascade.update(now=now, room=room, settings=d, base=base, locked=locked,
+                                          saturated=self._afterheat_saturation())
+        self.afterheat_room_state = self.room_cascade.state
+        if wanted is None:
+            self.afterheat_room_output = None
+            return fixed, "Ingen rumtemperatur: fast setpunkt"
+        # The setpoint at the unit: the air the rooms should get plus what the duct loses.
+        value = round(min(35.0, max(10.0, wanted + offset)), 1)
+        self.afterheat_room_output = value
+        exact = round(float(self.room_cascade.exact), 2)
+        if exact != d.get("afterheat_room_value") and now - self.afterheat_room_saved_at >= 1800:
+            # Saved at most every 30 minutes, so a restart continues from about here.
+            d["afterheat_room_value"] = exact
+            self.afterheat_room_saved_at = now
+            self.config.save()
+        text = f"Mål fra rummene: {_danish_number(room, 1)} °C i rummene → indblæsning {_danish_number(wanted, 1)} °C"
+        if offset:
+            text += f" ({'+' if offset > 0 else '−'}{_danish_number(abs(offset), 1)} K kanaltab = {_danish_number(value, 1)} °C ved anlægget)"
+        band = float(d.get("afterheat_room_band_k") or 0.0)
+        extra = {"locked": f" · holdes: {locked}", "saturated": " · eftervarmen kan ikke følge med",
+                 "at_limit": " · ved grænsen",
+                 "in_band": f" · inden for ±{_danish_number(band, 1)} K af {_danish_number(float(d['afterheat_room_target']), 1)} °C"}.get(
+                     self.room_cascade.state, "")
+        return value, text + extra
 
     def _afterheat_pilot(self, now: float, d: dict, target: float, afterheat_on: bool, frost_lock: bool,
                          frost_floor: float, flags: dict, fans_stopped: bool, override: bool) -> dict[str, object]:
@@ -2534,7 +2761,8 @@ class ControllerEngine:
             before_heater=values.get("before_heater"), frost_sensor=values.get("frost_sensor"),
             outdoor=self.external.get("outdoor_temperature"), extract=self.external.get("extract_temp"),
             master=values.get("master") is True,
-            cool_boost=bool(flags.get("cool_boost_active")), free_cooling=bool(flags.get("cooling_active")),
+            cool_boost=bool(flags.get("cool_boost_active") or flags.get("night_cool_active")),
+            free_cooling=bool(flags.get("cooling_active")),
             fans_stopped=fans_stopped, override=override,
             gain=float(d.get("afterheat_pi_gain", PI_GAIN_DEFAULT)),
             integral_minutes=float(d.get("afterheat_pi_integral_minutes", PI_INTEGRAL_MINUTES_DEFAULT)),
@@ -2590,24 +2818,39 @@ class ControllerEngine:
                 level, reason = self._apply_winter(*self._local_auto_level(now))
                 source = "local_auto"
 
+            if self.outdoor_history.add(self._night_outdoor(), now):
+                # A day completed: keep the daily means over a restart.
+                d["outdoor_daily_means"] = [list(day) for day in self.outdoor_history.days]
+                self.config.save()
             level, source, reason, effective_bypass, flags = self._automation_overlay(level, source, reason, now)
-            afterheat_setpoint, afterheat_reason = self._afterheat_setpoint(now)
-            afterheat_target = float(afterheat_setpoint)
-            if flags.get("cool_boost_active"):
-                # Cool lets cold outdoor air in on purpose: the afterheat must not warm it up again.
-                afterheat_setpoint, afterheat_reason = COOL_BOOST_AFTERHEAT_SETPOINT, "Køl: eftervarme holdt nede"
-            frost_floor = self.config.frost_lock_floor()
-            if frost_lock:
-                afterheat_target = max(afterheat_target, frost_floor)
-            if frost_lock and afterheat_setpoint < frost_floor:
-                afterheat_setpoint = math.ceil(frost_floor)
-                afterheat_reason = f"Frostsikring: mindst {_danish_number(frost_floor)} °C, mens det fryser"
             # With the fans stopped (standby or bonfire) the water coil would heat
             # still air, so the afterheat is switched off and restored afterwards.
             # The frost lock keeps it on whatever was chosen.
             fans_stopped = bool(flags.get("standby_active") or flags.get("bonfire_active"))
             afterheat_on = frost_lock or (bool(d["afterheat_enabled"]) and not fans_stopped)
             override = self._afterheat_override() if afterheat_on else None
+            frost_floor = self.config.frost_lock_floor()
+            cooling_down = bool(flags.get("cool_boost_active") or flags.get("night_cool_active"))
+            locked = (
+                "eftervarmen er slukket" if not afterheat_on
+                else "Køl" if flags.get("cool_boost_active")
+                else "natkøling" if flags.get("night_cool_active")
+                else "forsøg med setpunkt" if override is not None
+                else "frostsikring" if frost_lock and self.afterheat_room_output is not None
+                and self.afterheat_room_output < frost_floor
+                else None)
+            afterheat_setpoint, afterheat_reason = self._afterheat_setpoint(now, locked)
+            afterheat_target = float(afterheat_setpoint)
+            if cooling_down:
+                # Cool lets cold outdoor air in on purpose: the afterheat must not warm it up again.
+                afterheat_setpoint = COOL_BOOST_AFTERHEAT_SETPOINT
+                afterheat_reason = ("Køl: eftervarme holdt nede" if flags.get("cool_boost_active")
+                                    else "Natkøling: eftervarme holdt nede")
+            if frost_lock:
+                afterheat_target = max(afterheat_target, frost_floor)
+            if frost_lock and afterheat_setpoint < frost_floor:
+                afterheat_setpoint = math.ceil(frost_floor)
+                afterheat_reason = f"Frostsikring: mindst {_danish_number(frost_floor)} °C, mens det fryser"
             if override is not None:
                 afterheat_setpoint = max(override, frost_floor) if frost_lock else override
                 afterheat_reason = f"Forsøg: setpunkt {_danish_number(afterheat_setpoint, 2)} °C"
@@ -2616,6 +2859,7 @@ class ControllerEngine:
                 afterheat_setpoint = math.floor(float(afterheat_setpoint) + 0.5)
             pilot = self._afterheat_pilot(now, d, afterheat_target, afterheat_on, frost_lock, frost_floor,
                                           flags, fans_stopped, override is not None)
+            self.last_pilot = dict(pilot)
             afterheat_command = afterheat_setpoint if afterheat_on else None
             if pilot["afterheat_control_active"] == "pi" and pilot["afterheat_hac1_setpoint"] is not None:
                 afterheat_command = int(pilot["afterheat_hac1_setpoint"])
@@ -2673,6 +2917,22 @@ class ControllerEngine:
                 "afterheat_room_state": self.afterheat_room_state,
                 "afterheat_room_reason": afterheat_reason,
                 "afterheat_room_temperature": self.external.get("afterheat_room_temperature"),
+                "afterheat_room_supply_target": self.afterheat_room_output if d.get("afterheat_room_enabled") else None,
+                "afterheat_room_rooms_target": self.room_cascade.value if d.get("afterheat_room_enabled") else None,
+                "afterheat_room_rooms": self.external.get("afterheat_room_rooms"),
+                "afterheat_room_saturated": self._afterheat_saturation(),
+                **self.night_cooling.result(),
+                "night_cool_season_mean": self.outdoor_history.running_mean(),
+                "night_cool_outdoor": self._night_outdoor(),
+                "night_cool_indoor": self._night_indoor(),
+                "night_cool_forecast_high": self.external.get("forecast_high_c"),
+                "night_cool_today_high": self._today_high(),
+                "presence_state": self.presence_state,
+                "presence_reason": self.presence_reason,
+                "home_state": self.external.get("home_state"),
+                "occupied_rooms": list(self.external.get("occupied_rooms") or []),
+                "occupied_count": len(self.external.get("occupied_rooms") or []),
+                "presence_rooms": self.external.get("presence_rooms"),
                 "indoor_absolute_humidity": _round(self.indoor_absolute_humidity()),
                 "outdoor_absolute_humidity": _round(self.outdoor_absolute_humidity()),
                 "outdoor_humidity": self.external.get("outdoor_rh"),

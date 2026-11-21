@@ -38,7 +38,8 @@ class RoomSetupValidationTests(unittest.TestCase):
         self.assertEqual(cleaned["priority"], "auto")
         self.assertTrue(cleaned["control"])
         self.assertFalse(cleaned["unit_sensor"])
-        self.assertEqual(cleaned["sensors"], {"temperature": None, "humidity": None, "co2": "sensor.co2", "pm25": None})
+        self.assertEqual(cleaned["sensors"], {"temperature": None, "humidity": None, "co2": "sensor.co2", "pm25": None,
+                                              "presence": None})
 
     def test_bad_values_are_refused_with_danish_messages(self):
         for bad in (

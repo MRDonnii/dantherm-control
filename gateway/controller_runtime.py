@@ -20,6 +20,7 @@ from pathlib import Path
 from advanced_control import absolute_humidity, fan_curve, fit_fan_curve, side_constants, source_room, supply_after_core, supply_air_metrics
 from air_balance import HeatBalanceLearner, adopt, balance_from_temperatures, summarize, window_record
 from onewire_extras import OneWireExtras
+from occupancy import OccupancyTracker
 import room_setup
 from afterheat_pilot import robust_temperature
 from diagnostics import Diagnostics
@@ -33,6 +34,10 @@ ROOM_T5_RANGE = (5.0, 40.0)
 
 LOG = logging.getLogger("passivelink-controller")
 VALID_PRIORITIES = {"auto", "low", "normal", "high", "critical"}
+# Weights per room priority when the rooms' average temperature is weighted.
+PRIORITY_WEIGHTS = {"low": 0.5, "auto": 1.0, "normal": 1.0, "high": 1.5, "critical": 2.0}
+# A room temperature HA has not had a report for in this long is not used in the averages.
+ROOM_TEMPERATURE_STALE_SECONDS = 3 * 3600
 # The HCH5 runs its bypass damper for about three minutes either way
 # (180 s measured on the live unit 2026-09-23) and reports no position.
 BYPASS_TRAVEL_SECONDS = 180
@@ -106,6 +111,11 @@ class ControllerRuntime:
         self.energy_signals_until: float | None = None
         self.weather: dict[str, object] | None = None
         self.weather_until: float | None = None
+        # Forecast highs (DMI) and home/away from Home Assistant, leased like the weather.
+        self.climate_signals: dict[str, object] = {}
+        self.climate_signals_until: dict[str, float] = {}
+        # Occupancy of the rooms from their presence sensors (occupancy.py).
+        self.occupancy = OccupancyTracker()
         self.fireplace_auto_active = False
         self.fireplace_auto_by_temperature = False
         self.fireplace_auto_started_at: float | None = None
@@ -202,10 +212,21 @@ class ControllerRuntime:
             outdoor=self._first(state, "outdoor_temp", "outdoor_temperature"),
             room=room_temperature,
         )
+        comfort, comfort_count = self._comfort_rooms_temperature()
+        occupied, presence_rooms = self._occupied_rooms()
         self.engine.set_external({
             "extract_temp": extract_temp,
             "outdoor_rh": self._outdoor_humidity(),
             "afterheat_room_temperature": room_temperature,
+            "afterheat_room_rooms": comfort_count if room_source == "rooms" else None,
+            # The comfort rooms' average (night cooling) and the outdoor room (e.g. the house's own sensor).
+            "rooms_temperature": comfort,
+            "outdoor_air_temperature": self._outdoor_room_temperature(),
+            "forecast_high_c": self._climate_signal("forecast_high_c"),
+            "today_high_c": self._climate_signal("today_high_c"),
+            "home_state": self._climate_signal("home_state"),
+            "occupied_rooms": occupied,
+            "presence_rooms": presence_rooms,
             # The rooms' own temperature (the rooms the RH comes from), for the indoor absolute humidity.
             "indoor_temperature_average": self._indoor_room_temperature(),
             "stove_temperature": self._source_value(self.config.data.get("fireplace_auto_source"), "temperature"),
@@ -406,8 +427,13 @@ class ControllerRuntime:
         """Room temperature for the afterheat and the source it came from."""
         source = str(self.config.data.get("afterheat_room_source") or "auto")
         if source == "auto":
+            comfort, _count = self._comfort_rooms_temperature()
+            if comfort is not None:
+                return comfort, "rooms"
             average = self._ha_room_average_temperature()
             return (average, "ha_average") if average is not None else (t3, "t3" if t3 is not None else None)
+        if source == "rooms":
+            return self._comfort_rooms_temperature()[0], "rooms"
         if source == "t3":
             return t3, "t3"
         if source == "t5":
@@ -415,6 +441,68 @@ class ControllerRuntime:
         if source == "ha_average":
             return self._ha_room_average_temperature(), "ha_average"
         return self._source_value(source, "temperature"), source
+
+    def _comfort_rooms_temperature(self) -> tuple[float | None, int]:
+        """Average temperature of the living rooms that steer the ventilation, and how many there are.
+
+        Rooms set up on the Pi count when they are normal rooms, bedrooms or
+        kitchens with control on (not bathrooms, measuring or excluded rooms).
+        Rooms HA sends without a setup count unless they are bathrooms. A
+        temperature HA has not had a report for in three hours is skipped.
+        With ``afterheat_room_weighted`` the rooms are weighted by priority.
+        """
+        weighted = self.config.data.get("afterheat_room_weighted") is True
+        excluded = self._source_room_names()
+        total = weights = 0.0
+        count = 0
+        for name, values in self._fresh_ha_rooms().items():
+            if name in excluded or not values.get("enabled", True) or not values.get("control", True):
+                continue
+            kind = values.get("room_kind")
+            if kind is None and self._is_bathroom(name, values):
+                continue
+            if kind is not None and kind not in room_setup.COMFORT_TYPES:
+                continue
+            temperature = values.get("temperature")
+            if isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or values.get("temperature_stale"):
+                continue
+            weight = PRIORITY_WEIGHTS.get(str(values.get("priority", "auto")), 1.0) if weighted else 1.0
+            total += float(temperature) * weight
+            weights += weight
+            count += 1
+        return (round(total / weights, 2), count) if weights else (None, 0)
+
+    def _outdoor_room_temperature(self) -> float | None:
+        """The temperature of the outdoor room on the page Rum (e.g. Udeluft with the house's own sensor)."""
+        for values in self._fresh_ha_rooms().values():
+            temperature = values.get("temperature")
+            if (values.get("room_kind") == "outdoor" and isinstance(temperature, (int, float))
+                    and not isinstance(temperature, bool) and not values.get("temperature_stale")):
+                return float(temperature)
+        return None
+
+    def _climate_signal(self, key: str):
+        until = self.climate_signals_until.get(key)
+        return self.climate_signals.get(key) if until is not None and time.time() <= until else None
+
+    def _occupied_rooms(self, now: float | None = None) -> tuple[list[str], int]:
+        """The occupied living rooms (after the hold times) and how many rooms report presence."""
+        now = time.time() if now is None else now
+        if not self._smart_inputs_fresh(now):
+            return [], 0
+        d = self.config.data
+        rooms = self._fresh_ha_rooms()
+        status = self.occupancy.update(now, float(d.get("presence_on_minutes", 5)), float(d.get("presence_off_minutes", 15)))
+        occupied, known = [], 0
+        for name, item in status.items():
+            values = rooms.get(name) or {}
+            if item["present"] is None or not values.get("enabled", True):
+                continue
+            known += 1
+            kind = str(values.get("room_kind") or item.get("room_kind") or "normal")
+            if item["occupied"] and kind in room_setup.COMFORT_TYPES and values.get("control", True):
+                occupied.append(name)
+        return sorted(occupied), known
 
     def _humidity_rooms(self) -> list[dict]:
         """The HA rooms the indoor humidity is taken from (see _indoor_room_humidity).
@@ -490,6 +578,28 @@ class ControllerRuntime:
         if energy_update:
             self.energy_signals.update(energy_update)
             self.energy_signals_until = time.time() + valid_for
+        climate_fields = {"forecast_high_c": (-40, 60), "today_high_c": (-40, 60)}
+        for field, (minimum, maximum) in climate_fields.items():
+            if field in payload:
+                if payload[field] is None:
+                    self.climate_signals.pop(field, None)
+                    continue
+                value = self._safe_number(payload[field], minimum, maximum)
+                if value is None:
+                    raise ControllerError(f"{field} skal være et tal mellem {minimum} og {maximum}")
+                self.climate_signals[field] = round(value, 1)
+                self.climate_signals_until[field] = time.time() + valid_for
+        if "home" in payload:
+            if payload["home"] is None:
+                self.climate_signals.pop("home_state", None)
+            elif not isinstance(payload["home"], bool):
+                raise ControllerError("home skal være boolean")
+            else:
+                self.climate_signals["home_state"] = "home" if payload["home"] else "away"
+                self.climate_signals_until["home_state"] = time.time() + valid_for
+                reason = payload.get("home_reason")
+                self.climate_signals["home_reason"] = str(reason)[:80] if isinstance(reason, str) else None
+                self.climate_signals_until["home_reason"] = time.time() + valid_for
         if "fireplace" not in payload:
             return self.snapshot()
         if not isinstance(payload["fireplace"], bool):
@@ -722,6 +832,11 @@ class ControllerRuntime:
                     raise ControllerError(f"max_level for {name} skal være 1..{self.config.max_level()}")
                 # 5 and 6 from the six-step controller mean the maximum.
                 values["max_level"] = min(self.config.max_level(), max_level)
+            presence = raw_values.get("presence")
+            if presence is not None and not isinstance(presence, bool):
+                raise ControllerError(f"presence for {name} skal være boolean")
+            if "presence" in raw_values:
+                values["presence"] = presence
             temp = self._measurement(raw_values, "temperature", -30, 60)
             rh = self._measurement(raw_values, "humidity", 0, 100)
             co2 = self._measurement(raw_values, "co2", 250, 10000)
@@ -730,6 +845,9 @@ class ControllerRuntime:
                 pm25 = self._measurement(raw_values, "pm2_5", 0, 1000)
             if temp is not None:
                 values["temperature"] = round(temp, 2)
+                age = self._safe_number(raw_values.get("temperature_age_s"), 0, 10**8)
+                if age is not None and age > ROOM_TEMPERATURE_STALE_SECONDS:
+                    values["temperature_stale"] = True
             if rh is not None:
                 values["humidity"] = round(rh, 2)
                 history = self._room_rh_history[name]
@@ -740,7 +858,7 @@ class ControllerRuntime:
                 values["co2"] = round(co2, 0)
             if pm25 is not None:
                 values["pm25"] = round(pm25, 1)
-            if not any(key in values for key in ("temperature", "humidity", "co2", "pm25")):
+            if not any(key in values for key in ("temperature", "humidity", "co2", "pm25", "presence")):
                 if mapped is not None:
                     continue  # a set-up room whose sensors are down right now
                 raise ControllerError(f"{name} har ingen gyldige målinger")
@@ -753,7 +871,10 @@ class ControllerRuntime:
                     if kind in room_setup.SENSOR_KINDS and isinstance(entity_id, str)
                 }
             sanitized[name] = values
+            if "presence" in values:
+                self.occupancy.observe(name, values["presence"], now, str(values.get("room_kind") or "normal"))
 
+        self.occupancy.forget_missing({name for name, values in sanitized.items() if "presence" in values})
         self.smart_rooms = sanitized
         self.smart_inputs_received_at = now
         self.smart_inputs_valid_for = valid_for
@@ -800,6 +921,18 @@ class ControllerRuntime:
                 self._record_change(before, {"room_setup": rooms}, "Home Assistant (rum flyttet til Pi)")
                 migrated = True
                 LOG.warning("Moved %d rooms from the Home Assistant options flow to the room setup", len(rooms))
+        current = self.config.data.get("room_setup") or []
+        filled, named = room_setup.fill_presence(current, catalog)
+        if named:
+            # A presence sensor per room, picked like the other sensors (best in the area first).
+            before = json.loads(json.dumps(self.config.data, default=str))
+            try:
+                self.config.configure({"room_setup": filled})
+            except ControllerError as error:
+                LOG.warning("Could not add presence sensors to the rooms: %s", error)
+            else:
+                self._record_change(before, {"room_setup": filled}, "Home Assistant (tilstedeværelse valgt)")
+                LOG.info("Presence sensors picked for %s", ", ".join(named))
         return {**self.rooms_view(), "migrated_now": migrated}
 
     def rooms_view(self, *, include_catalog: bool = True) -> dict[str, object]:
@@ -1338,6 +1471,7 @@ class ControllerRuntime:
                 str(room["name"]) for room in self.config.data.get("room_setup") or []
                 if room.get("type") != "excluded"}),
             "afterheat_room_source_used": self.afterheat_room_source_used,
+            "home_reason": self._climate_signal("home_reason"),
             "weather": self.weather_snapshot(),
         })
         extract = self._safe_number(self._first(self.gateway_state, "extract_temp", "extract_temperature"), -30, 60)

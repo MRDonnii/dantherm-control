@@ -9,6 +9,7 @@ import { AfterheatThermostat } from "../components/AfterheatThermostat";
 import { AfterheatLevelPanel } from "../components/AfterheatLevel";
 import { formatPercent, readAfterheatControl, readValvePercent } from "../lib/afterheatControl";
 import { describeControl } from "../lib/control";
+import { automationLines } from "../lib/automation";
 import { FROST_COOL_HINT, FROST_COOL_MESSAGE, FROST_OFF_MESSAGE, frostFloorMessage, frostLockRefuses, readFrostLock } from "../lib/frostLock";
 import { SENSOR_HISTORY, SensorHistoryDialog } from "../components/SensorHistoryDialog";
 import { postJson, requestJson } from "../lib/api";
@@ -356,7 +357,7 @@ export function OverviewPage() {
             {levels.map(value => <button key={value} title={dantherm ? `Trin ${value} · ${LEVEL_NAMES[value].da}${value === 4 ? ` (${MAX_LEVEL_HOURS} timer, derefter trin 3)` : ""}` : undefined} className={!standbyActive && level === value ? "active" : ""} disabled={busy !== null} onClick={() => void command(`level-${value}`, standbyActive ? { standby_minutes: 0, [levelPatch]: value } : { [levelPatch]: value }, standbyActive ? `Anlægget er tændt på trin ${value}.` : `Ventilation sat til trin ${value}.`)}>{value}</button>)}
             <button className={`level-off${standbyActive ? " active" : ""}`} aria-haspopup="dialog" aria-pressed={standbyActive} disabled={busy !== null} onClick={() => setStandbyDialog(true)}>OFF</button>
           </div>
-          <div className="active-decision"><span>Aktiv beslutning</span><strong>{standbyActive ? "OFF · anlæg slukket" : `Trin ${whole(level)} · ${text(controller.effective_source).replaceAll("_", " ")}`}</strong><small>{text(controller.effective_reason, "Afventer controllerens beslutning")}</small></div>
+          <div className="active-decision"><span>Aktiv beslutning</span><strong>{standbyActive ? "OFF · anlæg slukket" : `Trin ${whole(level)} · ${text(controller.effective_source).replaceAll("_", " ")}`}</strong><small>{text(controller.effective_reason, "Afventer controllerens beslutning")}</small>{automationLines(controller).map(line => <small key={line} className="active-decision-note">{line}</small>)}</div>
         </article>
         {unit.unit_generation === "mk2" ? null : afterheatCard}
 

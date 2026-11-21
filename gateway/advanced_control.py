@@ -237,7 +237,7 @@ def balanced_profiles(data: dict, profiles: dict) -> dict[int, dict[str, object]
 # (bathrooms and stove/outdoor sensor rooms left out), else T3 extract air.
 # T3 alone mixes in kitchen and bathroom air; T5 (HRC2 remote) is not live
 # once the Pi replaces HCP4, so both are only options.
-TEMPERATURE_SOURCE_FIXED = {"auto", "t3", "t5", "ha_average"}
+TEMPERATURE_SOURCE_FIXED = {"auto", "rooms", "t3", "t5", "ha_average"}
 ROOM_PREFIX = "room:"
 
 

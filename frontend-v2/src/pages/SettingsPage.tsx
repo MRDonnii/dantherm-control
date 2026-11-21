@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { NAV_KEY, SKIN_KEY, SKIN_PRESETS, readNav, readSkin, type NavPosition, type Skin } from "../lib/appearance";
-import { Activity, DoorOpen, Droplets, Fan, Flame, Gauge, House, Mail, Monitor, Moon, RotateCcw, Save, Scale, ShieldCheck, ShowerHead, Snowflake, Thermometer, Timer, Users, Wind } from "lucide-react";
+import { Activity, DoorOpen, Droplets, Fan, Flame, Gauge, House, Mail, Monitor, Moon, RotateCcw, Save, Scale, ShieldCheck, ShowerHead, Snowflake, Thermometer, Timer, UserCheck, Users, Wind } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { postJson, requestJson } from "../lib/api";
 import { airflowPlan, balancedProfiles, effectiveProfiles, sideConstants, type AirflowProfiles, type RatioSource } from "../lib/airflow";
@@ -9,6 +9,8 @@ import { LANG_KEY, currentLang, useLang, type Lang } from "../lib/i18n";
 import { useSession, type Permission } from "../lib/session";
 import { FROST_LOCK_SETTINGS, formatFloor, readFrostLock } from "../lib/frostLock";
 import { AFTERHEAT_CONTROL_SETTINGS, controlLabel, readAfterheatControl } from "../lib/afterheatControl";
+import { NIGHT_COOL_SETTINGS, PRESENCE_SETTINGS, ROOM_TARGET_SETTINGS } from "../lib/automation";
+import { NightCoolCard, PresenceCard, RoomTargetCard } from "../components/AutomationCards";
 import { AccountPanel } from "../components/AccountPanel";
 import { MailPanel } from "../components/MailPanel";
 import { UsersPanel } from "../components/UsersPanel";
@@ -39,8 +41,7 @@ export const CONTROLLER_KEYS = [
   "auto_step_rh", "auto_step_co2",
   "bathroom_rh_setpoint", "bathroom_rh_hysteresis", "bathroom_max_level",
   "night_enabled", "night_start", "night_end", "night_level", "night_air_quality_max_level",
-  "afterheat_setpoint", "afterheat_coil", "afterheat_room_enabled", "afterheat_room_source", "afterheat_room_target",
-  "afterheat_room_gain", "afterheat_room_min", "afterheat_room_max", "afterheat_room_step_minutes",
+  "afterheat_setpoint", "afterheat_coil", ...ROOM_TARGET_SETTINGS, ...NIGHT_COOL_SETTINGS, ...PRESENCE_SETTINGS,
   ...FROST_LOCK_SETTINGS, ...AFTERHEAT_CONTROL_SETTINGS,
   "cooling_enabled", "cooling_room_setpoint", "cooling_hysteresis", "cooling_outdoor_min", "cooling_min_delta",
   "cooling_level", "cooling_start_delay_seconds", "cooling_min_on_seconds", "cooling_min_off_seconds",
@@ -69,7 +70,7 @@ const T = {
   level: { da: "Trin", en: "Level" }, status: { da: "Status lige nu", en: "Status right now" },
 } satisfies Record<string, Text>;
 
-type SectionId = "ui" | "house" | "air" | "humidity" | "night" | "afterheat" | "cooling" | "fireplace" | "security" | "sensors" | "users" | "mail";
+type SectionId = "ui" | "house" | "air" | "humidity" | "night" | "presence" | "afterheat" | "cooling" | "fireplace" | "security" | "sensors" | "users" | "mail";
 type Section = { id: SectionId; icon: LucideIcon; title: Text; lead: Text; group: Text };
 const GROUP = {
   ventilation: { da: "Ventilation", en: "Ventilation" },
@@ -82,6 +83,7 @@ const GROUP = {
 const SECTIONS: Section[] = [
   { id: "house", group: GROUP.ventilation, icon: House, title: { da: "Trin og luftmængde", en: "Steps and airflow" }, lead: { da: "Trinstyring, grundtrin, grænser og luftbalance", en: "Step control, base level, limits and air balance" } },
   { id: "night", group: GROUP.ventilation, icon: Moon, title: { da: "Nat", en: "Night" }, lead: { da: "Lavere trin mens I sover", en: "Lower level while you sleep" } },
+  { id: "presence", group: GROUP.ventilation, icon: UserCheck, title: { da: "Tilstedeværelse", en: "Occupancy" }, lead: { da: "Lavere når ingen er hjemme, højere når mange rum er i brug", en: "Lower when away, higher when many rooms are in use" } },
   { id: "air", group: GROUP.air, icon: Wind, title: { da: "Fugt og CO₂", en: "Humidity and CO₂" }, lead: { da: "Grænser der løfter ventilationen, og PM2.5", en: "Limits that raise the ventilation, and PM2.5" } },
   { id: "humidity", group: GROUP.air, icon: Droplets, title: { da: "Badeværelse og tør luft", en: "Bathroom and dry air" }, lead: { da: "Udtørring efter bad, udeluftens fugt og vinter", en: "Drying after a shower, outdoor humidity and winter" } },
   { id: "afterheat", group: GROUP.heat, icon: Thermometer, title: { da: "Eftervarme og frost", en: "Afterheat and frost" }, lead: { da: "Indblæsningens temperatur og frostlås", en: "Supply air temperature and frost lock" } },
@@ -288,7 +290,7 @@ export function SettingsPage() {
     if (selected.startsWith("room:")) names.add(selected.slice(5));
     return [...names].sort().map(name => <option key={name} value={`room:${name}`}>{name}</option>);
   };
-  const roomHint = rooms.length ? null : <Help>{lang === "da" ? "Ingen målerum endnu. Opret rummet på siden Rum med typen Kilde, Ude eller Udsugningsrum." : "No measuring rooms yet. Create the room on the Rooms page with the type Source, Outdoor or Extract room."}</Help>;
+  const roomHint = rooms.length ? null : <Help>{lang === "da" ? "Ingen målerum endnu. Opret rummet på siden Rum med typen Kilde, Ude eller Kun kanalmåling (udsugning)." : "No measuring rooms yet. Create the room on the Rooms page with the type Source, Outdoor or Duct measurement only (extract)."}</Help>;
 
   const runningProfiles = controller.profiles as Profiles | undefined;
   const steps = stepCount(controller);
@@ -402,7 +404,7 @@ export function SettingsPage() {
           </tr>; })())}</tbody></table></div>}
       <p className="settings-help">{lang === "da" ? "T2-føleren skal sidde i indblæsningskanalen mellem enheden og varmefladen, mindst 20–30 cm fra fladen. Loftføleren skal hænge i skygge væk fra tagpladerne." : "The T2 sensor belongs in the supply duct between the unit and the afterheat coil, at least 20–30 cm from the coil. Hang the loft sensor in shade away from the roof."}</p>
           <div className="settings-grid">
-        <label>{lang === "da" ? "Udsugningsrum (gennemsnit)" : "Extract rooms (average)"}<select value={s(form.duct_extract_source)} onChange={e => set("duct_extract_source", e.target.value)}><option value="">{t(T.none)}</option>{roomOptions(form.duct_extract_source)}</select><Help>{lang === "da" ? "Et rum fra siden Rum (typen Udsugningsrum) med gennemsnittet af rummene med udsugningsventil. Sammenholdt med T3 viser oversigten, hvor meget udsugningsluften køles af på vej til anlægget – i grader og som andel af forskellen mellem rummene og loftet. En fast andel uanset luftmængde peger på utætheder; en isoleret kanal giver kun få procent." : "A room from the Rooms page (type Extract room) with the average of the rooms with an extract valve. Against T3 the overview shows how much the extract air cools on its way to the unit, in degrees and as a share of the difference between the rooms and the loft. A steady share at every airflow points to leaks; an insulated duct gives only a few percent."}</Help></label>
+        <label>{lang === "da" ? "Udsugningsrum (gennemsnit)" : "Extract rooms (average)"}<select value={s(form.duct_extract_source)} onChange={e => set("duct_extract_source", e.target.value)}><option value="">{t(T.none)}</option>{roomOptions(form.duct_extract_source)}</select><Help>{lang === "da" ? "Et rum fra siden Rum (typen Kun kanalmåling (udsugning)) med gennemsnittet af rummene med udsugningsventil. Sammenholdt med T3 viser oversigten, hvor meget udsugningsluften køles af på vej til anlægget – i grader og som andel af forskellen mellem rummene og loftet. En fast andel uanset luftmængde peger på utætheder; en isoleret kanal giver kun få procent." : "A room from the Rooms page (type Extract room) with the average of the rooms with an extract valve. Against T3 the overview shows how much the extract air cools on its way to the unit, in degrees and as a share of the difference between the rooms and the loft. A steady share at every airflow points to leaks; an insulated duct gives only a few percent."}</Help></label>
         <label>{lang === "da" ? "Korrektion udsugningsrum" : "Extract rooms correction"}<input type="number" min="-3" max="3" step="0.05" value={n(form.duct_rooms_offset_k, 0)} onChange={num("duct_rooms_offset_k")}/><span>K</span><Help>{lang === "da" ? "Lægges til rumtemperaturen, kun i beregningen af kanalafkølingen. Måler rumfølerne fx 0,6 °C for højt, skrives -0,6." : "Added to the room temperature, only for the duct cooling. If the room sensors read 0.6 °C high, enter -0.6."}</Help></label>
         <label>{lang === "da" ? "Korrektion T3" : "T3 correction"}<input type="number" min="-3" max="3" step="0.05" value={n(form.duct_t3_offset_k, 0)} onChange={num("duct_t3_offset_k")}/><span>K</span><Help>{lang === "da" ? "Lægges til T3, kun i beregningen af kanalafkølingen. Måler T3 fx 0,7 °C for lavt, skrives 0,7." : "Added to T3, only for the duct cooling. If T3 reads 0.7 °C low, enter 0.7."}</Help></label>
         <label>{lang === "da" ? "Korrektion T2" : "T2 correction"}<input type="number" min="-3" max="3" step="0.05" value={n(form.t2_offset_k, 0)} onChange={num("t2_offset_k")}/><span>K</span><Help>{lang === "da" ? "Lægges kun til T2 i beregningen af vekslerens indblæsningsside og forskellen til T2AH. T2AH og rå følermålinger ændres ikke." : "Added to T2 only for exchanger and coil calculations. T2AH and raw sensor readings stay unchanged."}</Help></label>
@@ -633,33 +635,16 @@ export function SettingsPage() {
     afterheat: <>
       <Card title={lang === "da" ? "Eftervarme" : "Afterheat"} lead={lang === "da" ? "HAC1 styrer selv ventil, aktuator og frostsikring" : "HAC1 handles the valve, actuator and frost protection itself"} icon={Thermometer}>
         <div className="settings-grid">
-          <label>{lang === "da" ? "Indblæsning, grundsetpunkt" : "Supply air base setpoint"}<input type="number" min="10" max="35" value={n(form.afterheat_setpoint, 20)} onChange={num("afterheat_setpoint")}/><span>°C</span><Help>{lang === "da" ? "Temperaturen luften varmes op til efter varmefladen. Er styring efter rumtemperatur slået til, er det udgangspunktet." : "The temperature the air is heated to after the coil. With room control on, this is the starting point."}</Help></label>
+          <label>{lang === "da" ? "Indblæsning, grundsetpunkt" : "Supply air base setpoint"}<input type="number" min="10" max="35" value={n(form.afterheat_setpoint, 20)} onChange={num("afterheat_setpoint")}/><span>°C</span><Help>{lang === "da" ? "Temperaturen luften varmes op til efter varmefladen. Er Mål fra rummene slået til, er det kun udgangspunktet." : "The temperature the air is heated to after the coil. With the target from the rooms on, this is only the starting point."}</Help></label>
           <label>{lang === "da" ? "Varmeflade" : "Heating coil"}<select value={form.afterheat_coil === "water" ? "water" : "electric"} onChange={e => set("afterheat_coil", e.target.value)}><option value="electric">{lang === "da" ? "Elvarmeflade" : "Electric coil"}</option><option value="water">{lang === "da" ? "Vandbåren varmeflade" : "Water coil"}</option></select><Help>{lang === "da" ? "Ændrer kun tegningen på forsiden." : "Only changes the drawing on the overview."}</Help></label>
           <p className="settings-help">{lang === "da" ? "HAC1 varmer aldrig, når udetemperaturen er 15 °C eller mere. Det er anlæggets egen spærre." : "HAC1 never heats when it is 15 °C or warmer outside. That is the unit's own lockout."}</p>
         </div>
       </Card>
-      <Card title={lang === "da" ? "Styr efter rumtemperatur" : "Follow the room temperature"} lead={lang === "da" ? "Varmere indblæsning når huset er koldt" : "Warmer supply air when the house is cold"} icon={Thermometer}>
-        <div className="settings-grid">
-          <label className="check-row"><input type="checkbox" checked={form.afterheat_room_enabled === true} onChange={check("afterheat_room_enabled")}/> {lang === "da" ? "Flyt setpunktet efter rumtemperaturen" : "Move the setpoint with the room temperature"}</label>
-          <Help>{lang === "da" ? "Setpunkt = grundsetpunkt + forstærkning × (ønsket rum − målt rum). Det flyttes én grad ad gangen og holdes mellem laveste og højeste værdi. Mangler rumtemperaturen, bruges grundsetpunktet. Ventilationsluften giver kun få hundrede watt, så det er komfort og ikke opvarmning." : "Setpoint = base setpoint + gain × (wanted room − measured room). It moves one degree at a time and stays between the lowest and highest value. Without a room temperature the base setpoint is used. Ventilation air carries only a few hundred watts, so this is comfort, not heating."}</Help>
-          <label>{lang === "da" ? "Rumtemperatur fra" : "Room temperature from"}<select value={s(form.afterheat_room_source, "auto")} onChange={e => set("afterheat_room_source", e.target.value)}><option value="auto">{lang === "da" ? "Automatisk: HA-rum, ellers T3" : "Automatic: HA rooms, else T3"}</option><option value="t3">{lang === "da" ? "Udsugningsluft T3" : "Extract air T3"}</option><option value="t5">{lang === "da" ? "HRC2-rumføler T5 (upålidelig uden HCP4)" : "HRC2 room sensor T5 (unreliable without HCP4)"}</option><option value="ha_average">{lang === "da" ? "Gennemsnit af HA-rum" : "Average of HA rooms"}</option>{roomOptions(form.afterheat_room_source)}</select><Help>{lang === "da" ? "Automatisk bruger gennemsnittet af dine HA-rum med temperatur (badeværelser og brændeovns- og udeluftsfølere tæller ikke med). Rummene og deres følere vælges på siden Rum. Findes der ingen, bruges T3, som er udsugningsluft og også indeholder luft fra køkken og bad. T5 sidder i HRC2-fjernbetjeningen og opdateres ikke, når Pi'en har erstattet HCP4." : "Automatic uses the average of your HA rooms with a temperature (bathrooms and stove or outdoor sensors are left out). Add rooms with your own temperature sensors in the HCH5 Control integration under Smart Auto rooms, ideally with control turned off. Without any, T3 is used, which is extract air and includes kitchen and bathroom air. T5 sits in the HRC2 remote and is not updated once the Pi has replaced HCP4."}</Help></label>
-          <label>{lang === "da" ? "Ønsket rumtemperatur" : "Wanted room temperature"}<input type="number" min="15" max="26" step="0.5" value={n(form.afterheat_room_target, 21)} onChange={num("afterheat_room_target")}/><span>°C</span><Help>{lang === "da" ? "Sæt den lidt under radiatorernes eller gulvvarmens, så de ikke modarbejder hinanden." : "Set it slightly below the radiators or floor heating so they do not work against each other."}</Help></label>
-          <label>{lang === "da" ? "Forstærkning" : "Gain"}<input type="number" min="0.5" max="5" step="0.5" value={n(form.afterheat_room_gain, 1.5)} onChange={num("afterheat_room_gain")}/><span>°C/°C</span><Help>{lang === "da" ? "Grader indblæsning pr. grad rummet afviger." : "Degrees of supply air per degree of room deviation."}</Help></label>
-          <label>{lang === "da" ? "Laveste indblæsning" : "Lowest supply"}<input type="number" min="10" max="35" value={n(form.afterheat_room_min, 17)} onChange={num("afterheat_room_min")}/><span>°C</span><Help>{lang === "da" ? "Under ca. 17 °C kan indblæsningen føles som træk." : "Below about 17 °C the supply air can feel draughty."}</Help></label>
-          <label>{lang === "da" ? "Højeste indblæsning" : "Highest supply"}<input type="number" min="10" max="35" value={n(form.afterheat_room_max, 24)} onChange={num("afterheat_room_max")}/><span>°C</span></label>
-          <label>{lang === "da" ? "Minutter pr. grad" : "Minutes per degree"}<input type="number" min="2" max="60" value={n(form.afterheat_room_step_minutes, 10)} onChange={num("afterheat_room_step_minutes")}/><span>min</span><Help>{lang === "da" ? "Hvor ofte setpunktet må flyttes én grad. Længere tid giver roligere regulering." : "How often the setpoint may move one degree. Longer gives calmer control."}</Help></label>
-        </div>
-        <div className="settings-summary">
-          <span>{lang === "da" ? "Rumtemperatur" : "Room temperature"}<strong>{fmt(controller.afterheat_room_temperature, lang, 1, " °C")}</strong></span>
-          <span>{lang === "da" ? "Kilde lige nu" : "Source right now"}<strong>{(() => { const used = s(controller.afterheat_room_source_used); if (!used) return "—"; if (used === "ha_average") return lang === "da" ? "Gennemsnit af HA-rum" : "Average of HA rooms"; if (used.startsWith("room:")) return used.slice(5); return used.toUpperCase(); })()}</strong></span>
-          <span>{lang === "da" ? "Aktuelt setpunkt" : "Current setpoint"}<strong>{fmt(controller.afterheat_effective_setpoint, lang, 0, " °C")}</strong></span>
-        </div>
-        <p className="settings-help">{s(controller.afterheat_room_reason)}</p>
-      </Card>
+      <RoomTargetCard lang={lang} form={form} controller={controller} set={set} roomOptions={roomOptions}/>
       {typeof controller.afterheat_control_mode === "string" && <AfterheatControlCard lang={lang} form={form} controller={controller} set={set}/>}
       {(readFrostLock(controller).known || typeof controller.frost_lock_enabled === "boolean") && <FrostLockCard lang={lang} form={form} controller={controller} set={set}/>}
     </>,
-    cooling: <Card title={lang === "da" ? "Frikøling" : "Free cooling"} lead={t(sectionInfo("cooling").lead)} icon={Snowflake}>
+    cooling: <><Card title={lang === "da" ? "Frikøling" : "Free cooling"} lead={t(sectionInfo("cooling").lead)} icon={Snowflake}>
       <div className="settings-grid">
         <label className="check-row"><input type="checkbox" checked={form.cooling_enabled === true} onChange={check("cooling_enabled")}/> {lang === "da" ? "Frikøling" : "Free cooling"}</label>
         <Help>{lang === "da" ? "Er det for varmt inde og køligere ude, åbnes bypass, så udeluften går uden om varmeveksleren. Bypass-spjældet er langsomt (ca. 3 minutter), derfor venter controlleren og holder minimumstider." : "If it is too warm inside and cooler outside, the bypass opens so outdoor air skips the heat exchanger. The damper is slow (about 3 minutes), so the controller waits and keeps minimum times."}</Help>
@@ -672,7 +657,10 @@ export function SettingsPage() {
         <label>{lang === "da" ? "Mindste tid tændt" : "Minimum on time"}<input type="number" min="0" max="3600" step="60" value={n(form.cooling_min_on_seconds, 600)} onChange={num("cooling_min_on_seconds")}/><span>s</span></label>
         <label>{lang === "da" ? "Mindste tid slukket" : "Minimum off time"}<input type="number" min="0" max="3600" step="60" value={n(form.cooling_min_off_seconds, 300)} onChange={num("cooling_min_off_seconds")}/><span>s</span></label>
       </div>
-    </Card>,
+    </Card>
+      <NightCoolCard lang={lang} form={form} controller={controller} set={set} maxLevel={maxLevel}/>
+    </>,
+    presence: <PresenceCard lang={lang} form={form} controller={controller} set={set} maxLevel={maxLevel}/>,
     fireplace: <Card title={t(sectionInfo("fireplace").title)} lead={lang === "da" ? "Holder anlæggets pejsefunktion, så længe der fyres" : "Holds the unit's fireplace mode while the stove burns"} icon={Flame}>
       <div className="settings-grid">
         <label className="check-row"><input type="checkbox" checked={form.fireplace_auto_enabled === true} onChange={check("fireplace_auto_enabled")}/> {lang === "da" ? "Automatisk pejsefunktion" : "Automatic fireplace mode"}</label>

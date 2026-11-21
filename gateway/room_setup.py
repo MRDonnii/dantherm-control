@@ -20,15 +20,26 @@ INDOOR_TYPES = frozenset({"normal", "bedroom", "bathroom", "kitchen"})
 MEASURING_TYPES = frozenset({"source", "outdoor", "extract"})
 ROOM_TYPE_LABELS = {
     "normal": "Normalt rum", "bedroom": "Soverum", "bathroom": "Badeværelse", "kitchen": "Køkken",
-    "source": "Kilde (brændeovn)", "outdoor": "Ude", "extract": "Udsugningsrum",
+    "source": "Kilde (brændeovn)", "outdoor": "Ude", "extract": "Kun kanalmåling (udsugning)",
     "excluded": "Ikke ventileret",
 }
+# Room types whose temperature counts in the house average used by the afterheat
+# target and the night cooling (bathrooms are skewed by showers).
+COMFORT_TYPES = frozenset({"normal", "bedroom", "kitchen"})
 PRIORITIES = ("auto", "low", "normal", "high", "critical")
-SENSOR_KINDS = ("temperature", "humidity", "co2", "pm25")
+# Measurements (sensor.*) and presence (binary_sensor.*, occupancy/presence/motion).
+MEASUREMENT_KINDS = ("temperature", "humidity", "co2", "pm25")
+SENSOR_KINDS = (*MEASUREMENT_KINDS, "presence")
 MAX_ROOMS = 32
 MAX_AREAS = 64
-MAX_SENSORS_PER_AREA = 40
+MAX_SENSORS_PER_AREA = 48  # 40 measurements + 8 presence sensors
 ENTITY_RE = re.compile(r"^sensor\.[a-z0-9_]{1,120}$")
+PRESENCE_RE = re.compile(r"^binary_sensor\.[a-z0-9_]{1,120}$")
+
+
+def valid_entity(kind: str, entity_id: str) -> bool:
+    """A sensor for a measurement, a binary sensor for presence."""
+    return bool((PRESENCE_RE if kind == "presence" else ENTITY_RE).match(entity_id))
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 # The unit's own room sensor (HRC2/T5 and RH) sits here unless chosen otherwise.
 DEFAULT_UNIT_SENSOR_ROOM = "spisestue"
@@ -79,7 +90,7 @@ def clean_room(raw: object, *, max_level: int = 6) -> dict[str, object]:
     priority = raw.get("priority", "auto")
     if priority not in PRIORITIES:
         raise RoomSetupError(f"{name}: ukendt prioritet")
-    for key in ("control", "enabled", "unit_sensor"):
+    for key in ("control", "enabled", "unit_sensor", "presence_auto"):
         if key in raw and not isinstance(raw[key], bool):
             raise RoomSetupError(f"{name}: {key} skal være sand/falsk")
     area_id = _text(raw.get("area_id"), 64) or None
@@ -89,8 +100,8 @@ def clean_room(raw: object, *, max_level: int = 6) -> dict[str, object]:
     sensors: dict[str, str | None] = {}
     for kind in SENSOR_KINDS:
         entity_id = _text(sensors_in.get(kind), 130) or None
-        if entity_id is not None and not ENTITY_RE.match(entity_id):
-            raise RoomSetupError(f"{name}: {entity_id} er ikke en sensor fra Home Assistant")
+        if entity_id is not None and not valid_entity(kind, entity_id):
+            raise RoomSetupError(f"{name}: {entity_id} er ikke en {'tilstedeværelsesføler' if kind == 'presence' else 'sensor'} fra Home Assistant")
         sensors[kind] = entity_id
     room: dict[str, object] = {
         "id": room_id,
@@ -104,6 +115,9 @@ def clean_room(raw: object, *, max_level: int = 6) -> dict[str, object]:
         "unit_sensor": raw.get("unit_sensor") is True and room_type != "excluded",
         "sensors": sensors,
     }
+    # False once the owner chose "Ingen" for presence: the Pi never picks one again.
+    if raw.get("presence_auto") is False:
+        room["presence_auto"] = False
     for key, low, high, label, kind in (
         ("rh_setpoint", 35.0, 90.0, "fugtgrænse", float),
         ("rh_hysteresis", 1.0, 20.0, "hysterese", float),
@@ -162,7 +176,7 @@ def clean_catalog(value: object) -> list[dict[str, object]]:
                 continue
             entity_id = _text(sensor.get("entity_id"), 130)
             kind = sensor.get("kind")
-            if not ENTITY_RE.match(entity_id) or kind not in SENSOR_KINDS:
+            if kind not in SENSOR_KINDS or not valid_entity(str(kind), entity_id):
                 continue
             entry = {"entity_id": entity_id, "name": _text(sensor.get("name"), 80) or entity_id, "kind": kind}
             unit = _text(sensor.get("unit"), 16)
@@ -253,7 +267,7 @@ def migrate_legacy(legacy: object, catalog: list[dict[str, object]], config: dic
             "id": room_id, "name": name, "area_id": area_id, "area_name": area_name,
             "type": room_type, "priority": raw.get("priority", "auto") if raw.get("priority") in PRIORITIES else "auto",
             "control": raw.get("control", True) is not False, "enabled": raw.get("enabled", True) is not False,
-            "unit_sensor": False, "sensors": {k: v for k, v in sensors.items() if v and ENTITY_RE.match(v)},
+            "unit_sensor": False, "sensors": {k: v for k, v in sensors.items() if v and valid_entity(k, v)},
         }
         for key in ("rh_setpoint", "rh_hysteresis", "max_level"):
             if override.get(key) is not None:
@@ -263,6 +277,36 @@ def migrate_legacy(legacy: object, catalog: list[dict[str, object]], config: dic
         except RoomSetupError:
             continue
     return rooms
+
+
+def first_presence(catalog: list[dict[str, object]], area_id: object) -> str | None:
+    """The area's best presence sensor (HA sorts them best first), or None."""
+    for area in catalog:
+        if area.get("area_id") == area_id:
+            for sensor in area.get("sensors") or []:
+                if sensor.get("kind") == "presence":
+                    return str(sensor["entity_id"])
+    return None
+
+
+def fill_presence(rooms: list[dict[str, object]], catalog: list[dict[str, object]]) -> tuple[list[dict[str, object]], list[str]]:
+    """Pick a presence sensor for indoor rooms with an HA area and none chosen.
+
+    Rooms where the owner chose "Ingen" (``presence_auto`` False) are left
+    alone. Returns the new list and the names of the rooms that got one.
+    """
+    changed: list[str] = []
+    result: list[dict[str, object]] = []
+    for room in rooms:
+        sensors = room.get("sensors") if isinstance(room.get("sensors"), dict) else {}
+        if (room.get("type") in INDOOR_TYPES and room.get("area_id") and not sensors.get("presence")
+                and room.get("presence_auto") is not False):
+            entity_id = first_presence(catalog, room.get("area_id"))
+            if entity_id:
+                room = {**room, "sensors": {**sensors, "presence": entity_id}}
+                changed.append(str(room.get("name")))
+        result.append(room)
+    return result, changed
 
 
 def by_name(rooms: list[dict[str, object]]) -> dict[str, dict[str, object]]:

@@ -66,7 +66,7 @@ describe("afterheat control setting", () => {
     window.location.hash = "#/settings?section=afterheat";
     api.requestJson.mockImplementation(async (endpoint: string) => endpoint === "/api/auth/status" ? { csrf: "x" } : { afterheat_setpoint: 20 });
     render(<SettingsPage/>);
-    await screen.findByText("Styr efter rumtemperatur");
+    await screen.findByText("Mål fra rummene");
     expect(screen.queryByRole("radiogroup", { name: "Regulering af eftervarmen" })).toBeNull();
     cleanup();
     api.requestJson.mockImplementation(async (endpoint: string) => endpoint === "/api/auth/status" ? { csrf: "x" } : { afterheat_setpoint: 20, afterheat_control_mode: "native" });

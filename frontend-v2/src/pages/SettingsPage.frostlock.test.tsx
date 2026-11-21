@@ -51,7 +51,7 @@ describe("frost lock settings", () => {
     api.requestJson.mockImplementation(async (endpoint: string) => endpoint === "/api/auth/status" ? { csrf: "x" } : { afterheat_setpoint: 20 });
     render(<SettingsPage/>);
     await waitFor(() => expect(api.requestJson).toHaveBeenCalled());
-    await screen.findByText("Styr efter rumtemperatur");
+    await screen.findByText("Mål fra rummene");
     expect(screen.queryByText("Mindste setpunkt i frost")).toBeNull();
     cleanup();
     api.requestJson.mockImplementation(async (endpoint: string) => endpoint === "/api/auth/status" ? { csrf: "x" } : { afterheat_setpoint: 20, ...SETTINGS, afterheat_frost_lock: false });

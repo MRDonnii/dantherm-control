@@ -150,7 +150,7 @@ class AdvancedEngineTests(unittest.TestCase):
         result = engine.resolve()
         self.assertFalse(result["dry_protection_active"])
 
-    def test_afterheat_follows_room_one_degree_per_interval(self):
+    def test_afterheat_room_target_moves_in_small_steps(self):
         written = []
         hardware = HardwareAdapter(set_afterheat_setpoint=written.append,
                                    write_fan_pair=lambda *_: None, set_fireplace=lambda *_: None)
@@ -159,14 +159,18 @@ class AdvancedEngineTests(unittest.TestCase):
                                  "afterheat_room_target": 21, "afterheat_room_gain": 2,
                                  "afterheat_room_min": 17, "afterheat_room_max": 24,
                                  "afterheat_room_step_minutes": 10})
-        engine.set_external({"afterheat_room_temperature": 19.0})  # wants 20 + 2*2 = 24
+        engine.set_external({"afterheat_room_temperature": 19.0})  # 2 K too cold
         result = engine.resolve(now=1000.0)
-        self.assertEqual(result["afterheat_effective_setpoint"], 21)
+        self.assertEqual(result["afterheat_effective_setpoint"], 20)  # starts at the fixed setpoint
+        self.assertEqual(result["afterheat_room_supply_target"], 20.0)
+        self.assertEqual(engine.resolve(now=1000.0 + 300)["afterheat_room_supply_target"], 20.0)
+        result = engine.resolve(now=1000.0 + 600)
+        self.assertEqual(result["afterheat_room_supply_target"], 20.2)  # at most 0.2 K per step
         self.assertEqual(result["afterheat_room_state"], "rising")
-        self.assertEqual(engine.resolve(now=1000.0 + 300)["afterheat_effective_setpoint"], 21)
-        self.assertEqual(engine.resolve(now=1000.0 + 600)["afterheat_effective_setpoint"], 22)
-        engine.apply()  # resolves on the real clock, so the next step may be taken
-        self.assertEqual(written[-1], engine.afterheat_effective)
+        self.assertIn("Mål fra rummene: 19,0 °C i rummene → indblæsning 20,2 °C", result["afterheat_room_reason"])
+        # Native HAC1 control gets whole degrees; the Pi control gets the exact target.
+        self.assertEqual(result["afterheat_effective_setpoint"], 20)
+        self.assertEqual(result["afterheat_target"], 20.2)
 
         engine.set_external({})
         result = engine.resolve(now=5000.0)
@@ -298,6 +302,16 @@ class FireplaceAutoTests(unittest.TestCase):
             "Bedroom": {"temperature": 19.0, "co2": 700},
             "Bathroom": {"temperature": 26.0, "humidity": 80},
             "Brændeovn": {"temperature": 40.0, "control": False},
+        }})
+        runtime.refresh_measurements()
+        # Automatic: the living rooms with control on (the bedroom), not bathrooms or sensor rooms.
+        self.assertEqual(runtime.engine.external["afterheat_room_temperature"], 19.0)
+        self.assertEqual(runtime.snapshot()["afterheat_room_source_used"], "rooms")
+        # Without a room with control on: the average of all HA rooms, as before.
+        runtime.room_inputs({"source": "home_assistant", "valid_for_s": 180, "rooms": {
+            "Living room": {"temperature": 21.0, "control": False},
+            "Bedroom": {"temperature": 19.0, "co2": 700, "control": False},
+            "Bathroom": {"temperature": 26.0, "humidity": 80, "control": False},
         }})
         runtime.refresh_measurements()
         self.assertEqual(runtime.engine.external["afterheat_room_temperature"], 20.0)
