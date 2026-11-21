@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.11.0
+
+- **Rum sættes op på Pi'en (Opsætning → Rum).** Home Assistant sends a catalogue of its areas and their temperature,
+  humidity, CO₂ and PM2.5 sensors; each room gets a type (normal, soverum, badeværelse, køkken, kilde, ude,
+  udsugningsrum, ikke ventileret), priority, control on/off, one sensor per kind and "Anlæggets egen føler sidder her".
+  "Tilføj alle rum fra HA" adds every area with sensors (Garage as not ventilated). All enabled rooms take part in the
+  control; not ventilated rooms are ignored everywhere. The rooms from the HA integration move over once.
+- **Menus regrouped:** Opsætning (Indstillinger, Rum, Indregulering), Teknik og drift, System og adgang; Indstillinger
+  grouped as Ventilation, Luftkvalitet, Varme og køl, Følere, Konto og system. Old links still work. Settings that only
+  existed in the HA options flow (level limits, delays, humidity/CO₂ per level) are now in the WebUI.
+- New API: `POST /api/controller/ha-catalog`, `GET /api/controller/rooms`, `room_setup` in the controller config.
+
 ## Unreleased
 
 - **Rooms are set up on the Pi: new page Opsætning → Rum.** Home Assistant sends all its areas with temperature,
