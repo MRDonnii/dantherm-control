@@ -7,7 +7,7 @@ import { ArrowRight, CloudFog, Flame, Gauge, House, Leaf, Power, Snowflake, Wind
 import { Hch5UnitDiagram } from "../components/Hch5UnitDiagram";
 import { AfterheatThermostat } from "../components/AfterheatThermostat";
 import { AfterheatLevelPanel } from "../components/AfterheatLevel";
-import { readAfterheatControl } from "../lib/afterheatControl";
+import { formatPercent, readAfterheatControl, readValvePercent } from "../lib/afterheatControl";
 import { describeControl } from "../lib/control";
 import { FROST_COOL_HINT, FROST_COOL_MESSAGE, FROST_OFF_MESSAGE, frostFloorMessage, frostLockRefuses, readFrostLock } from "../lib/frostLock";
 import { SENSOR_HISTORY, SensorHistoryDialog } from "../components/SensorHistoryDialog";
@@ -213,7 +213,12 @@ export function OverviewPage() {
   // HAC1 never heats at 15 C outdoor or above; say so instead of just "Inaktiv".
   const afterheatLockout = controller.actual_afterheat_outdoor_lockout === true;
   const afterheatCutoff = number(controller.afterheat_outdoor_cutoff) ?? 15;
-  const afterheatStatus = heating ? "Aktiv" : afterheatLockout ? "Spærret af sommerstop" : heatKnown ? "Inaktiv" : "Ukendt";
+  // HAC1's level × 10 % (0-10 V to the valve); the on/off flag alone is no opening.
+  const valveOpening = readValvePercent(controller);
+  const afterheatStatus = [
+    heating ? "Aktiv" : afterheatLockout ? "Spærret af sommerstop" : heatKnown ? "Inaktiv" : "Ukendt",
+    valveOpening === null ? null : `ventilåbning ${formatPercent(valveOpening)}`,
+  ].filter(Boolean).join(" · ");
   const fireplace = controller.actual_fireplace === true || unit.fireplace === true;
   const bonfireActive = controller.bonfire_active === true;
   const standbyActive = controller.standby_active === true;

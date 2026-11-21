@@ -1,11 +1,11 @@
 /* History charts. Series colours are a validated categorical palette
    (slots 1-3 pass the colour-blind and contrast checks on both themes);
    slots are given in fixed order per chart, never by rank. */
-:root { --hx-1: #2a78d6; --hx-2: #eb6834; --hx-3: #1baf7a; }
+:root { --hx-1: #2a78d6; --hx-2: #eb6834; --hx-3: #1baf7a; --hx-valve: #7651d4; --hx-valve-fill: .2; }
 @media (prefers-color-scheme: dark) {
-  :root:where(:not([data-theme="light"])) { --hx-1: #3987e5; --hx-2: #d95926; --hx-3: #199e70; }
+  :root:where(:not([data-theme="light"])) { --hx-1: #3987e5; --hx-2: #d95926; --hx-3: #199e70; --hx-valve: #a385f5; --hx-valve-fill: .26; }
 }
-:root[data-theme="dark"] { --hx-1: #3987e5; --hx-2: #d95926; --hx-3: #199e70; }
+:root[data-theme="dark"] { --hx-1: #3987e5; --hx-2: #d95926; --hx-3: #199e70; --hx-valve: #a385f5; --hx-valve-fill: .26; }
 
 .hx-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 0 4px 2px; }
 .history-range-segment { display: inline-flex; width: max-content; grid-auto-flow: column; grid-template-columns: none; margin: 0; }
@@ -34,6 +34,9 @@
 .hx-key-band { height: 10px; background: color-mix(in srgb, var(--c) 24%, transparent); }
 .hx-key-ref { height: 0; border-top: 2px dashed var(--muted); background: none; }
 .hx-key-strip { height: 8px; background: var(--text); opacity: .7; }
+.hx-key-cmd { background: var(--hx-3); }
+.hx-key-valve { height: 10px; background: color-mix(in srgb, var(--hx-valve) 45%, transparent); border-top: 2px solid var(--hx-valve); box-sizing: border-box; }
+.hx-key-decision { height: 0; border-top: 2px dashed var(--hx-valve); background: none; }
 .hx-view { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; margin-left: auto; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
 .hx-view:hover, .hx-view[aria-pressed="true"] { border-color: var(--border-strong); color: var(--text); }
 
@@ -44,6 +47,16 @@
 .hx-line { fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .hx-band { opacity: .16; stroke: none; }
 .hx-ref { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 4; }
+/* What the control sends HAC1, next to the target: its own colour, thin and solid. */
+.hx-cmd { fill: none; stroke: var(--hx-3); stroke-width: 1.25; stroke-linejoin: round; opacity: .9; }
+/* Valve opening (0..100 %, own scale on the right) in the plot's lower part:
+   what really happens as a filled area, the control's decision dashed on top. */
+.hx-valve-area { fill: var(--hx-valve); fill-opacity: var(--hx-valve-fill); stroke: none; }
+.hx-valve-edge { fill: none; stroke: var(--hx-valve); stroke-width: 1.25; stroke-opacity: .8; stroke-linejoin: round; }
+.hx-valve-top { stroke: var(--hx-valve); stroke-opacity: .28; stroke-width: 1; stroke-dasharray: 2 4; shape-rendering: crispEdges; }
+.hx-tick-valve { fill: var(--hx-valve); font-size: 10.5px; opacity: .85; }
+.hx-decision { fill: none; stroke: var(--hx-valve); stroke-width: 2; stroke-dasharray: 6 4; stroke-linejoin: round; }
+.hx-cross circle.hx-valve-dot { fill: var(--hx-valve); }
 .hx-threshold line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 5 4; }
 .hx-threshold text { fill: var(--muted); font-size: 11.5px; font-weight: 700; }
 .hx-strip rect { fill: var(--text); }

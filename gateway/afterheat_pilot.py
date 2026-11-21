@@ -204,6 +204,8 @@ FROST_BLIP_SHARE = 0.5
 # in the 2026-11-20 trial, the next level 5-6 K, which the model learns short):
 # a step down to it is judged as losing all the heat of the level above.
 FROST_MIN_LEVEL = 1
+# Far too warm (URGENT_WARM_K) this long under the frost lock: one step down is allowed anyway.
+WARM_ESCAPE_S = 10 * 60.0
 # How far off the trend's guess of the air at the tick may be while taking turns (K).
 PWM_GUESS_K = 0.08
 # A level's settled error is judged this long after the turn to it (dead time + two lags).
@@ -528,6 +530,8 @@ class AfterheatPilot:
         # whether it is below the frost floor while the frost lock is on.
         self.cold_since: float | None = None
         self.frost_cold = False
+        # Since when the air has been more than URGENT_WARM_K too warm (see WARM_ESCAPE_S).
+        self.warm_since: float | None = None
         # Under the frost lock: the user's target when the Pi steers for a higher one (effective_target).
         self.target_raised_from: float | None = None
         # Under the frost lock: the level settles too close to the frost floor, up at the next tick (see _plan).
@@ -862,6 +866,11 @@ class AfterheatPilot:
                 self.cold_since = inp.now
         else:
             self.cold_since = None
+        if error_now > URGENT_WARM_K:
+            if self.warm_since is None:
+                self.warm_since = inp.now
+        else:
+            self.warm_since = None
 
     def _persistent_cold(self, inp: PilotInputs) -> bool:
         """The air has been cold long enough (and will stay so on this level) to give more heat anyway."""
@@ -1068,6 +1077,14 @@ class AfterheatPilot:
         if not inp.frost_lock or level <= 0:
             return False
         error = self.error_settled if error is None else error
+        if (self.warm_since is not None and inp.now - self.warm_since >= WARM_ESCAPE_S
+                and float(inp.target) + error - (self.scale or 1.0) * max(
+                    self.heat.step(level - 1), self.heat.lasting_step(level - 1)) >= float(inp.frost_floor) + 0.5):
+            # Far too warm for long (live 2026-11-20: level 2 held at +5 K for
+            # 80 min): one step down is allowed. HAC1 never gets a setpoint below
+            # ceil(floor), so it steps up by itself should the air reach it, and
+            # the frost revert takes the level back up at the next tick.
+            return False
         first = 0 if level - 1 <= FROST_MIN_LEVEL else level - 1
         step = sum(max(self.heat.step(index), self.heat.lasting_step(index)) for index in range(first, level))
         return self._below_frost_floor(inp, error - (self.scale or 1.0) * step * FROST_STEP_SAFETY)
@@ -1339,6 +1356,10 @@ class AfterheatPilot:
             spread = max(HOLD_NOISE_K, (max(guesses) - min(guesses)) / 2)
         whole = math.floor(middle)
         candidates = [c for c in (whole - 1, whole, whole + 1) if c >= floor_sp] or [floor_sp]
+        if middle > float(inp.target) + URGENT_WARM_K:
+            # Far too warm: never a setpoint above the air, which makes HAC1 step up
+            # (live 2026-11-20: sp 27 at 26.96 C with the target 21).
+            candidates = [c for c in candidates if c <= middle] or candidates
         restricted = False
         if forbidden:
             # HAC1 must not step down here (the frost minimum level, or a level

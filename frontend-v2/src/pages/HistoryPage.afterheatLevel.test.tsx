@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HistoryPage } from "./HistoryPage";
 
@@ -21,35 +21,64 @@ function serve(extra: (index: number) => Record<string, number | null>) {
   });
 }
 
-describe("HAC1 level chart in the history", () => {
-  it("draws the level and target level on a fixed 0..10 axis under the afterheat chart", async () => {
+describe("Afterheat chart and valve opening in the history", () => {
+  const afterheatChart = () => screen.findByRole("img", { name: /^Indblæsning og eftervarme/ });
+  const legendValue = (chart: Element, label: string) => within(chart.closest(".hx-chart") as HTMLElement).getByText(label).nextElementSibling?.textContent;
+
+  it("draws the valve opening and the decision in % inside the afterheat plot", async () => {
     serve(index => ({ afterheat_level: index < 3 ? 2 : 3, afterheat_level_target: 3, afterheat_target: 21.5 }));
     render(<HistoryPage/>);
-    expect(await screen.findByText("HAC1-trin")).toBeTruthy();
-    const chart = screen.getByRole("img", { name: /^HAC1-trin: Trin, Mål-trin/ });
-    const ticks = [...chart.querySelectorAll("text.hx-tick")].map(node => node.textContent).filter(text => /^\d+$/.test(text ?? ""));
-    expect(ticks.slice(0, 6)).toEqual(["0", "2", "4", "6", "8", "10"]);
+    const chart = await afterheatChart();
+    expect(chart.getAttribute("aria-label")).toMatch(/Ventilåbning \(faktisk\), Styringens beslutning/);
+    expect([...chart.querySelectorAll("text.hx-tick-valve")].map(node => node.textContent)).toEqual(["0 %", "50 %", "100 %"]);
     // Steps, not slopes.
-    expect(chart.querySelector("path.hx-line")?.getAttribute("d")).toMatch(/H[\d.]+V/);
-    // The afterheat chart's reference follows the Pi's target with decimals.
-    expect(screen.getByText("Mål").nextElementSibling?.textContent).toBe("21,5°C");
+    expect(chart.querySelector("path.hx-valve-edge")?.getAttribute("d")).toMatch(/H[\d.]+V/);
+    expect(chart.querySelector("path.hx-decision")?.getAttribute("d")).toMatch(/^M[\d.]+ [\d.]+H/);
+    // Level 3 is 30 %; the old on/off strip and the separate level chart are gone.
+    expect(legendValue(chart, "Ventilåbning (faktisk)")).toBe("30 %");
+    expect(legendValue(chart, "Styringens beslutning")).toBe("30 %");
+    expect(screen.queryByText("Ventil åben")).toBeNull();
+    expect(screen.queryByRole("img", { name: /^Ventilåbning/ })).toBeNull();
+    // The reference is the user's target with decimals.
+    expect(legendValue(chart, "Mål")).toBe("21,5°C");
   });
 
   it("keeps the target line over a period that starts before the update", async () => {
     serve((index): Record<string, number | null> => index < 3 ? {} : { afterheat_level: 2, afterheat_target: 21.5 });
     render(<HistoryPage/>);
-    expect(await screen.findByText("HAC1-trin")).toBeTruthy();
-    const chart = screen.getByRole("img", { name: /^Indblæsning og eftervarme/ });
+    const chart = await afterheatChart();
     // One stepped line through both the old whole setpoint and the new target.
     const path = chart.querySelector("path.hx-ref")?.getAttribute("d") ?? "";
     expect(path.match(/M/g)?.length).toBe(1);
     expect(path.match(/H/g)?.length).toBe(5);
   });
 
-  it("leaves the chart out for history without levels", async () => {
-    serve(() => ({}));
+  it("keeps the target flat while the setpoint sent to HAC1 moves", async () => {
+    serve(index => ({ afterheat_level: 3, afterheat_target: 21, afterheat_setpoint: index < 3 ? 25 : 27, afterheat_level_target: 4 }));
     render(<HistoryPage/>);
-    expect(await screen.findByText("Setpunkt")).toBeTruthy();
-    expect(screen.queryByText("HAC1-trin")).toBeNull();
+    const chart = await afterheatChart();
+    expect(chart.querySelector("path.hx-cmd")?.getAttribute("d")).toMatch(/H[\d.]+V/);
+    expect(legendValue(chart, "Sendt til HAC1")).toBe("27,0°C");
+    // The reference stays at 21: one height all the way.
+    expect(legendValue(chart, "Mål")).toBe("21,0°C");
+    const ys = new Set((chart.querySelector("path.hx-ref")?.getAttribute("d") ?? "").match(/V[\d.]+/g) ?? []);
+    expect(ys.size).toBe(1);
+  });
+
+  it("leaves the sent line out while HAC1 is given the target itself", async () => {
+    serve(() => ({ afterheat_level: 3, afterheat_target: 21, afterheat_setpoint: 21 }));
+    render(<HistoryPage/>);
+    const chart = await afterheatChart();
+    expect(screen.queryByText("Sendt til HAC1")).toBeNull();
+    expect(legendValue(chart, "Styringens beslutning")).toBe("HAC1 styrer selv");
+  });
+
+  it("falls back to the setpoint as target and the open-valve strip for history without levels", async () => {
+    serve(() => ({ afterheat_active: 1 }));
+    render(<HistoryPage/>);
+    const chart = await afterheatChart();
+    expect(legendValue(chart, "Mål")).toBe("21,0°C");
+    expect(screen.getByText("Ventil åben")).toBeTruthy();
+    expect(chart.querySelector("text.hx-tick-valve")).toBeNull();
   });
 });

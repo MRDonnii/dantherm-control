@@ -24,6 +24,8 @@ export interface AfterheatControl {
   active: AfterheatControlActive | null;
   /** Level HAC1 reports right now, 0..max. */
   level: number | null;
+  /** HAC1's valve opening in % (level × 10 %: 0-10 V to the valve). */
+  valvePercent: number | null;
   /** Continuous level the Pi wants (PI output). */
   levelWanted: number | null;
   /** Whole level the Pi steers toward at the next tick. */
@@ -50,6 +52,29 @@ function oneOf<T extends string>(value: unknown, options: readonly T[]): T | nul
   return typeof value === "string" && (options as readonly string[]).includes(value) ? value as T : null;
 }
 
+/** HAC1 register 101 drives the valve with 0-10 V: each of the ten levels opens it 10 %. */
+export const VALVE_PERCENT_PER_LEVEL = 10;
+
+/**
+ * The valve opening in %: the gateway's own figure (1.9.2+), else HAC1's level × 10 %.
+ * Register 209 (afterheat on/off) is only a flag and never an opening.
+ */
+export function readValvePercent(controller: Record<string, unknown>): number | null {
+  const reported = finite(controller.actual_afterheat_valve_percent);
+  if (reported !== null) return Math.min(100, Math.max(0, reported));
+  const level = finite(controller.actual_afterheat_level) ?? finite(controller.afterheat_level);
+  return level === null ? null : Math.min(100, Math.max(0, Math.round(level * VALVE_PERCENT_PER_LEVEL)));
+}
+
+/** "Ventilåbning 30 %", or "Ventilåbning —" when HAC1's level is unknown. */
+export function valveText(percent: number | null): string {
+  return `Ventilåbning ${formatPercent(percent)}`;
+}
+
+export function formatPercent(percent: number | null): string {
+  return percent === null ? "—" : `${Math.round(percent).toLocaleString("da-DK")} %`;
+}
+
 export function readAfterheatControl(controller: Record<string, unknown>): AfterheatControl {
   const mode = oneOf(controller.afterheat_control_mode, ["native", "pi"] as const);
   const active = oneOf(controller.afterheat_control_active, ["pi", "native", "fallback"] as const);
@@ -66,6 +91,7 @@ export function readAfterheatControl(controller: Record<string, unknown>): After
     mode,
     active,
     level: clampLevel(finite(controller.afterheat_level)),
+    valvePercent: readValvePercent(controller),
     levelWanted: clampLevel(finite(controller.afterheat_level_wanted)),
     levelTarget: clampLevel(finite(controller.afterheat_level_target)),
     levelMax,

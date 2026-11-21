@@ -4,7 +4,7 @@ import { Activity, Fan, Leaf, Recycle, SlidersHorizontal } from "lucide-react";
 import { AlarmHistory } from "../components/AlarmHistory";
 import { HistoryChart } from "../components/HistoryChart";
 import { requestJson } from "../lib/api";
-import { clean } from "../lib/historyData";
+import { AFTERHEAT_CHART, afterheatLayers, clean, withAfterheatLines } from "../lib/historyData";
 import "../styles/history.css";
 
 type Sample = Record<string, number | null>;
@@ -150,14 +150,11 @@ export function HistoryPage() {
   const span = (item: ReturnType<typeof summary>, decimals: number, unit: string) =>
     item.low === null ? "Ingen data" : `${format(item.low, decimals)}–${format(item.high, decimals)}${unit} i perioden`;
   const shared = { samples, range: window_, hoverTs: hover, onHover: setHover, loading };
-  // Gateway 1.9.0 logs HAC1's level and the Pi's target; older history has neither.
-  const hasLevels = samples.some(sample => finite(sample.afterheat_level) || finite(sample.afterheat_level_target));
-  const hasTarget = samples.some(sample => finite(sample.afterheat_target));
-  // Right after the update the period mixes both: older buckets only have the
-  // whole-degree setpoint, which was the target then, so the line stays whole.
-  const afterheatSamples = useMemo(() => hasTarget
-    ? samples.map(sample => ({ ...sample, afterheat_goal: finite(sample.afterheat_target) ? sample.afterheat_target : sample.afterheat_setpoint ?? null }))
-    : samples, [samples, hasTarget]);
+  // Gateway 1.9.0 logs HAC1's level (valve opening = level × 10 %) and the user's
+  // target; older history has neither, and its whole-degree setpoint was the target then.
+  const afterheatSamples = useMemo(() => withAfterheatLines(samples), [samples]);
+  const layers = afterheatLayers(afterheatSamples);
+  const opening = summary(afterheatSamples, "afterheat_valve_percent");
 
   return (
     <section className="dashboard-overview page-enter">
@@ -187,33 +184,26 @@ export function HistoryPage() {
         <StatTile label="Udsugning" value={format(extract.latest, 1)} unit="°C" detail={span(extract, 1, "°C")}/>
         <StatTile label="CO₂" value={format(co2.latest, 0)} unit=" ppm" detail={span(co2, 0, " ppm")}/>
         <StatTile label="Genvinding" value={format(recovery.latest, 0)} unit="%" detail={recovery.mean === null ? "Ingen data" : `Gns. ${format(recovery.mean, 0)}% i perioden`}/>
-        <StatTile label="Eftervarme" value={valve.mean === null ? "–" : format(valve.mean * 100, 0)} unit="%" detail={`af tiden med åben ventil · ${label}`}/>
+        {layers.hasValve
+          ? <StatTile label="Ventilåbning" value={format(opening.latest, 0)} unit=" %" detail={opening.mean === null ? "Ingen data" : `Gns. ${format(opening.mean, 0)} % i perioden`}/>
+          : <StatTile label="Eftervarme" value={valve.mean === null ? "–" : format(valve.mean * 100, 0)} unit="%" detail={`af tiden med åben ventil · ${label}`}/>}
       </div>
 
       <div className="history-grid">
-        <ChartCard wide title="Indblæsning og eftervarme" subtitle="Luften efter varmefladen mod setpunktet, og hvornår ventilen er åben" icon={<Activity size={20}/>}>
+        <ChartCard wide title="Indblæsning og eftervarme" subtitle="Luften efter varmefladen mod dit mål, setpunktet sendt til HAC1, og ventilens åbning mod styringens beslutning" icon={<Activity size={20}/>}>
           <HistoryChart
-            {...shared} samples={afterheatSamples} title="Indblæsning og eftervarme" unit="°C" height={270} minSpan={4}
+            {...shared} samples={afterheatSamples} title="Indblæsning og eftervarme" unit="°C" height={layers.hasValve ? 310 : 270} minSpan={4}
             series={[
               { key: AFTER, label: "Indblæsning · T2AH", slot: 1 },
               { key: "extract_temp", label: "Udsugning · T3", slot: 2 },
             ]}
             band={{ seriesKey: AFTER, minKey: `${AFTER}_min`, maxKey: `${AFTER}_max`, label: "Udsving T2AH" }}
-            reference={hasTarget ? { key: "afterheat_goal", label: "Mål", decimals: 1 } : { key: "afterheat_setpoint", label: "Setpunkt" }}
-            strip={{ key: "afterheat_active", label: "Ventil åben" }}
+            reference={AFTERHEAT_CHART.goal}
+            command={layers.showSent ? AFTERHEAT_CHART.sent : undefined}
+            valve={layers.hasValve ? AFTERHEAT_CHART.valve : undefined}
+            strip={layers.hasValve ? undefined : AFTERHEAT_CHART.strip}
           />
-          {hasLevels && (
-            <div className="hx-subchart">
-              <h3>HAC1-trin</h3>
-              <HistoryChart
-                {...shared} title="HAC1-trin" unit="" decimals={1} height={140} yDomain={{ lo: 0, hi: 10, step: 2 }}
-                series={[
-                  { key: "afterheat_level", label: "Trin", slot: 1, stepped: true },
-                  { key: "afterheat_level_target", label: "Mål-trin", slot: 2, stepped: true },
-                ]}
-              />
-            </div>
-          )}
+          <p className="hx-note">{AFTERHEAT_CHART.note}</p>
         </ChartCard>
 
         <ChartCard title="Eftervarmevand" subtitle="Fremløb, retur og frostføleren på vandsiden" icon={<Activity size={20}/>}>

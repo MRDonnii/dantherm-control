@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AFTERHEAT_CONTROL_SETTINGS, controlLabel, formatError, formatTick, levelText, nextActionText, readAfterheatControl } from "./afterheatControl";
+import { AFTERHEAT_CONTROL_SETTINGS, controlLabel, formatError, formatTick, levelText, nextActionText, readAfterheatControl, readValvePercent, valveText } from "./afterheatControl";
 
 const PI = {
   afterheat_control_mode: "pi", afterheat_control_active: "pi", afterheat_level: 3, afterheat_level_wanted: 3.44, afterheat_level_target: 4,
@@ -11,7 +11,7 @@ describe("readAfterheatControl", () => {
   it("reads every snapshot key", () => {
     const control = readAfterheatControl(PI);
     expect(control).toEqual({
-      known: true, mode: "pi", active: "pi", level: 3, levelWanted: 3.44, levelTarget: 4, levelMax: 10, nextAction: "up",
+      known: true, mode: "pi", active: "pi", level: 3, valvePercent: 30, levelWanted: 3.44, levelTarget: 4, levelMax: 10, nextAction: "up",
       nextTickSeconds: 12, target: 21.5, hac1Setpoint: 22, error: -0.42, reason: "Går et trin op: 21,1 °C under mål",
     });
   });
@@ -44,6 +44,24 @@ describe("readAfterheatControl", () => {
     expect(AFTERHEAT_CONTROL_SETTINGS).toContain("afterheat_control_mode");
     expect(AFTERHEAT_CONTROL_SETTINGS).toContain("afterheat_pi_band");
     expect(AFTERHEAT_CONTROL_SETTINGS).toContain("afterheat_pi_min_dwell_ticks");
+  });
+});
+
+describe("valve opening", () => {
+  it("is HAC1's level × 10 %, 0..100, and the gateway's own figure wins", () => {
+    expect(readValvePercent({ actual_afterheat_level: 4 })).toBe(40);
+    expect(readValvePercent({ afterheat_level: 10 })).toBe(100);
+    expect(readValvePercent({ afterheat_level: 0 })).toBe(0);
+    expect(readValvePercent({ actual_afterheat_valve_percent: 60, actual_afterheat_level: 4 })).toBe(60);
+    expect(readValvePercent({ actual_afterheat_level: 14 })).toBe(100);
+    // The on/off flag (register 209) is never an opening.
+    expect(readValvePercent({ actual_afterheat: true })).toBeNull();
+    expect(readValvePercent({ actual_afterheat_level: null })).toBeNull();
+  });
+
+  it("reads as Danish text", () => {
+    expect(valveText(30)).toBe("Ventilåbning 30 %");
+    expect(valveText(null)).toBe("Ventilåbning —");
   });
 });
 

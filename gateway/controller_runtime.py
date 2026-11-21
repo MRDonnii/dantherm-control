@@ -218,7 +218,7 @@ class ControllerRuntime:
     T2AH_RAW_WINDOW_SECONDS = 10.0
 
     def _afterheat_inputs(self) -> dict[str, object]:
-        """HAC1 level, T2AH (filtered and raw), fan and water flow for the Pi afterheat control."""
+        """HAC1 level, T2AH (filtered and raw), fan, water flow and T2 for the Pi afterheat control."""
         state = self.gateway_state
         mono, wall = time.monotonic(), time.time()
 
@@ -247,15 +247,40 @@ class ControllerRuntime:
             "t2ah_raw": robust_temperature(value for _at, value in samples),
             "fan_supply": self._safe_number(self._first(state, "fan_supply_percent", "supply_fan_percent"), 0, 100),
             "water_flow": self.onewire.by_role("water_flow"),
+            # The air before the coil (a 1-Wire T2; the unit's own T2 register repeats T2AH).
             "master": self.master.writes_allowed(),
         }
 
     # Controller values kept in the gateway state for the history (dashboard_server.HISTORY_FIELDS).
-    HISTORY_KEYS = ("afterheat_level", "afterheat_level_target", "afterheat_target")
+    # HAC1's level and the user's target in both modes; the Pi's decision (whole and
+    # continuous target level) only while it steers, else None ("HAC1 styrer selv").
+    HISTORY_KEYS = ("afterheat_level", "afterheat_level_target", "afterheat_level_wanted", "afterheat_target")
 
     def _publish_history_values(self, snapshot: dict[str, object]) -> None:
         for key in self.HISTORY_KEYS:
             self.gateway_state[key] = snapshot.get(key)
+
+    # HAC1 register 101 is only trusted while the master polls refresh it.
+    AFTERHEAT_LEVEL_MAX_AGE_SECONDS = 30.0
+
+    def _afterheat_valve(self) -> dict[str, object]:
+        """HAC1's afterheat output (register 101, 0..10 = 0-10 V to the valve) and the opening in %.
+
+        Each level is one volt, i.e. 10 % valve opening; None while the level is unknown or stale.
+        """
+        state = self.gateway_state
+        level = state.get("hac1_output_level")
+        stamp = state.get("hac1_output_level_monotonic")
+        fresh = (
+            isinstance(level, (int, float)) and not isinstance(level, bool)
+            and isinstance(stamp, (int, float))
+            and time.monotonic() - stamp <= self.AFTERHEAT_LEVEL_MAX_AGE_SECONDS)
+        if not fresh:
+            return {"actual_afterheat_level": None, "actual_afterheat_valve_percent": None}
+        return {
+            "actual_afterheat_level": level,
+            "actual_afterheat_valve_percent": int(max(0, min(100, round(float(level) * 10)))),
+        }
 
     def _with_room_overrides(self, rooms: dict[str, dict[str, object]]) -> dict[str, dict[str, object]]:
         """Room settings made in the WebUI win over what Home Assistant sends."""
@@ -1177,10 +1202,7 @@ class ControllerRuntime:
             "t2ah_rejected_samples": self.gateway_state.get("t2ah_rejected_samples", 0),
             "t2ah_last_raw_temperature": self.gateway_state.get("t2ah_last_raw_temperature"),
             "frost_rejected_samples": self.gateway_state.get("frost_rejected_samples", 0),
-            "actual_afterheat_level": (
-                self.gateway_state.get("hac1_output_level")
-                if isinstance(self.gateway_state.get("hac1_output_level_monotonic"), (int, float))
-                and time.monotonic() - self.gateway_state["hac1_output_level_monotonic"] <= 30 else None),
+            **self._afterheat_valve(),
             "frost_last_raw_temperature": self.gateway_state.get("frost_last_raw_temperature"),
             "t2ah_last_raw_age_seconds": (
                 round(time.monotonic() - self.gateway_state["t2ah_last_raw_sample_monotonic"], 1)

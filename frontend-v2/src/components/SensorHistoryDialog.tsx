@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { HistoryChart, type HistoryChartProps, type HistorySeries } from "./HistoryChart";
 import { requestJson } from "../lib/api";
-import { clean, withWaterDelta, type Sample } from "../lib/historyData";
+import { AFTERHEAT_CHART, afterheatLayers, clean, withAfterheatLines, withWaterDelta, type Sample } from "../lib/historyData";
 import "../styles/history.css";
 
 const AFTER = "heating_coil_after_temperature";
@@ -20,6 +20,8 @@ export interface SensorHistoryDef {
   band?: HistoryChartProps["band"];
   reference?: HistoryChartProps["reference"];
   strip?: HistoryChartProps["strip"];
+  /** The afterheat chart: target, the setpoint sent to HAC1, the valve opening and the control's decision. */
+  afterheat?: boolean;
   note?: string;
 }
 
@@ -40,9 +42,9 @@ export const SENSOR_HISTORY: Record<string, SensorHistoryDef> = {
   afterHeater: {
     title: "T2AH efter eftervarme", key: AFTER, minSpan: 4,
     band: { seriesKey: AFTER, minKey: `${AFTER}_min`, maxKey: `${AFTER}_max`, label: "Udsving" },
-    reference: { key: "afterheat_setpoint", label: "Setpunkt" },
-    strip: { key: "afterheat_active", label: "Ventil åben" },
-    note: "Udsving er laveste til højeste måling inden for hvert punkt. Striben viser, hvor stor en del af tiden ventilen var åben.",
+    reference: AFTERHEAT_CHART.goal,
+    afterheat: true,
+    note: AFTERHEAT_CHART.note,
   },
   frost: { title: "Frostføler · vandside", key: "heating_coil_frost_temperature", minSpan: 6 },
   flowWater: { title: "Eftervarmevand · Frem", key: "flow_temperature", minSpan: 6, related: WATER },
@@ -83,7 +85,7 @@ export function SensorHistoryDialog({ sensor, onClose }: { sensor: SensorHistory
         const result = await requestJson<{ samples: Sample[] }>(`/history.json?range=${range}`, { timeoutMs: 6000 });
         if (cancelled) return;
         const now = Math.floor(Date.now() / 1000);
-        setSamples(withWaterDelta(clean(Array.isArray(result.samples) ? result.samples : [])));
+        setSamples(withAfterheatLines(withWaterDelta(clean(Array.isArray(result.samples) ? result.samples : []))));
         setWindow({ from: now - (RANGES.find(item => item.value === range)?.seconds ?? 86400), to: now });
         setError("");
       } catch {
@@ -113,6 +115,11 @@ export function SensorHistoryDialog({ sensor, onClose }: { sensor: SensorHistory
   const mean = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
   const series = sensor.related ?? [{ key: sensor.key, label: sensor.title, slot: 1 as const }];
   const label = RANGES.find(item => item.value === range)?.label ?? "";
+  const layers = sensor.afterheat ? afterheatLayers(samples) : null;
+  // History from before HAC1's level was logged only knows whether the valve was open.
+  const strip = sensor.strip ?? (layers && !layers.hasValve ? AFTERHEAT_CHART.strip : undefined);
+  const command = layers?.showSent ? AFTERHEAT_CHART.sent : undefined;
+  const valve = layers?.hasValve ? AFTERHEAT_CHART.valve : undefined;
 
   return createPortal(
     <div className="sensor-history-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
@@ -132,8 +139,8 @@ export function SensorHistoryDialog({ sensor, onClose }: { sensor: SensorHistory
         </div>
         {error ? <p className="sensor-history-message" role="alert">{error}</p> : (
           <HistoryChart
-            samples={samples} series={series} unit={unit} decimals={decimals} height={280} minSpan={sensor.minSpan}
-            band={sensor.band} reference={sensor.reference} strip={sensor.strip}
+            samples={samples} series={series} unit={unit} decimals={decimals} height={valve ? 300 : 280} minSpan={sensor.minSpan}
+            band={sensor.band} reference={sensor.reference} command={command} strip={strip} valve={valve}
             range={window_} hoverTs={hover} onHover={setHover} loading={loading} title={sensor.title}
           />
         )}

@@ -5,7 +5,7 @@ import { requestJson } from "../lib/api";
 import { usePollHealth, useSinglePoll } from "../lib/connection";
 import { bypassTravel, formatRemaining } from "../lib/bypass";
 import { frostLockStatus, readFrostLock } from "../lib/frostLock";
-import { controlLabel, formatError, formatLevel, formatTarget, modeLabel, nextActionText, readAfterheatControl, type AfterheatControl } from "../lib/afterheatControl";
+import { controlLabel, formatError, formatLevel, formatPercent, formatTarget, modeLabel, nextActionText, readAfterheatControl, readValvePercent, valveText, type AfterheatControl } from "../lib/afterheatControl";
 import type { InfoRow } from "../components/InfoList";
 import "../styles/panels.css";
 
@@ -51,13 +51,14 @@ export function afterheatControlRows(control: AfterheatControl): InfoRow[] {
   if (!control.known) return [];
   const pi = control.active === "pi";
   const level = control.level === null ? "—" : `${formatLevel(control.level)}/${control.levelMax}`;
+  const valve = control.valvePercent !== null ? ` · ${valveText(control.valvePercent).toLowerCase()}` : "";
   const wanted = pi && control.levelTarget !== null
     ? ` · mål ${formatLevel(control.levelTarget)}${control.levelWanted !== null ? ` (${formatLevel(control.levelWanted, 1)})` : ""}`
     : "";
   const chosen = control.mode !== null && control.active !== null && control.active !== control.mode ? ` · valgt: ${modeLabel(control.mode)}` : "";
   const sent = control.hac1Setpoint !== null ? ` · HAC1-setpunkt ${formatLevel(control.hac1Setpoint)} °C` : "";
   return [
-    { label: "HAC1 trin", value: `${level}${wanted}` },
+    { label: "HAC1 trin", value: `${level}${wanted}${valve}` },
     { label: "Styring", value: `${controlLabel(control)}${chosen}${sent}`, tone: control.active === "fallback" ? "warn" : undefined },
     { label: "Næste handling", value: pi ? nextActionText(control, control.nextTickSeconds) : "—" },
     { label: "Mål og afvigelse", value: control.target === null ? "—" : `${formatTarget(control.target)} · ${formatError(control.error)}` },
@@ -171,6 +172,8 @@ export function TechniquePage() {
             ]}/>
             <InfoList rows={[
               { label: "Eftervarme aktiv", value: bool(controller.actual_afterheat, "Ja", "Nej") },
+              // HAC1's level × 10 % (0-10 V to the valve); register 209 above is only on/off.
+              { label: "Ventilåbning", value: formatPercent(readValvePercent(controller)) },
               // The Pi holds a water coil on while it freezes; see the settings.
               { label: "Frostlås", value: frostLockStatus(readFrostLock(controller)) },
               ...afterheatControlRows(readAfterheatControl(controller)),

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { ArrowDown, ArrowUp, Minus } from "lucide-react";
-import { controlLabel, formatLevel, formatTarget, levelText, nextActionText, type AfterheatControl } from "../lib/afterheatControl";
+import { controlLabel, formatLevel, formatPercent, formatTarget, levelText, nextActionText, valveText, type AfterheatControl } from "../lib/afterheatControl";
 
 /**
  * Counts down from the last snapshot value once a second, so the countdown
@@ -21,11 +21,11 @@ export function useCountdown(seconds: number | null): number | null {
 }
 
 /** Ten segments for HAC1's levels 1..10, the current level lit and the target marked. */
-export function AfterheatLevelBar({ level, target, wanted, max }: { level: number | null; target: number | null; wanted: number | null; max: number }) {
+export function AfterheatLevelBar({ level, target, wanted, max, valvePercent = null }: { level: number | null; target: number | null; wanted: number | null; max: number; valvePercent?: number | null }) {
   const segments = Array.from({ length: max }, (_, index) => index + 1);
   const marker = wanted ?? target;
   return <div className="afterheat-level-bar" role="meter" aria-label="HAC1-trin" aria-valuemin={0} aria-valuemax={max}
-    aria-valuenow={level ?? undefined} aria-valuetext={level === null ? "Ukendt" : `Trin ${level} af ${max}${target !== null ? `, mål ${target}` : ""}`}>
+    aria-valuenow={level ?? undefined} aria-valuetext={level === null ? "Ukendt" : `Trin ${level} af ${max}${valvePercent !== null ? `, ventilåbning ${formatPercent(valvePercent)}` : ""}${target !== null ? `, mål ${target}` : ""}`}>
     {segments.map(step => <i key={step} className={[
       level !== null && step <= level ? "is-lit" : "",
       target !== null && step === target && target !== level ? "is-target" : "",
@@ -45,10 +45,10 @@ export function AfterheatLevelPanel({ control }: { control: AfterheatControl }) 
   const ActionIcon = control.nextAction === "up" ? ArrowUp : control.nextAction === "down" ? ArrowDown : Minus;
   return <section className={`afterheat-level tone-${control.active ?? "unknown"}`} aria-label="Eftervarmens trin">
     <div className="afterheat-level-head">
-      <strong>{levelText(control)}</strong>
+      <strong>{levelText(control)}<span className="afterheat-level-valve"> · {valveText(control.valvePercent)}</span></strong>
       <span className="afterheat-level-who">{controlLabel(control)}</span>
     </div>
-    <AfterheatLevelBar level={control.level} target={pi ? control.levelTarget : null} wanted={pi ? control.levelWanted : null} max={control.levelMax}/>
+    <AfterheatLevelBar level={control.level} target={pi ? control.levelTarget : null} wanted={pi ? control.levelWanted : null} max={control.levelMax} valvePercent={control.valvePercent}/>
     <div className="afterheat-level-facts">
       <span><small>Mål</small><strong>{formatTarget(control.target)}</strong></span>
       {pi && <span><small>Mål-trin</small><strong>{formatLevel(control.levelWanted, 1)}</strong></span>}
