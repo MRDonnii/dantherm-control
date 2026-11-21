@@ -13,19 +13,22 @@ import { TablerIcon, type TablerName } from "./TablerIcon";
 
 type NavItem = readonly [to: string, label: string, icon: TablerName, permission: Permission | null, group: string | null, short?: string];
 
-// Fleetdeck-menuen: tre faste punkter, derefter grupperne "Teknik og drift" og "Opsætning".
+// Fleetdeck-menuen: tre faste punkter til daglig brug, derefter grupperne
+// "Opsætning" (alt der styrer anlægget), "Teknik og drift" (se hvad det gør)
+// og "System og adgang" (Pi'en, opdateringer og hvem der må tale med den).
 export const navigation = [
   ["/overview", "Overblik", "home", null, null],
   ["/history", "Historik", "history", null, null],
   ["/schedule", "Ugeplan", "calendar-time", null, null],
-  ["/technique", "Teknik", "gauge", "diagnostics", "Teknik og drift"],
-  ["/system", "System", "box", "system", "Teknik og drift"],
-  ["/home-assistant", "Home Assistant", "bolt", "configure", "Teknik og drift", "HA"],
-  ["/diagnostics", "Diagnostik", "tool", "diagnostics", "Teknik og drift"],
-  ["/balancing", "Indregulering", "ruler", "configure", "Teknik og drift"],
-  ["/updates", "Opdateringer", "refresh", "system", "Teknik og drift"],
   ["/settings", "Indstillinger", "settings", null, "Opsætning"],
-  ["/access", "Adgang for programmer", "key", "users", "Opsætning"],
+  ["/rooms", "Rum", "door", "configure", "Opsætning"],
+  ["/balancing", "Indregulering", "ruler", "configure", "Opsætning"],
+  ["/technique", "Teknik", "gauge", "diagnostics", "Teknik og drift"],
+  ["/diagnostics", "Diagnostik", "tool", "diagnostics", "Teknik og drift"],
+  ["/home-assistant", "Home Assistant", "bolt", "configure", "System og adgang", "HA"],
+  ["/access", "Adgang for programmer", "key", "users", "System og adgang"],
+  ["/system", "System", "box", "system", "System og adgang"],
+  ["/updates", "Opdateringer", "refresh", "system", "System og adgang"],
 ] as const satisfies readonly NavItem[];
 
 /** Pages that need a role above a plain user. */
@@ -39,11 +42,12 @@ const routeTitles: Record<string, [string, string]> = {
   "/schedule": ["Ugeplan", "Ugens rytme, perioder og ferie"],
   "/technique": ["Teknik", "Controller, bus og hardwarestatus"],
   "/system": ["System", "Raspberry Pi, services og gateway"],
-  "/home-assistant": ["Home Assistant", "Integration og smart-data"],
+  "/home-assistant": ["Home Assistant", "Forbindelse, integration og data fra Home Assistant"],
   "/diagnostics": ["Diagnostik", "Fejlsøgning og rå systemdata"],
   "/balancing": ["Indregulering", "Luftmængder pr. rum, måling og rapport"],
   "/updates": ["Opdateringer", "Software, kanal og failsafe-opdatering"],
-  "/settings": ["Indstillinger", "Udseende, brugere, mail og lokale præferencer"],
+  "/settings": ["Indstillinger", "Ventilation, luftkvalitet, varme og køl, følere, konto og brugere"],
+  "/rooms": ["Rum", "Rum og følere fra Home Assistant i styringen"],
   "/access": ["Adgang for programmer", "Hvem og hvad der må tale med Dantherm Control uden at logge ind med kodeord"],
 };
 
@@ -58,6 +62,7 @@ const searchWords: Record<string, string> = {
   "/diagnostics": "fejl log hændelser alarmer rapport",
   "/balancing": "luftmængde rum måling rapport indregulering",
   "/updates": "version opdatering beta stable kanal",
+  "/rooms": "rum områder følere sensorer temperatur fugt co2 pm2.5 garage badeværelse soveværelse køkken brændeovn udeluft",
   "/settings": "udseende tema sprog brugere mail adgangskode konto eftervarme ventilatortrin",
 };
 

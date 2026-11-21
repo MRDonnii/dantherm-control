@@ -220,12 +220,15 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
 
             def do_GET(self):
                 parsed = urlparse(self.path)
-                if parsed.path in ("/api/controller/state", "/api/controller/access-health") \
+                if parsed.path in ("/api/controller/state", "/api/controller/access-health", "/api/controller/rooms") \
                         and self.headers.get("Authorization", "").startswith("Bearer "):
                     result = self._api_key("GET", parsed.path)
                     if result.ok:
                         if parsed.path == "/api/controller/access-health":
                             return self._json(dashboard.api_keys.health())
+                        if parsed.path == "/api/controller/rooms":
+                            with_catalog = parse_qs(parsed.query).get("catalog", ["1"])[0] != "0"
+                            return self._json(dashboard.controller_runtime.rooms_view(include_catalog=with_catalog))
                         return self._json(self._controller_state(dashboard.controller_runtime.snapshot(), parsed))
                     # A browser with a session still gets the page's own answer below.
                     if parsed.path == "/api/controller/access-health" or (
@@ -339,6 +342,10 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                     if self._require("mail") is None:
                         return
                     self._json(dashboard.mail.public())
+                elif parsed.path == "/api/controller/rooms":
+                    # The room setup and HA's sensor catalogue for the page "Rum".
+                    if self._require("configure") is not None:
+                        self._json(dashboard.controller_runtime.rooms_view())
                 elif parsed.path == "/api/controller/state":
                     self._json(self._controller_state({**dashboard.controller_runtime.snapshot(), **dashboard.ha_link()}, parsed))
                 elif parsed.path in ("/state.json", "/api"):
@@ -481,7 +488,7 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                 # intent and room measurements only; Pi remains source of truth.
                 # The settings endpoint also takes an administrator API key.
                 api_config = self.path == "/api/controller/config" and self.headers.get("Authorization", "").startswith("Bearer ")
-                if api_config or self.path in ("/api/controller/heartbeat", "/api/controller/command", "/api/controller/inputs", "/api/controller/signals"):
+                if api_config or self.path in ("/api/controller/heartbeat", "/api/controller/command", "/api/controller/inputs", "/api/controller/signals", "/api/controller/ha-catalog"):
                     result = self._api_key("POST", self.path)
                     if not result.ok:
                         return self._api_key_error(result)
@@ -493,6 +500,8 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                             return self._json(dashboard.controller_runtime.configure(data, source=result.source))
                         if self.path == "/api/controller/signals":
                             return self._json(dashboard.controller_runtime.external_signals(data))
+                        if self.path == "/api/controller/ha-catalog":
+                            return self._json(dashboard.controller_runtime.ha_catalog_input(data))
                         return self._json(dashboard.controller_runtime.room_inputs(data))
                     except ControllerError as error:
                         return self._json_error(400, str(error))

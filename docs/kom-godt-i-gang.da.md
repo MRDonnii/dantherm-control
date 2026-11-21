@@ -98,10 +98,10 @@ Nu har Home Assistant temperaturer, blæsere, CO₂, fugt, bypass, filter og ala
 3. I trinnet **Raspberry Pi-controller og Smart Auto** skriver du Pi'ens IP, port **8080** og tokenet. Slå **Brug Home Assistant-sensorer i Smart Auto** til. Vælg evt. også:
    - **Effektmåler på anlægget** (W) – giver forbrug, SFP og filtertjek;
    - **Dantherms elforbrug i dag**, **Elpris** og **Varmepris** – se trin 8.
-4. I menuen **Controlleropsætning**:
-   - **Smart Auto-rum → Tilføj rum**: rumnavn, *Aktiv*, *Brug til styring*, prioritet (`auto`, `low`, `normal`, `high`, `critical`) og de sensorer, rummet har (temperatur, luftfugtighed, CO₂). Rum med *bad*, *bath* eller *brus* i navnet får automatisk badeværelsets egen fugtpolitik.
-   - **Drift, Smart Auto og eftervarme** og **Ventilationsprofiler** (trinenes gear) kan også justeres herfra.
-   - **Gem integrationsindstillinger**.
+4. Tryk **Gem integrationsindstillinger** i menuen **Controlleropsætning**. Home Assistant sender nu alle sine områder med temperatur-, fugt-, CO₂- og PM2.5-følere til Pi'en.
+   Rum og alle ventilationsindstillinger sættes op ét sted, i WebUI'en:
+   - **Opsætning → Rum**: tryk **Tilføj alle rum fra HA**, tjek rumtyperne (garagen bliver *Ikke ventileret*, badeværelser får udtørring), vælg hvor anlæggets egen føler sidder, og tryk **Gem rum**. Rum, der var sat op i integrationen før, flyttes hertil én gang.
+   - **Opsætning → Indstillinger**: trin, grænser, fugt og CO₂, eftervarme, nat og frikøling.
 5. Sæt driftstilstanden til **Smart Auto**.
 
 Siden **Home Assistant** i WebUI'en viser nu hvert rum, dets værdier og om data er friske:

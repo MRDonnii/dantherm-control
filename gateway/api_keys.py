@@ -19,8 +19,8 @@ Assistant integration keeps working without any change. The move is fail-safe:
 
 Scopes and the controller endpoints they open:
 
-* read:    GET  /api/controller/state
-* control: read + POST /api/controller/heartbeat, /inputs, /signals, /command
+* read:    GET  /api/controller/state, /api/controller/rooms
+* control: read + POST /api/controller/heartbeat, /inputs, /signals, /command, /ha-catalog
 * admin:   control + POST /api/controller/config (settings, like a technician)
 
 No key can manage users, keys, the Kontrolrum sign-in or the Pi itself.
@@ -51,6 +51,10 @@ ENDPOINT_SCOPES = {
     ("POST", "/api/controller/inputs"): "control",
     ("POST", "/api/controller/signals"): "control",
     ("POST", "/api/controller/command"): "control",
+    # Home Assistant's areas and sensors for the WebUI page "Rum", and the
+    # room setup HA reads back to know which sensors to send.
+    ("POST", "/api/controller/ha-catalog"): "control",
+    ("GET", "/api/controller/rooms"): "read",
     ("POST", "/api/controller/config"): "admin",
     # Lets update.sh confirm after an update that the keys survived.
     ("GET", "/api/controller/access-health"): "read",

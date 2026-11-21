@@ -8,17 +8,21 @@ describe("Bathroom settings", () => {
 
   it("saves the bathroom settings with the controller", () => {
     for (const key of ["bathroom_rh_setpoint", "bathroom_rh_hysteresis", "bathroom_max_level", "bathroom_rise_percent",
-      "bathroom_rise_minutes", "bathroom_night_drying", "bathroom_max_minutes", "bathroom_rooms"]) {
+      "bathroom_rise_minutes", "bathroom_night_drying", "bathroom_max_minutes"]) {
       expect(CONTROLLER_KEYS).toContain(key);
     }
+    // Per-room types and limits moved to the page Rum; never written from here any more.
+    expect(CONTROLLER_KEYS).not.toContain("bathroom_rooms");
   });
 
-  it("lives under Fugt og tør luft with common limits, shower detection and a room table", () => {
+  it("lives under Badeværelse og tør luft with common limits, shower detection and a link to Rum", () => {
     window.location.hash = "#/settings?section=humidity";
     const markup = renderToStaticMarkup(<SettingsPage/>);
     for (const text of ["Badeværelse", "Højeste trin ved udtørring", "Bad opdages før grænsen nås", "Tør også ud om natten", "Maks. udtørringstid", "Hvilke rum der er badeværelser"]) {
       expect(markup).toContain(text);
     }
+    expect(markup).toContain('href="#/rooms"');
+    expect(markup).not.toContain("bathroom-table");
   });
 
   it("is no longer hidden under Luftkvalitet", () => {

@@ -8,7 +8,7 @@ Denne guide installerer hele kæden på én Linux-maskine:
 4. lokal historik og systemdiagnostik;
 5. login og en separat allowlistet admin-helper;
 6. valgfri DS18B20/OneWire-service;
-7. controller-API til Home Assistant med dynamiske Smart Auto-rum.
+7. controller-API til Home Assistant; rummene sættes op i WebUI'en under Opsætning → Rum.
 
 WebUI-gatewayen åbner serieporten én gang. Home Assistant forbinder via TCP og må ikke åbne samme USB-adapter direkte.
 

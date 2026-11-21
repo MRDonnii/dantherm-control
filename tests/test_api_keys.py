@@ -190,9 +190,10 @@ class KeyTests(unittest.TestCase):
             keys = store(tmp)
             made = {scope: keys.create(scope, scope)[0] for scope in ("read", "control", "admin")}
             expected = {
-                "read": {"/api/controller/state", "/api/controller/access-health"},
+                "read": {"/api/controller/state", "/api/controller/access-health", "/api/controller/rooms"},
                 "control": {"/api/controller/state", "/api/controller/access-health", "/api/controller/heartbeat",
-                            "/api/controller/inputs", "/api/controller/signals", "/api/controller/command"},
+                            "/api/controller/inputs", "/api/controller/signals", "/api/controller/command",
+                            "/api/controller/ha-catalog", "/api/controller/rooms"},
                 "admin": {path for _method, path in ENDPOINT_SCOPES},
             }
             for scope, key in made.items():
@@ -345,6 +346,8 @@ class FakeRuntime:
     def heartbeat(self, demand): self.calls.append(("heartbeat", demand)); return {"ha_demand": demand}
     def room_inputs(self, payload): self.calls.append(("inputs", payload)); return {"enabled": True}
     def external_signals(self, payload): self.calls.append(("signals", payload)); return {"ok": True}
+    def ha_catalog_input(self, payload): self.calls.append(("catalog", payload)); return {"rooms": [], "catalog": []}
+    def rooms_view(self, include_catalog=True): self.calls.append(("rooms", include_catalog)); return {"rooms": [], "catalog": []}
 
 
 class HttpTests(unittest.TestCase):
@@ -412,6 +415,20 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.call("POST", "/api/controller/signals", OLD, {})[0], 200)
         # The old token only had control; settings need an administrator key.
         self.assertEqual(self.call("POST", "/api/controller/config", OLD, {"mode": "auto"})[0], 403)
+
+    def test_room_setup_endpoints(self):
+        # Home Assistant (control key) sends its catalogue and reads the room setup back.
+        self.assertEqual(self.call("POST", "/api/controller/ha-catalog", OLD, {"areas": []})[0], 200)
+        self.assertEqual(self.runtime.calls[-1], ("catalog", {"areas": []}))
+        status, view, _ = self.call("GET", "/api/controller/rooms", OLD)
+        self.assertEqual((status, view), (200, {"rooms": [], "catalog": []}))
+        self.assertEqual(self.call("GET", "/api/controller/rooms?catalog=0", OLD)[0], 200)
+        self.assertEqual(self.runtime.calls[-1], ("rooms", False))
+        self.assertEqual(self.call("POST", "/api/controller/ha-catalog", None, {"areas": []})[0], 401)
+        # In the WebUI only technicians and administrators see it.
+        self.assertEqual(self.admin(self.login("tekniker"), "GET", "/api/controller/rooms")[0], 200)
+        self.server.auth.create_user("bruger", PASSWORD, "user")
+        self.assertEqual(self.admin(self.login("bruger"), "GET", "/api/controller/rooms")[0], 403)
 
     def test_keys_are_managed_by_administrators_and_shown_once(self):
         tech = self.login("tekniker")

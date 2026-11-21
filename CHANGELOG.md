@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **Rooms are set up on the Pi: new page Opsætning → Rum.** Home Assistant sends all its areas with temperature,
+  humidity, CO₂ and PM2.5 sensors (`POST /api/controller/ha-catalog`); the page lists every room with live values, a
+  control toggle, room type (normal, bedroom, bathroom, kitchen, stove, outdoor, extract room, not ventilated),
+  priority, sensor pickers grouped by area, per-bathroom limits and the room the unit's own sensor sits in. "Tilføj alle
+  rum fra HA" adds every area with temperature or humidity (a garage as not ventilated). All enabled rooms now take part
+  in CO₂/RH control, bathroom drying, the dry-air RH average and the indoor temperature average; excluded rooms are
+  ignored everywhere and measuring rooms (stove, outdoor, extract) only serve as sources. The rooms from the HA options
+  flow move to the Pi once. HA reads the setup back (`GET /api/controller/rooms`).
+- **Menus regrouped.** Main menu: Opsætning (Indstillinger, Rum, Indregulering), Teknik og drift (Teknik, Diagnostik),
+  System og adgang (Home Assistant, Adgang for programmer, System, Opdateringer). Indstillinger is grouped into
+  Ventilation, Luftkvalitet, Varme og køl, Følere and Konto og system. The lowest/highest automatic level, the wait
+  before stepping down, the hold time for high levels and the RH/CO₂ per level – until now only in Home Assistant – are
+  on Indstillinger. The per-room bathroom table moved to Rum.
+
 ## 1.10.2
 
 - **Afterheat under the frost lock: on/off and cycling at the low end.** The coil never cools the air, so with the air

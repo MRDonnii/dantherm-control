@@ -18,6 +18,7 @@ import fan_steps
 import week_schedule
 from fan_steps import MAX_LEVEL, MAX_LEVEL_HOURS, NOMINAL_LEVEL, STEP_COUNTS
 from onewire_extras import clean_roles
+from room_setup import RoomSetupError, clean_rooms
 from afterheat_pilot import (
     CONTROL_MODES as AFTERHEAT_CONTROL_MODES,
     PI_BAND_DEFAULT,
@@ -326,6 +327,11 @@ class ControllerState:
         # Per room, set in the WebUI; wins over what Home Assistant sends:
         # {room: {"type": "auto|bathroom|normal", "rh_setpoint", "rh_hysteresis", "max_level"}}
         "bathroom_rooms": {},
+        # Rooms set up on the WebUI page "Rum" (see room_setup.py): which Home
+        # Assistant sensors belong to each room, its type, priority and control.
+        "room_setup": [],
+        # True once the rooms from the old HA options flow have been moved here.
+        "room_setup_migrated": False,
         "vacation_enabled": False,
         "vacation_level": 1,
         "vacation_until": None,
@@ -756,6 +762,11 @@ class ControllerState:
             self.data["bathroom_rooms"] = self._clean_bathroom_rooms(self.data.get("bathroom_rooms"))
         except ControllerError:
             self.data["bathroom_rooms"] = {}
+        try:
+            self.data["room_setup"] = clean_rooms(self.data.get("room_setup"), max_level=self.max_level())
+        except RoomSetupError:
+            self.data["room_setup"] = []
+        self.data["room_setup_migrated"] = self.data.get("room_setup_migrated") is True
 
     ADVANCED_FLOATS = (
         ("house_area_m2", 20.0, 1000.0), ("ceiling_height_m", 1.8, 6.0),
@@ -1067,7 +1078,7 @@ class ControllerState:
                 "cooling_room_setpoint", "cooling_hysteresis", "cooling_outdoor_min",
                 "cooling_min_delta", "cooling_level", "cooling_start_delay_seconds",
                 "cooling_min_on_seconds", "cooling_min_off_seconds", "cooling_transition_timeout_seconds",
-                *self.ADVANCED_KEYS,
+                *self.ADVANCED_KEYS, "room_setup",
             }
             unknown = set(patch) - allowed
             if unknown:
@@ -1513,6 +1524,13 @@ class ControllerState:
             self.data["pm25_ignored_rooms"] = self._clean_room_names(patch["pm25_ignored_rooms"])
         if "bathroom_rooms" in patch:
             self.data["bathroom_rooms"] = self._clean_bathroom_rooms(patch["bathroom_rooms"])
+        if "room_setup" in patch:
+            try:
+                self.data["room_setup"] = clean_rooms(patch["room_setup"], max_level=self.max_level())
+            except RoomSetupError as error:
+                raise ControllerError(str(error)) from error
+            # Saved in the WebUI: the old HA rooms are never moved in again.
+            self.data["room_setup_migrated"] = True
 
     def _clean_bathroom_rooms(self, value: object) -> dict[str, dict[str, object]]:
         """Per-room bathroom settings; empty entries are dropped. Blank = use the common value."""
@@ -1692,6 +1710,8 @@ class ControllerState:
             self._expire_bonfire(now)
             self._expire_max_level(now)
             result = dict(self.data)
+            # The room list is read from GET /api/controller/rooms; the state polled every few seconds keeps a count.
+            result["room_setup_count"] = len(result.pop("room_setup", None) or [])
             result["profiles"] = _copy_profiles(self.data["profiles"])
             result["schedule"] = _copy_schedule(self.data["schedule"])
             seen = result.get("ha_last_seen")

@@ -8,6 +8,7 @@ import { DiagnosticsPage } from "./pages/DiagnosticsPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { HomeAssistantPage } from "./pages/HomeAssistantPage";
 import { OverviewPage } from "./pages/OverviewPage";
+import { RoomsPage } from "./pages/RoomsPage";
 import { SchedulePage } from "./pages/SchedulePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SystemPage } from "./pages/SystemPage";
@@ -37,6 +38,10 @@ export function App() {
     {guarded("/balancing", <BalancingPage/>)}
     {guarded("/updates", <UpdatesPage />)}
     <Route path="/settings" element={<SettingsPage/>}/>
+    {guarded("/rooms", <RoomsPage/>)}
+    {/* Danske genveje til siderne. */}
+    <Route path="/rum" element={<Navigate to="/rooms" replace/>}/>
+    <Route path="/indstillinger" element={<Navigate to="/settings" replace/>}/>
     {guarded("/access", <AccessPage/>)}
     <Route path="*" element={<Navigate to="/overview" replace/>}/>
   </Routes></AppShell>;

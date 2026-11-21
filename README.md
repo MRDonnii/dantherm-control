@@ -240,11 +240,8 @@ Home Assistant now has temperatures, fans, CO₂, humidity, bypass, filter and a
    - **Use Home Assistant sensors in Smart Auto** — turn on to send room sensors;
    - **Power meter on the unit** — live W, used for SFP and the filter power check;
    - **Unit energy today**, **Electricity price**, **Heat price** — see [Energy and kr values](#energy-and-kr-values).
-4. In the menu that follows:
-   - **Drift, Smart Auto og eftervarme** — mode, levels, CO₂/RH setpoints, afterheat;
-   - **Ventilationsprofiler** — the steps: step 3 and step 4 per fan with four Dantherm steps, every step with six steps;
-   - **Smart Auto-rum** — add rooms: name, *active*, *use for control*, priority (`auto`, `low`, `normal`, `high`, `critical`) and optional temperature, humidity and CO₂ sensors;
-   - **Gem integrationsindstillinger** — saves everything.
+4. **Gem integrationsindstillinger** in the menu that follows. Home Assistant now sends all its areas with temperature, humidity, CO₂ and PM2.5 sensors to the Pi.
+   Rooms and every ventilation setting are set up in one place, the WebUI: **Opsætning → Rum** (press **Tilføj alle rum fra HA**, check the types – a garage becomes *Ikke ventileret* – and save) and **Opsætning → Indstillinger** for mode limits, steps, humidity/CO₂, afterheat, night and free cooling. Rooms set up in older versions of the integration are moved to the Pi once.
 5. Set the mode to **Smart Auto** (in the WebUI or Home Assistant).
 
 The Pi now combines its own CO₂/humidity with the Home Assistant rooms and ventilates for the worst relevant room. Rooms named with *bad*, *bath* or *brus* get the bathroom humidity policy. Rooms with *use for control* off are shown but do not steer. The **Home Assistant** page in the WebUI shows each room's values and whether the input is fresh:

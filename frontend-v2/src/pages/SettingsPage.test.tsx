@@ -16,7 +16,7 @@ describe("SettingsPage", () => {
 
   it("groups settings into named sections with Danish help by default", () => {
     const markup = renderToStaticMarkup(<SettingsPage/>);
-    for (const label of ["Følere", "Hus og luftmængde", "Luftkvalitet", "Fugt og tør luft", "Eftervarme", "Frikøling", "Pejs og brændeovn", "Brugerflade", "Sikkerhed"]) {
+    for (const label of ["Følere og målerum", "Trin og luftmængde", "Hus og luftmængde", "Fugt og CO₂", "Badeværelse og tør luft", "Eftervarme og frost", "Frikøling og bypass", "Pejs og brændeovn", "Brugerflade", "Sikkerhed"]) {
       expect(markup).toContain(label);
     }
     expect(markup).toContain("Grundtrin");
@@ -24,6 +24,26 @@ describe("SettingsPage", () => {
     expect(markup).toContain("Udsugning over indblæsning");
     expect(markup).toContain(">Manuel<");
     expect(markup).toContain('aria-current="page"');
+  });
+
+  it("groups the side menu under clear headings and links to the page Rum", () => {
+    const markup = renderToStaticMarkup(<SettingsPage/>);
+    const groups = [...markup.matchAll(/class="settings-nav-group">([^<]+)</g)].map(match => match[1]);
+    expect(groups).toEqual(["Ventilation", "Luftkvalitet", "Varme og køl", "Følere", "Konto og system"]);
+    expect(markup).toContain('href="#/rooms"');
+  });
+
+  it("has the automatic limits and response times that used to live in Home Assistant", () => {
+    for (const key of ["local_min_level", "local_max_level", "downshift_delay_seconds", "boost_hold_seconds", "auto_step_rh", "auto_step_co2"]) {
+      expect(CONTROLLER_KEYS).toContain(key);
+    }
+    const markup = renderToStaticMarkup(<SettingsPage/>);
+    for (const label of ["Grænser og reaktionstid", "Laveste trin", "Højeste trin", "Vent før der skrues ned", "Hold et højt trin mindst"]) expect(markup).toContain(label);
+    window.location.hash = "#/settings?section=air";
+    const air = renderToStaticMarkup(<SettingsPage/>);
+    expect(air).toContain("Fugt pr. trin");
+    expect(air).toContain("CO₂ pr. trin");
+    window.location.hash = "";
   });
 
   it("follows the chosen language", () => {

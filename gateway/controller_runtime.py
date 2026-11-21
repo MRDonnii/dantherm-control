@@ -20,6 +20,7 @@ from pathlib import Path
 from advanced_control import absolute_humidity, fan_curve, fit_fan_curve, side_constants, source_room, supply_after_core, supply_air_metrics
 from air_balance import HeatBalanceLearner, adopt, balance_from_temperatures, summarize, window_record
 from onewire_extras import OneWireExtras
+import room_setup
 from afterheat_pilot import robust_temperature
 from diagnostics import Diagnostics
 from controller_core import AFTERHEAT_OUTDOOR_CUTOFF_C, ControllerEngine, ControllerError, ControllerState, HardwareAdapter
@@ -76,6 +77,10 @@ class ControllerRuntime:
         self._last_master = self.master.master
 
         self.smart_rooms: dict[str, dict[str, object]] = {}
+        # Home Assistant's areas and their sensors (POST /api/controller/ha-catalog),
+        # for the sensor pickers on the WebUI page "Rum". Kept in memory; HA resends it.
+        self.ha_catalog: list[dict[str, object]] = []
+        self.ha_catalog_received_at: float | None = None
         self.smart_inputs_received_at: float | None = None
         self.smart_inputs_valid_for = 180
         self._room_rh_history: dict[str, deque[tuple[float, float]]] = defaultdict(deque)
@@ -284,13 +289,23 @@ class ControllerRuntime:
             "actual_afterheat_valve_percent": int(max(0, min(100, round(float(level) * 10)))),
         }
 
+    def _room_setup(self) -> dict[str, dict[str, object]]:
+        """The rooms set up on the WebUI page "Rum", keyed by folded name."""
+        return room_setup.by_name(self.config.data.get("room_setup") or [])
+
     def _with_room_overrides(self, rooms: dict[str, dict[str, object]]) -> dict[str, dict[str, object]]:
-        """Room settings made in the WebUI win over what Home Assistant sends."""
+        """Room settings made in the WebUI win over what Home Assistant sends.
+
+        The room setup (page "Rum") wins over the older per-room bathroom
+        settings (``bathroom_rooms``), which still work for rooms not set up there.
+        """
         overrides = self.config.data.get("bathroom_rooms") or {}
+        setup = self._room_setup()
         result = {}
         for name, values in rooms.items():
             values = dict(values)
-            override = overrides.get(name)
+            mapped = setup.get(name.casefold())
+            override = None if mapped else overrides.get(name)
             if override:
                 if override.get("type", "auto") != "auto":
                     values["room_type"] = override["type"]
@@ -298,6 +313,12 @@ class ControllerRuntime:
                     if override.get(key) is not None:
                         values[key] = override[key]
                 values["webui_override"] = True
+            if mapped:
+                values.update(room_setup.room_kind_flags(mapped))
+                limits = {key: mapped[key] for key in ("rh_setpoint", "rh_hysteresis", "max_level") if mapped.get(key) is not None}
+                values.update(limits)
+                if limits:
+                    values["webui_override"] = True
             result[name] = values
         return result
 
@@ -310,6 +331,12 @@ class ControllerRuntime:
         for key in ("fireplace_auto_source", "outdoor_humidity_source", "duct_extract_source"):
             name = source_room(self.config.data.get(key))
             if name:
+                names.add(name)
+        # Measuring rooms (stove, outdoor, extract) and excluded rooms from the room setup.
+        setup = self._room_setup()
+        for name in set(self.smart_rooms) | {str(room["name"]) for room in setup.values()}:
+            room = setup.get(name.casefold())
+            if room and room.get("type") not in room_setup.INDOOR_TYPES:
                 names.add(name)
         return names
 
@@ -598,8 +625,23 @@ class ControllerRuntime:
             local["humidity"] = round(rh, 2)
         if temp is not None:
             local["temperature"] = round(temp, 2)
-        if any(key in local for key in ("co2", "humidity", "temperature")):
+        if not any(key in local for key in ("co2", "humidity", "temperature")):
+            return combined
+        # The room the unit's own sensor sits in (page "Rum"): its HA sensors win,
+        # the unit fills in what HA does not measure there.
+        home = next((room for room in self._room_setup().values()
+                     if room.get("unit_sensor") and room.get("type") in room_setup.INDOOR_TYPES
+                     and room.get("enabled", True)), None)
+        if home is None:
             combined["HCH5 / lokale sensorer"] = local
+            return combined
+        name = next((key for key in combined if key.casefold() == str(home["name"]).casefold()), str(home["name"]))
+        values = dict(combined.get(name) or {**room_setup.room_kind_flags(home), "source": "unit"})
+        for key in ("co2", "humidity", "temperature"):
+            if key in local and not isinstance(values.get(key), (int, float)):
+                values[key] = local[key]
+        values["unit_sensor"] = True
+        combined[name] = values
         return combined
 
     @classmethod
@@ -629,6 +671,7 @@ class ControllerRuntime:
             raise ControllerError("valid_for_s skal være 30..900 sekunder")
 
         now = time.time()
+        setup = self._room_setup()
         sanitized: dict[str, dict[str, object]] = {}
         for raw_name, raw_values in rooms.items():
             if not isinstance(raw_values, dict):
@@ -636,6 +679,17 @@ class ControllerRuntime:
             name = str(raw_name).strip()[:64]
             if not name:
                 raise ControllerError("Rumnavne må ikke være tomme")
+            mapped = setup.get(name.casefold())
+            if mapped is not None:
+                # The room setup on the Pi decides; an excluded or switched-off
+                # room (e.g. a garage without ventilation) is ignored everywhere.
+                if mapped.get("type") == "excluded" or mapped.get("enabled") is False:
+                    continue
+                name = str(mapped["name"])
+                raw_values = {**raw_values, **room_setup.room_kind_flags(mapped)}
+                raw_values.pop("room_kind", None)
+                raw_values.pop("room_id", None)
+                raw_values.pop("area_id", None)
             enabled = raw_values.get("enabled", True)
             control = raw_values.get("control", True)
             priority = raw_values.get("priority", "auto")
@@ -685,7 +739,17 @@ class ControllerRuntime:
             if pm25 is not None:
                 values["pm25"] = round(pm25, 1)
             if not any(key in values for key in ("temperature", "humidity", "co2", "pm25")):
+                if mapped is not None:
+                    continue  # a set-up room whose sensors are down right now
                 raise ControllerError(f"{name} har ingen gyldige målinger")
+            if mapped is not None:
+                values.update({key: value for key, value in room_setup.room_kind_flags(mapped).items() if value is not None})
+            entities = raw_values.get("entities")
+            if isinstance(entities, dict):
+                values["entities"] = {
+                    kind: str(entity_id)[:130] for kind, entity_id in entities.items()
+                    if kind in room_setup.SENSOR_KINDS and isinstance(entity_id, str)
+                }
             sanitized[name] = values
 
         self.smart_rooms = sanitized
@@ -709,6 +773,49 @@ class ControllerRuntime:
         if self.config.data.get("mode") == "smart_auto" and self.hardware_writes_allowed():
             self.apply_once()
         return self.snapshot()
+
+    def ha_catalog_input(self, payload: dict[str, object]) -> dict[str, object]:
+        """Home Assistant's areas and their sensors, for the WebUI page "Rum".
+
+        The first time, the rooms from the old HA options flow
+        (``legacy_rooms``, same shape as the room inputs) become the room
+        setup, unless rooms have already been set up on the Pi.
+        """
+        try:
+            catalog = room_setup.clean_catalog(payload.get("areas"))
+        except room_setup.RoomSetupError as error:
+            raise ControllerError(str(error)) from error
+        self.ha_catalog = catalog
+        self.ha_catalog_received_at = time.time()
+        migrated = False
+        legacy = payload.get("legacy_rooms")
+        if (isinstance(legacy, dict) and legacy and not self.config.data.get("room_setup_migrated")
+                and not self.config.data.get("room_setup")):
+            rooms = room_setup.migrate_legacy(legacy, catalog, self.config.data, max_level=self.config.max_level())
+            if rooms:
+                before = json.loads(json.dumps(self.config.data, default=str))
+                self.config.configure({"room_setup": rooms})
+                self._record_change(before, {"room_setup": rooms}, "Home Assistant (rum flyttet til Pi)")
+                migrated = True
+                LOG.warning("Moved %d rooms from the Home Assistant options flow to the room setup", len(rooms))
+        return {**self.rooms_view(), "migrated_now": migrated}
+
+    def rooms_view(self, *, include_catalog: bool = True) -> dict[str, object]:
+        """The room setup, the HA catalogue and the room types, for HA and the WebUI.
+
+        Home Assistant polls without the catalogue (it sent it itself) to keep the answer small.
+        """
+        age = None if self.ha_catalog_received_at is None else round(max(0.0, time.time() - self.ha_catalog_received_at), 1)
+        return {
+            "rooms": self.config.data.get("room_setup") or [],
+            "migrated": self.config.data.get("room_setup_migrated") is True,
+            "catalog": self.ha_catalog if include_catalog else None,
+            "catalog_age_seconds": age,
+            "room_types": [{"id": key, "label": room_setup.ROOM_TYPE_LABELS[key]} for key in room_setup.ROOM_TYPES],
+            "priorities": list(room_setup.PRIORITIES),
+            "sensor_kinds": list(room_setup.SENSOR_KINDS),
+            "max_rooms": room_setup.MAX_ROOMS,
+        }
 
     def _priority_level(self, level: int, priority: str) -> int:
         """Adjust response speed without allowing mild rooms to hide severe ones."""
@@ -1225,7 +1332,9 @@ class ControllerRuntime:
             "fireplace_auto_reason": self.fireplace_auto_reason,
             "fireplace_signal": self.fireplace_signal if self._fireplace_signal_active(time.time()) else None,
             "stove_temperature": self.engine.external.get("stove_temperature"),
-            "measurement_rooms": sorted(self.smart_rooms),
+            "measurement_rooms": sorted(set(self.smart_rooms) | {
+                str(room["name"]) for room in self.config.data.get("room_setup") or []
+                if room.get("type") != "excluded"}),
             "afterheat_room_source_used": self.afterheat_room_source_used,
             "weather": self.weather_snapshot(),
         })
@@ -1292,7 +1401,17 @@ class ControllerRuntime:
         }
         if not changes:
             return
+        if "room_setup" in changes:
+            # The whole room list is too long for the log; keep a short summary.
+            changes["room_setup"] = [self._rooms_summary(value) for value in changes["room_setup"]]
         self._log_change({"timestamp": time.time(), "source": source, "changes": changes})
+
+    @staticmethod
+    def _rooms_summary(rooms: object) -> str:
+        if not isinstance(rooms, list):
+            return "—"
+        active = [room for room in rooms if isinstance(room, dict) and room.get("type") != "excluded" and room.get("enabled", True)]
+        return f"{len(rooms)} rum ({len(active)} aktive)"
 
     def _note_frost_lock(self) -> None:
         """Write the frost lock engaging or releasing to the change log."""

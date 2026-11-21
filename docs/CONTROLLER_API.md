@@ -9,8 +9,8 @@ A key is never accepted in the URL. The token from 1.8.x and earlier (`controlle
 
 | Scope | WebUI name | Endpoints |
 | --- | --- | --- |
-| `read` | Kun læse | `GET /api/controller/state` |
-| `control` | Læse og styre | `read` + `POST /api/controller/heartbeat`, `/inputs`, `/signals`, `/command` |
+| `read` | Kun læse | `GET /api/controller/state`, `GET /api/controller/rooms` |
+| `control` | Læse og styre | `read` + `POST /api/controller/heartbeat`, `/inputs`, `/signals`, `/command`, `/ha-catalog` |
 | `admin` | Administrator | `control` + `POST /api/controller/config` (settings, like a technician in the WebUI) |
 
 No key can manage users, keys, the Kontrolrum sign-in or the Pi itself.
@@ -100,7 +100,30 @@ Leased external switches, machine token required. Today only `fireplace`: while 
 {"fireplace":true,"valid_for_s":300}
 ```
 
-Rooms sent to `/api/controller/inputs` can also serve as measurement sources chosen in the WebUI: a stove temperature for automatic fireplace mode, outdoor humidity for absolute-humidity control, and a room temperature for afterheat. Rooms selected as stove or outdoor sources never take part in air-quality decisions; send them with `"control": false`.
+Rooms sent to `/api/controller/inputs` can also serve as measurement sources chosen in the WebUI: a stove temperature for automatic fireplace mode, outdoor humidity for absolute-humidity control, and a room temperature for afterheat. Rooms selected as stove or outdoor sources never take part in air-quality decisions; send them with `"control": false`, or give them the type `source`, `outdoor` or `extract` on the page Rum.
+
+## Rooms: POST /api/controller/ha-catalog and GET /api/controller/rooms
+
+Rooms are set up in the WebUI on the page **Opsætning → Rum** and stored in the controller config as `room_setup`
+(a list of rooms: `id`, `name`, `area_id`, `type`, `priority`, `control`, `enabled`, `unit_sensor`, `sensors`
+`{temperature, humidity, co2, pm25}` and, for bathrooms, optional `rh_setpoint`, `rh_hysteresis`, `max_level`).
+Types: `normal`, `bedroom`, `bathroom`, `kitchen` (indoor rooms in the control), `source`, `outdoor`, `extract`
+(measuring only, usable as sources) and `excluded` (not ventilated, ignored everywhere). At most one room has
+`unit_sensor` – the room the unit's own sensor (T5 and RH) sits in; the unit fills in what HA does not measure there.
+Technicians and administrators save it with `POST /api/controller/config` `{"room_setup": [...]}`.
+
+Home Assistant sends its areas and their sensors (start-up and every 10 minutes):
+
+```json
+{"areas": [{"area_id": "stue", "area_name": "Stue", "sensors": [
+  {"entity_id": "sensor.stue_temperature", "name": "Stue temperatur", "kind": "temperature", "unit": "°C"}]}],
+ "legacy_rooms": {"Bad": {"room_type": "bathroom", "entities": {"humidity": "sensor.bad_rh"}}}}
+```
+
+`legacy_rooms` (the rooms from the integration's old options flow) become the room setup once, when the Pi has
+none and never had one. The answer, like `GET /api/controller/rooms`, is the room setup, the catalogue and its age.
+HA then sends the values of the chosen sensors to `/api/controller/inputs` under the room names; the room setup on
+the Pi decides type, priority and control, and drops excluded rooms.
 
 ## Master rule
 

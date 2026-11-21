@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
-import { AppShell, navigation, searchPages } from "./AppShell";
+import { AppShell, ROUTE_PERMISSIONS, navigation, searchPages } from "./AppShell";
 import { useTopbarNotice } from "../lib/topbar-notice";
 
 const api = vi.hoisted(() => ({ available: false, checks: vi.fn() }));
@@ -77,5 +77,22 @@ describe("AppShell search (Ctrl K) in both menu placements", () => {
     fireEvent.click(button);
     expect(document.querySelector(".fd-search[data-open]")).not.toBeNull();
     expect(document.activeElement).toBe(screen.getByRole("combobox", { name: "Søg" }));
+  });
+});
+
+describe("AppShell menu structure", () => {
+  it("groups the pages into Opsætning, Teknik og drift and System og adgang", () => {
+    const groups = [...new Set(navigation.map(item => item[4]).filter(Boolean))];
+    expect(groups).toEqual(["Opsætning", "Teknik og drift", "System og adgang"]);
+    const of = (group: string) => navigation.filter(item => item[4] === group).map(item => item[1]);
+    expect(of("Opsætning")).toEqual(["Indstillinger", "Rum", "Indregulering"]);
+    expect(of("Teknik og drift")).toEqual(["Teknik", "Diagnostik"]);
+    expect(of("System og adgang")).toEqual(["Home Assistant", "Adgang for programmer", "System", "Opdateringer"]);
+    expect(navigation.filter(item => item[4] === null).map(item => item[1])).toEqual(["Overblik", "Historik", "Ugeplan"]);
+  });
+
+  it("lets only technicians and administrators open Rum, and finds it in the search", () => {
+    expect(ROUTE_PERMISSIONS["/rooms"]).toBe("configure");
+    expect(searchPages(navigation, "garage").map(hit => hit[0])).toEqual(["/rooms"]);
   });
 });

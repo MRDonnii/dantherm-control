@@ -1,0 +1,44 @@
+/* Page "Rum": room setup with sensors from Home Assistant (Claude AI). */
+.room-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 4px 0 12px; }
+.room-counts { margin-left: auto; color: var(--muted); font-size: 12.5px; }
+.room-setup-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 12px; }
+.room-setup-card { display: grid; gap: 10px; align-content: start; border-left: 3px solid var(--blue); }
+.room-setup-card[data-off] { border-left-color: var(--border-strong, var(--border)); }
+.room-setup-card[data-type="excluded"] { opacity: .78; }
+.room-setup-card[data-type="source"], .room-setup-card[data-type="outdoor"], .room-setup-card[data-type="extract"] { border-left-color: var(--orange, #d9822b); }
+.room-setup-head { display: flex; align-items: center; gap: 10px; }
+.room-name { flex: 1; min-width: 0; min-height: 38px; padding: 6px 10px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--text); font: inherit; font-size: 16px; font-weight: 800; }
+.room-name:hover, .room-name:focus { border-color: var(--border); background: var(--surface-soft); outline: none; }
+.room-toggle { position: relative; display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.room-toggle input { position: absolute; opacity: 0; width: 40px; height: 22px; margin: 0; cursor: pointer; }
+.room-toggle-track { position: relative; flex: none; width: 40px; height: 22px; border-radius: 999px; background: var(--switch-off, #3b3b3b); border: 1px solid var(--border); transition: background .15s; }
+.room-toggle-track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.room-toggle input:checked + .room-toggle-track { background: var(--blue); border-color: var(--blue); }
+.room-toggle input:checked + .room-toggle-track::after { transform: translateX(18px); }
+.room-toggle input:focus-visible + .room-toggle-track { outline: 2px solid var(--blue); outline-offset: 2px; }
+.room-toggle input:disabled + .room-toggle-track { opacity: .45; }
+.room-live { display: flex; flex-wrap: wrap; gap: 6px; }
+.room-live-empty { color: var(--muted); font-size: 12.5px; }
+.room-chip { display: inline-flex; align-items: center; height: 24px; padding: 0 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-soft); color: var(--text); font-size: 12.5px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.room-chip[data-kind="temperature"] { color: var(--orange, #d9822b); }
+.room-chip[data-kind="humidity"] { color: var(--blue); }
+.room-chip[data-kind="co2"], .room-chip[data-kind="pm25"] { color: var(--green, #3aa35b); }
+.room-chip-unit { color: var(--muted); font-weight: 650; }
+.room-setup-grid { margin-top: 0; }
+.room-setup-grid optgroup { font-weight: 700; }
+.room-unit-row { grid-column: 1 / -1; }
+.room-unit-row .settings-field-help { grid-column: 2; }
+.room-setup-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.room-setup-foot small { min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.room-empty { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 12px; }
+.room-empty > svg { flex: none; color: var(--blue); margin-top: 2px; }
+.room-empty h2 { margin: 0 0 6px; font-size: 16px; }
+.room-empty p { margin: 0 0 6px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+.room-problems { padding-left: 28px; }
+.room-save-actions { display: inline-flex; gap: 8px; }
+@media (max-width: 620px) {
+  .room-counts { width: 100%; margin-left: 0; }
+  .room-toolbar > button { flex: 1 1 auto; }
+  .room-save-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .room-save-actions > button:only-child { grid-column: 1 / -1; }
+}

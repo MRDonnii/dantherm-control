@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { NAV_KEY, SKIN_KEY, SKIN_PRESETS, readNav, readSkin, type NavPosition, type Skin } from "../lib/appearance";
-import { Activity, Droplets, Fan, Flame, Gauge, House, Mail, Monitor, Moon, RotateCcw, Save, Scale, ShieldCheck, ShowerHead, Snowflake, Thermometer, Users, Wind } from "lucide-react";
+import { Activity, DoorOpen, Droplets, Fan, Flame, Gauge, House, Mail, Monitor, Moon, RotateCcw, Save, Scale, ShieldCheck, ShowerHead, Snowflake, Thermometer, Timer, Users, Wind } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { postJson, requestJson } from "../lib/api";
 import { airflowPlan, balancedProfiles, effectiveProfiles, sideConstants, type AirflowProfiles, type RatioSource } from "../lib/airflow";
@@ -34,7 +34,9 @@ function fmt(v: unknown, lang: Lang, digits = 1, unit = "") {
 
 /** Every controller field this page edits. UI-only preferences stay in localStorage. */
 export const CONTROLLER_KEYS = [
-  "local_normal_level", "air_quality_max_level", "rh_setpoint", "rh_hysteresis", "co2_setpoint", "co2_hysteresis", "co2_offset", "ha_timeout_seconds",
+  "local_normal_level", "local_min_level", "local_max_level", "downshift_delay_seconds", "boost_hold_seconds",
+  "air_quality_max_level", "rh_setpoint", "rh_hysteresis", "co2_setpoint", "co2_hysteresis", "co2_offset", "ha_timeout_seconds",
+  "auto_step_rh", "auto_step_co2",
   "bathroom_rh_setpoint", "bathroom_rh_hysteresis", "bathroom_max_level",
   "night_enabled", "night_start", "night_end", "night_level", "night_air_quality_max_level",
   "afterheat_setpoint", "afterheat_coil", "afterheat_room_enabled", "afterheat_room_source", "afterheat_room_target",
@@ -52,13 +54,13 @@ export const CONTROLLER_KEYS = [
   "fireplace_auto_enabled", "fireplace_auto_source", "fireplace_auto_on_temp", "fireplace_auto_off_temp",
   "fireplace_afterrun_minutes", "fireplace_max_hours", "onewire_roles",
   "pm25_enabled", "pm25_setpoint", "pm25_step", "pm25_hysteresis", "pm25_max_level", "pm25_ignored_rooms",
-  "bathroom_rise_percent", "bathroom_rise_minutes", "bathroom_night_drying", "bathroom_max_minutes", "bathroom_rooms",
+  "bathroom_rise_percent", "bathroom_rise_minutes", "bathroom_night_drying", "bathroom_max_minutes",
 ] as const;
 
 const T = {
   eyebrow: { da: "INDSTILLINGER", en: "SETTINGS" },
-  title: { da: "Controller og brugerflade", en: "Controller and interface" },
-  intro: { da: "Vælg et område til venstre. Hvert felt forklarer, hvad det styrer, og hvad der sker, hvis du ændrer det.", en: "Pick an area on the left. Every field explains what it controls and what happens when you change it." },
+  title: { da: "Anlæg og konto", en: "Unit and account" },
+  intro: { da: "Vælg et område til venstre. Hvert felt forklarer, hvad det styrer, og hvad der sker, hvis du ændrer det. Rum og følere fra Home Assistant sættes op på siden Rum.", en: "Pick an area on the left. Every field explains what it controls and what happens when you change it. Rooms and sensors from Home Assistant are set up on the Rooms page." },
   saveHint: { da: "Ændringer gemmes først, når du trykker Gem controller.", en: "Changes are stored only when you press Save controller." },
   save: { da: "Gem controller", en: "Save controller" }, saving: { da: "Gemmer…", en: "Saving…" },
   saved: { da: "Indstillinger gemt.", en: "Settings saved." }, error: { da: "Fejl", en: "Error" },
@@ -68,20 +70,30 @@ const T = {
 } satisfies Record<string, Text>;
 
 type SectionId = "ui" | "house" | "air" | "humidity" | "night" | "afterheat" | "cooling" | "fireplace" | "security" | "sensors" | "users" | "mail";
-const SECTIONS: { id: SectionId; icon: LucideIcon; title: Text; lead: Text }[] = [
-  { id: "house", icon: House, title: { da: "Hus og luftmængde", en: "House and airflow" }, lead: { da: "Grundtrin og luftbalance ud fra boligen", en: "Base level and air balance from the home" } },
-  { id: "air", icon: Wind, title: { da: "Luftkvalitet", en: "Air quality" }, lead: { da: "Fugt og CO₂ løfter ventilationen", en: "Humidity and CO₂ raise the ventilation" } },
-  { id: "humidity", icon: Droplets, title: { da: "Fugt og tør luft", en: "Moisture and dry air" }, lead: { da: "Badeværelse, fugt og tør luft", en: "Bathroom, humidity and dry air" } },
-  { id: "night", icon: Moon, title: { da: "Nat", en: "Night" }, lead: { da: "Lavere trin mens I sover", en: "Lower level while you sleep" } },
-  { id: "afterheat", icon: Thermometer, title: { da: "Eftervarme", en: "Afterheat" }, lead: { da: "Indblæsningens temperatur", en: "Supply air temperature" } },
-  { id: "cooling", icon: Snowflake, title: { da: "Frikøling", en: "Free cooling" }, lead: { da: "Køl huset med kølig udeluft via bypass", en: "Cool the house with cool outdoor air via bypass" } },
-  { id: "fireplace", icon: Flame, title: { da: "Pejs og brændeovn", en: "Fireplace and stove" }, lead: { da: "Overtryk mens der fyres", en: "Positive pressure while the stove burns" } },
-  { id: "ui", icon: Monitor, title: { da: "Brugerflade", en: "Interface" }, lead: { da: "Sprog, tema og bevægelse", en: "Language, theme and motion" } },
-  { id: "security", icon: ShieldCheck, title: { da: "Sikkerhed", en: "Security" }, lead: { da: "Min konto, login og hvem der styrer anlægget", en: "My account, login and who controls the unit" } },
-  { id: "sensors", icon: Activity, title: { da: "Følere", en: "Sensors" }, lead: { da: "1-Wire-følere: eftervarme, T2, loft og andre", en: "1-Wire sensors: afterheat, T2, loft and others" } },
-  { id: "users", icon: Users, title: { da: "Brugere", en: "Users" }, lead: { da: "Brugere, teknikere og administratorer", en: "Users, technicians and administrators" } },
-  { id: "mail", icon: Mail, title: { da: "Mail", en: "Mail" }, lead: { da: "Fejlmeddelelser og nulstilling af adgangskode", en: "Fault notifications and password reset" } },
+type Section = { id: SectionId; icon: LucideIcon; title: Text; lead: Text; group: Text };
+const GROUP = {
+  ventilation: { da: "Ventilation", en: "Ventilation" },
+  air: { da: "Luftkvalitet", en: "Air quality" },
+  heat: { da: "Varme og køl", en: "Heating and cooling" },
+  sensors: { da: "Følere", en: "Sensors" },
+  account: { da: "Konto og system", en: "Account and system" },
+} satisfies Record<string, Text>;
+/** The side menu, grouped. The ids are kept, so #/settings?section=… links keep working. */
+const SECTIONS: Section[] = [
+  { id: "house", group: GROUP.ventilation, icon: House, title: { da: "Trin og luftmængde", en: "Steps and airflow" }, lead: { da: "Trinstyring, grundtrin, grænser og luftbalance", en: "Step control, base level, limits and air balance" } },
+  { id: "night", group: GROUP.ventilation, icon: Moon, title: { da: "Nat", en: "Night" }, lead: { da: "Lavere trin mens I sover", en: "Lower level while you sleep" } },
+  { id: "air", group: GROUP.air, icon: Wind, title: { da: "Fugt og CO₂", en: "Humidity and CO₂" }, lead: { da: "Grænser der løfter ventilationen, og PM2.5", en: "Limits that raise the ventilation, and PM2.5" } },
+  { id: "humidity", group: GROUP.air, icon: Droplets, title: { da: "Badeværelse og tør luft", en: "Bathroom and dry air" }, lead: { da: "Udtørring efter bad, udeluftens fugt og vinter", en: "Drying after a shower, outdoor humidity and winter" } },
+  { id: "afterheat", group: GROUP.heat, icon: Thermometer, title: { da: "Eftervarme og frost", en: "Afterheat and frost" }, lead: { da: "Indblæsningens temperatur og frostlås", en: "Supply air temperature and frost lock" } },
+  { id: "cooling", group: GROUP.heat, icon: Snowflake, title: { da: "Frikøling og bypass", en: "Free cooling and bypass" }, lead: { da: "Køl huset med kølig udeluft via bypass", en: "Cool the house with cool outdoor air via bypass" } },
+  { id: "fireplace", group: GROUP.heat, icon: Flame, title: { da: "Pejs og brændeovn", en: "Fireplace and stove" }, lead: { da: "Overtryk mens der fyres", en: "Positive pressure while the stove burns" } },
+  { id: "sensors", group: GROUP.sensors, icon: Activity, title: { da: "Følere og målerum", en: "Sensors and measuring rooms" }, lead: { da: "1-Wire-følere, korrektioner og udsugningsrum", en: "1-Wire sensors, corrections and extract rooms" } },
+  { id: "ui", group: GROUP.account, icon: Monitor, title: { da: "Brugerflade", en: "Interface" }, lead: { da: "Sprog, tema og bevægelse", en: "Language, theme and motion" } },
+  { id: "security", group: GROUP.account, icon: ShieldCheck, title: { da: "Sikkerhed", en: "Security" }, lead: { da: "Min konto, login og hvem der styrer anlægget", en: "My account, login and who controls the unit" } },
+  { id: "users", group: GROUP.account, icon: Users, title: { da: "Brugere", en: "Users" }, lead: { da: "Brugere, teknikere og administratorer", en: "Users, technicians and administrators" } },
+  { id: "mail", group: GROUP.account, icon: Mail, title: { da: "Mail", en: "Mail" }, lead: { da: "Fejlmeddelelser og nulstilling af adgangskode", en: "Fault notifications and password reset" } },
 ];
+const sectionInfo = (id: SectionId) => SECTIONS.find(item => item.id === id) as Section;
 
 /** Who may open each section. Controller sections need "configure"; the rest follow their own permission. */
 const SECTION_PERMISSION: Partial<Record<SectionId, Permission>> = { users: "users", mail: "mail" };
@@ -185,27 +197,13 @@ export function AfterheatControlCard({ lang, form, controller, set }: { lang: La
   </Card>;
 }
 
-type BathroomRoom = { type?: "auto" | "bathroom" | "normal"; rh_setpoint?: number; rh_hysteresis?: number; max_level?: number };
 type BathroomStatus = { name: string; humidity: number | null; rh_setpoint: number; rh_end: number; max_level: number; state: string; drying_minutes: number | null; webui_override: boolean };
 
-/** Bathroom control: common limits, shower detection and a table with settings per room. */
+/** Bathroom control: common limits, shower detection and the bathrooms' state (rooms are set up on the page Rum). */
 function BathroomCards({ lang, form, controller, set, maxLevel }: { lang: Lang; form: Data; controller: Data; set: (key: string, value: unknown) => void; maxLevel: number }) {
   const da = lang === "da";
-  const rooms = (form.bathroom_rooms && typeof form.bathroom_rooms === "object" ? form.bathroom_rooms : {}) as Record<string, BathroomRoom>;
   const status = new Map((Array.isArray(controller.bathroom_status) ? controller.bathroom_status as BathroomStatus[] : []).map(item => [item.name, item]));
-  const haRooms = Object.keys((controller.smart_ha_rooms && typeof controller.smart_ha_rooms === "object" ? controller.smart_ha_rooms : {}) as Record<string, unknown>);
-  const names = [...new Set([...haRooms, ...Object.keys(rooms)])].sort((a, b) => a.localeCompare(b, "da"));
   const common = { rh: n(form.bathroom_rh_setpoint, 65), hysteresis: n(form.bathroom_rh_hysteresis, 5), level: n(form.bathroom_max_level, maxLevel) };
-  const change = (name: string, patch: Partial<BathroomRoom>) => {
-    const entry: BathroomRoom = { ...rooms[name], ...patch };
-    const next = { ...rooms };
-    for (const key of ["rh_setpoint", "rh_hysteresis", "max_level"] as const) if (entry[key] === undefined || Number.isNaN(entry[key])) delete entry[key];
-    if ((entry.type ?? "auto") === "auto" && entry.rh_setpoint === undefined && entry.rh_hysteresis === undefined && entry.max_level === undefined) delete next[name];
-    else next[name] = entry;
-    set("bathroom_rooms", next);
-  };
-  const value = (v: number | undefined) => v === undefined ? "" : String(v);
-  const parse = (text: string) => text.trim() === "" ? undefined : Number(text.replace(",", "."));
   const stateText: Record<string, [string, string]> = {
     drying: [da ? "Tørrer ud" : "Drying", "drying"], normal: [da ? "Normal" : "Normal", "normal"], expired: [da ? "Tid udløbet" : "Time up", "expired"],
     view_only: [da ? "Kun visning" : "View only", "normal"], no_humidity: [da ? "Ingen fugtmåling" : "No humidity", "normal"],
@@ -227,29 +225,9 @@ function BathroomCards({ lang, form, controller, set, maxLevel }: { lang: Lang; 
         <Help>{da ? "Slået til må udtørringen køre med fuld kraft om natten, uanset natsænkningen, og trapper ned af sig selv. Slået fra holder natsænkningen ventilationen nede, også efter et bad." : "On, drying may run at full strength at night regardless of night reduction and steps down by itself. Off, night reduction keeps ventilation down, even after a shower."}</Help>
       </div>
     </Card>
-    <Card title={da ? "Rum" : "Rooms"} lead={da ? "Hvilke rum der er badeværelser, og egne grænser pr. rum" : "Which rooms are bathrooms, and limits per room"} icon={ShowerHead}>
-      {names.length === 0
-        ? <p className="settings-help">{da ? "Ingen rum modtaget fra Home Assistant endnu. Når Home Assistant sender rum, kan du her vælge, hvilke der er badeværelser." : "No rooms received from Home Assistant yet. Once Home Assistant sends rooms you can choose which are bathrooms here."}</p>
-        : <div className="settings-table-wrap"><table className="settings-table bathroom-table">
-          <thead><tr><th>{da ? "Rum" : "Room"}</th><th>{da ? "Type" : "Type"}</th><th>{da ? "Fugt start %" : "Start %"}</th><th>{da ? "Hysterese %" : "Hyst. %"}</th><th>{da ? "Højeste trin" : "Highest level"}</th><th>{da ? "Lige nu" : "Now"}</th></tr></thead>
-          <tbody>{names.map(name => {
-            const room = rooms[name] ?? {};
-            const live = status.get(name);
-            const isBathroom = live !== undefined || room.type === "bathroom";
-            const shown = live ? stateText[live.state] : undefined;
-            return <tr key={name} className={isBathroom ? "is-bathroom" : undefined}>
-              <td><strong>{name}</strong>{!haRooms.includes(name) && <small className="bathroom-gone"> {da ? "(sender ikke nu)" : "(not sending)"}</small>}</td>
-              <td><select value={room.type ?? "auto"} onChange={e => change(name, { type: e.target.value as BathroomRoom["type"] })}>
-                <option value="auto">{da ? "Automatisk (efter navn)" : "Automatic (by name)"}</option><option value="bathroom">{da ? "Badeværelse" : "Bathroom"}</option><option value="normal">{da ? "Normalt rum" : "Normal room"}</option>
-              </select></td>
-              <td><input inputMode="decimal" disabled={!isBathroom} placeholder={String(common.rh)} value={value(room.rh_setpoint)} onChange={e => change(name, { rh_setpoint: parse(e.target.value) })}/></td>
-              <td><input inputMode="decimal" disabled={!isBathroom} placeholder={String(common.hysteresis)} value={value(room.rh_hysteresis)} onChange={e => change(name, { rh_hysteresis: parse(e.target.value) })}/></td>
-              <td><input inputMode="numeric" disabled={!isBathroom} placeholder={String(common.level)} value={value(room.max_level)} onChange={e => change(name, { max_level: parse(e.target.value) })}/></td>
-              <td>{live ? <span className={`bathroom-state ${shown?.[1] ?? "normal"}`}>{fmt(live.humidity, lang, 0, " %")} · {shown?.[0]}{live.state === "drying" && live.drying_minutes !== null ? ` ${live.drying_minutes} min` : ""}</span> : <span className="bathroom-state normal">{isBathroom ? "—" : (da ? "Ikke badeværelse" : "Not a bathroom")}</span>}</td>
-            </tr>;
-          })}</tbody>
-        </table></div>}
-      <p className="settings-help">{da ? "Tomme felter bruger de fælles værdier ovenfor. Det du vælger her gælder frem for det, Home Assistant sender, så et rum, der er fejlmappet i Home Assistant, kan rettes her. Husk Gem controller nederst." : "Empty fields use the common values above. What you choose here wins over what Home Assistant sends, so a room mapped wrongly in Home Assistant can be corrected here. Remember Save controller at the bottom."}</p>
+    <Card title={da ? "Badeværelser" : "Bathrooms"} lead={da ? "Hvilke rum der er badeværelser, og egne grænser pr. rum" : "Which rooms are bathrooms, and limits per room"} icon={ShowerHead}>
+      {status.size > 0 && <div className="settings-summary">{[...status.values()].map(live => { const shown = stateText[live.state]; return <span key={live.name}>{live.name}<strong className={`bathroom-state ${shown?.[1] ?? "normal"}`}>{fmt(live.humidity, lang, 0, " %")} · {shown?.[0]}{live.state === "drying" && live.drying_minutes !== null ? ` ${live.drying_minutes} min` : ""}</strong></span>; })}</div>}
+      <p className="settings-help">{da ? "Rumtype og egne grænser pr. badeværelse (fugt start, hysterese, højeste trin) sættes på siden " : "Room type and own limits per bathroom (humidity start, hysteresis, highest level) are set on the page "}<a href="#/rooms">{da ? "Rum" : "Rooms"}</a>{da ? ". Felterne ovenfor er de fælles værdier, som rum uden egne grænser bruger." : ". The fields above are the common values used by rooms without their own limits."}</p>
     </Card>
   </>;
 }
@@ -310,7 +288,7 @@ export function SettingsPage() {
     if (selected.startsWith("room:")) names.add(selected.slice(5));
     return [...names].sort().map(name => <option key={name} value={`room:${name}`}>{name}</option>);
   };
-  const roomHint = rooms.length ? null : <Help>{lang === "da" ? "Ingen målerum modtaget fra Home Assistant endnu. Tilføj rummet i HCH5 Control-integrationen (Smart Auto-rum) med styring slået fra." : "No measurement rooms received from Home Assistant yet. Add the room in the HCH5 Control integration (Smart Auto rooms) with control turned off."}</Help>;
+  const roomHint = rooms.length ? null : <Help>{lang === "da" ? "Ingen målerum endnu. Opret rummet på siden Rum med typen Kilde, Ude eller Udsugningsrum." : "No measuring rooms yet. Create the room on the Rooms page with the type Source, Outdoor or Extract room."}</Help>;
 
   const runningProfiles = controller.profiles as Profiles | undefined;
   const steps = stepCount(controller);
@@ -411,7 +389,7 @@ export function SettingsPage() {
     other: { da: "Andet (eget navn)", en: "Other (own name)" },
   };
   const sections: Record<SectionId, ReactNode> = {
-    sensors: <Card title={t(SECTIONS[9].title)} lead={lang === "da" ? "DS18B20-følere på Pi'ens 1-Wire-bus (GPIO4)" : "DS18B20 sensors on the Pi's 1-Wire bus (GPIO4)"} icon={Activity}>
+    sensors: <Card title={lang === "da" ? "1-Wire-følere" : "1-Wire sensors"} lead={lang === "da" ? "DS18B20-følere på Pi'ens 1-Wire-bus (GPIO4)" : "DS18B20 sensors on the Pi's 1-Wire bus (GPIO4)"} icon={Activity}>
       <p className="settings-help">{lang === "da" ? "Nye følere dukker op her af sig selv, når de er loddet på 1-Wire-bussen (3,3 V, GND og data parallelt med de eksisterende). Giv hver føler en rolle: T2 bruges i tegningen, genvindingen og som målt T2; Loftrum og egne navne vises her og i Home Assistant. Eftervarme frem/retur bestemmer, hvilke følere 1-Wire-tjenesten sender til Home Assistant som vandets frem- og returtemperatur. Er de forvekslet, så byt rollerne her." : "New sensors appear here by themselves once soldered onto the 1-Wire bus (3.3 V, GND and data in parallel with the existing ones). Give each a role: T2 is used in the drawing, the recovery and as measured T2; Loft space and own names show here and in Home Assistant. Afterheat flow/return decide which sensors the 1-Wire service reports to Home Assistant as the water flow and return. Swap the roles here if they are mixed up."}</p>
       {onewire.length === 0
         ? <p className="settings-warning">{lang === "da" ? "Ingen følere fundet endnu. Tjek lodningerne og at føleren er på samme bus som frem/retur." : "No extra sensors found yet. Check the soldering and that the sensor is on the same bus as flow/return."}</p>
@@ -424,7 +402,7 @@ export function SettingsPage() {
           </tr>; })())}</tbody></table></div>}
       <p className="settings-help">{lang === "da" ? "T2-føleren skal sidde i indblæsningskanalen mellem enheden og varmefladen, mindst 20–30 cm fra fladen. Loftføleren skal hænge i skygge væk fra tagpladerne." : "The T2 sensor belongs in the supply duct between the unit and the afterheat coil, at least 20–30 cm from the coil. Hang the loft sensor in shade away from the roof."}</p>
           <div className="settings-grid">
-        <label>{lang === "da" ? "Udsugningsrum (gennemsnit)" : "Extract rooms (average)"}<select value={s(form.duct_extract_source)} onChange={e => set("duct_extract_source", e.target.value)}><option value="">{t(T.none)}</option>{roomOptions(form.duct_extract_source)}</select><Help>{lang === "da" ? "Et rum i HCH5 Control-integrationen med gennemsnittet af rummene med udsugningsventil (styring slået fra). Sammenholdt med T3 viser oversigten, hvor meget udsugningsluften køles af på vej til anlægget – i grader og som andel af forskellen mellem rummene og loftet. En fast andel uanset luftmængde peger på utætheder; en isoleret kanal giver kun få procent." : "A room in the HCH5 Control integration with the average of the rooms with an extract valve (control off). Against T3 the overview shows how much the extract air cools on its way to the unit, in degrees and as a share of the difference between the rooms and the loft. A steady share at every airflow points to leaks; an insulated duct gives only a few percent."}</Help></label>
+        <label>{lang === "da" ? "Udsugningsrum (gennemsnit)" : "Extract rooms (average)"}<select value={s(form.duct_extract_source)} onChange={e => set("duct_extract_source", e.target.value)}><option value="">{t(T.none)}</option>{roomOptions(form.duct_extract_source)}</select><Help>{lang === "da" ? "Et rum fra siden Rum (typen Udsugningsrum) med gennemsnittet af rummene med udsugningsventil. Sammenholdt med T3 viser oversigten, hvor meget udsugningsluften køles af på vej til anlægget – i grader og som andel af forskellen mellem rummene og loftet. En fast andel uanset luftmængde peger på utætheder; en isoleret kanal giver kun få procent." : "A room from the Rooms page (type Extract room) with the average of the rooms with an extract valve. Against T3 the overview shows how much the extract air cools on its way to the unit, in degrees and as a share of the difference between the rooms and the loft. A steady share at every airflow points to leaks; an insulated duct gives only a few percent."}</Help></label>
         <label>{lang === "da" ? "Korrektion udsugningsrum" : "Extract rooms correction"}<input type="number" min="-3" max="3" step="0.05" value={n(form.duct_rooms_offset_k, 0)} onChange={num("duct_rooms_offset_k")}/><span>K</span><Help>{lang === "da" ? "Lægges til rumtemperaturen, kun i beregningen af kanalafkølingen. Måler rumfølerne fx 0,6 °C for højt, skrives -0,6." : "Added to the room temperature, only for the duct cooling. If the room sensors read 0.6 °C high, enter -0.6."}</Help></label>
         <label>{lang === "da" ? "Korrektion T3" : "T3 correction"}<input type="number" min="-3" max="3" step="0.05" value={n(form.duct_t3_offset_k, 0)} onChange={num("duct_t3_offset_k")}/><span>K</span><Help>{lang === "da" ? "Lægges til T3, kun i beregningen af kanalafkølingen. Måler T3 fx 0,7 °C for lavt, skrives 0,7." : "Added to T3, only for the duct cooling. If T3 reads 0.7 °C low, enter 0.7."}</Help></label>
         <label>{lang === "da" ? "Korrektion T2" : "T2 correction"}<input type="number" min="-3" max="3" step="0.05" value={n(form.t2_offset_k, 0)} onChange={num("t2_offset_k")}/><span>K</span><Help>{lang === "da" ? "Lægges kun til T2 i beregningen af vekslerens indblæsningsside og forskellen til T2AH. T2AH og rå følermålinger ændres ikke." : "Added to T2 only for exchanger and coil calculations. T2AH and raw sensor readings stay unchanged."}</Help></label>
@@ -474,7 +452,15 @@ export function SettingsPage() {
         {!balanceOn && <p className="settings-help">{lang === "da" ? "Luftbalance på Manuel: justér balancen som på Dantherms panel med indblæsningens og udsugningens gear hver for sig. Kolonnen Balance viser straks, hvor meget mere luft udsugningen giver (anbefalet 0–10 %). Tallene er skønnet ud fra omdrejninger og kanalforhold; målte luftmængder fra indreguleringen er altid bedre." : "Air balance on Manual: adjust the balance as on Dantherm's panel with the supply and extract gears separately. The Balance column shows at once how much more air extract gives (recommended 0–10 %). The figures are estimated from speed and duct ratio; airflow measured at commissioning is always better."}</p>}
         {steps === 6 && balanceOn && <p className="settings-help">{lang === "da" ? "Luftbalancen er på Auto, så indblæsningen regnes ud fra udsugningen på hvert trin." : "The air balance is on Auto, so supply is worked out from extract on every step."}</p>}
       </Card>
-      <Card title={t(SECTIONS[0].title)} lead={lang === "da" ? "Bygningsreglementet (BR18) kræver mindst 0,3 l/s pr. m² plus udsugning fra køkken og vådrum." : "The Danish building regulations (BR18) require at least 0.3 l/s per m² plus extract from kitchen and wet rooms."} icon={House}>
+      <Card title={lang === "da" ? "Grænser og reaktionstid" : "Limits and response time"} lead={lang === "da" ? "Laveste og højeste trin i automatik, og hvor hurtigt der skiftes" : "Lowest and highest automatic level, and how fast it changes"} icon={Timer}>
+        <div className="settings-grid">
+          <label>{lang === "da" ? "Laveste trin" : "Lowest level"}<input type="number" min="1" max={maxLevel} value={n(form.local_min_level, 1)} onChange={num("local_min_level")}/><Help>{lang === "da" ? "Automatikken går aldrig under dette trin, heller ikke om natten eller på ferie." : "Automatic control never goes below this level, not even at night or on vacation."}</Help></label>
+          <label>{lang === "da" ? "Højeste trin" : "Highest level"}<input type="number" min="1" max={maxLevel} value={n(form.local_max_level, maxLevel)} onChange={num("local_max_level")}/><Help>{lang === "da" ? "Automatikken går aldrig over dette trin. Manuel drift og boost er ikke begrænset." : "Automatic control never goes above this level. Manual mode and boost are not limited."}</Help></label>
+          <label>{lang === "da" ? "Vent før der skrues ned" : "Wait before stepping down"}<input type="number" min="30" max="3600" step="30" value={n(form.downshift_delay_seconds, 300)} onChange={num("downshift_delay_seconds")}/><span>s</span><Help>{lang === "da" ? "Så længe skal luften have været god, før trinnet sænkes igen. Forhindrer at anlægget skifter op og ned." : "How long the air must have been good before the level is lowered again. Stops the unit from flapping."}</Help></label>
+          <label>{lang === "da" ? "Hold et højt trin mindst" : "Hold a high level at least"}<input type="number" min="60" max="3600" step="60" value={n(form.boost_hold_seconds, 600)} onChange={num("boost_hold_seconds")}/><span>s</span><Help>{lang === "da" ? "Når luftkvaliteten har løftet til et højt trin, holdes det mindst så længe." : "Once air quality has raised to a high level, it is held at least this long."}</Help></label>
+        </div>
+      </Card>
+      <Card title={lang === "da" ? "Hus og luftmængde" : "House and airflow"} lead={lang === "da" ? "Bygningsreglementet (BR18) kræver mindst 0,3 l/s pr. m² plus udsugning fra køkken og vådrum." : "The Danish building regulations (BR18) require at least 0.3 l/s per m² plus extract from kitchen and wet rooms."} icon={House}>
         <div className="settings-grid">
           <div className="settings-mode-row"><span>{lang === "da" ? "Grundtrin" : "Base level"}</span>
             <div className="settings-segment" role="radiogroup" aria-label={lang === "da" ? "Grundtrin" : "Base level"}>
@@ -561,10 +547,12 @@ export function SettingsPage() {
         <div className="settings-grid">
           <label>{lang === "da" ? "Normaltrin" : "Normal level"}<input type="number" min="1" max={maxLevel} disabled={sizing} value={sizing ? n(controller.effective_normal_level, 3) : n(form.local_normal_level, 3)} onChange={num("local_normal_level")}/><Help>{sizing ? (lang === "da" ? "Styres lige nu af husets størrelse (se Hus og luftmængde)." : "Currently set by the house size (see House and airflow).") : (lang === "da" ? "Trinnet anlægget kører på, når luften er god." : "The level the unit runs at when the air is good.")}</Help></label>
           <label>{lang === "da" ? "Maks. trin ved CO₂ og fugt" : "Maximum level for CO₂ and humidity"}<input type="number" min="1" max={maxLevel} value={n(form.air_quality_max_level, maxLevel)} onChange={num("air_quality_max_level")}/><Help>{lang === "da" ? "Begrænser hvor højt CO₂ og almindelig fugt kan hæve ventilationen i Local Auto og Smart Auto. Normaltrinnet kan stadig være højere. Badeværelsesudtørring og PM2.5 har egne grænser." : "Limits how far CO₂ and ordinary humidity can raise ventilation in Local Auto and Smart Auto. The normal level may still be higher. Bathroom drying and PM2.5 have their own limits."}</Help></label>
-          <label>{lang === "da" ? "Fugt (RH) grænse" : "Humidity (RH) limit"}<input type="number" min="25" max="80" value={n(form.rh_setpoint, 50)} onChange={num("rh_setpoint")}/><span>%</span><Help>{lang === "da" ? "Over denne relative fugt skrues der op. Et trin pr. 5 % over grænsen." : "Above this relative humidity the fans step up. One level per 5 % above the limit."}</Help></label>
+          <label>{lang === "da" ? "Fugt (RH) grænse" : "Humidity (RH) limit"}<input type="number" min="25" max="80" value={n(form.rh_setpoint, 50)} onChange={num("rh_setpoint")}/><span>%</span><Help>{lang === "da" ? "Over denne relative fugt skrues der op (se Fugt pr. trin)." : "Above this relative humidity the fans step up (see Humidity per level)."}</Help></label>
           <label>{lang === "da" ? "Fugt hysterese" : "Humidity hysteresis"}<input type="number" min="1" max="10" value={n(form.rh_hysteresis, 3)} onChange={num("rh_hysteresis")}/><span>%</span><Help>{lang === "da" ? "Hvor langt under grænsen fugten skal ned, før der skrues ned igen. Forhindrer at trinnet hopper frem og tilbage." : "How far below the limit humidity must fall before stepping down again. Stops the level from flapping."}</Help></label>
           <label>{lang === "da" ? "CO₂ grænse" : "CO₂ limit"}<input type="number" min="500" max="2000" step="50" value={n(form.co2_setpoint, 800)} onChange={num("co2_setpoint")}/><span>ppm</span><Help>{lang === "da" ? "Over denne CO₂ skrues der op. Udeluft er ca. 420 ppm, og over 1000 ppm føles luften tung." : "Above this CO₂ the fans step up. Outdoor air is about 420 ppm; above 1000 ppm the air feels stuffy."}</Help></label>
           <label>{lang === "da" ? "CO₂ hysterese" : "CO₂ hysteresis"}<input type="number" min="25" max="500" step="25" value={n(form.co2_hysteresis, 100)} onChange={num("co2_hysteresis")}/><span>ppm</span><Help>{lang === "da" ? "Hvor langt under grænsen CO₂ skal ned, før der skrues ned igen." : "How far below the limit CO₂ must fall before stepping down."}</Help></label>
+          <label>{lang === "da" ? "Fugt pr. trin" : "Humidity per level"}<input type="number" min="2" max="20" value={n(form.auto_step_rh, 5)} onChange={num("auto_step_rh")}/><span>%</span><Help>{lang === "da" ? "Så mange procentpoint over grænsen giver et trin mere." : "This many percentage points above the limit give one more level."}</Help></label>
+          <label>{lang === "da" ? "CO₂ pr. trin" : "CO₂ per level"}<input type="number" min="50" max="1000" step="50" value={n(form.auto_step_co2, 200)} onChange={num("auto_step_co2")}/><span>ppm</span><Help>{lang === "da" ? "Så mange ppm over grænsen giver et trin mere." : "This many ppm above the limit give one more level."}</Help></label>
           <label>{lang === "da" ? "CO₂ kalibrering" : "CO₂ calibration"}<input type="number" min="-1000" max="1000" step="10" value={n(form.co2_offset, 0)} onChange={num("co2_offset")}/><span>ppm</span><Help>{lang === "da" ? `Lægges til anlæggets egen CO₂-måler, før der styres og vises. Måler den fx 200 for højt i forhold til dine rumfølere, så sæt −200. Lige nu: rå ${fmt(controller.co2_raw, lang, 0, " ppm")}, korrigeret ${fmt(controller.co2_measured, lang, 0, " ppm")}.` : `Added to the unit's own CO₂ sensor before it is used for control and shown. If it reads 200 too high compared with your room sensors, set −200. Now: raw ${fmt(controller.co2_raw, lang, 0, " ppm")}, corrected ${fmt(controller.co2_measured, lang, 0, " ppm")}.`}</Help></label>
           <label>{lang === "da" ? "Timeout for HA-rumdata" : "HA room data timeout"}<input type="number" min="60" max="3600" step="30" value={n(form.ha_timeout_seconds, 300)} onChange={num("ha_timeout_seconds")}/><span>s</span><Help>{lang === "da" ? "Hører controlleren ikke fra Home Assistant så længe, falder Smart Auto tilbage til anlæggets egne følere." : "If the controller hears nothing from Home Assistant for this long, Smart Auto falls back to the unit's own sensors."}</Help></label>
         </div>
@@ -654,7 +642,7 @@ export function SettingsPage() {
         <div className="settings-grid">
           <label className="check-row"><input type="checkbox" checked={form.afterheat_room_enabled === true} onChange={check("afterheat_room_enabled")}/> {lang === "da" ? "Flyt setpunktet efter rumtemperaturen" : "Move the setpoint with the room temperature"}</label>
           <Help>{lang === "da" ? "Setpunkt = grundsetpunkt + forstærkning × (ønsket rum − målt rum). Det flyttes én grad ad gangen og holdes mellem laveste og højeste værdi. Mangler rumtemperaturen, bruges grundsetpunktet. Ventilationsluften giver kun få hundrede watt, så det er komfort og ikke opvarmning." : "Setpoint = base setpoint + gain × (wanted room − measured room). It moves one degree at a time and stays between the lowest and highest value. Without a room temperature the base setpoint is used. Ventilation air carries only a few hundred watts, so this is comfort, not heating."}</Help>
-          <label>{lang === "da" ? "Rumtemperatur fra" : "Room temperature from"}<select value={s(form.afterheat_room_source, "auto")} onChange={e => set("afterheat_room_source", e.target.value)}><option value="auto">{lang === "da" ? "Automatisk: HA-rum, ellers T3" : "Automatic: HA rooms, else T3"}</option><option value="t3">{lang === "da" ? "Udsugningsluft T3" : "Extract air T3"}</option><option value="t5">{lang === "da" ? "HRC2-rumføler T5 (upålidelig uden HCP4)" : "HRC2 room sensor T5 (unreliable without HCP4)"}</option><option value="ha_average">{lang === "da" ? "Gennemsnit af HA-rum" : "Average of HA rooms"}</option>{roomOptions(form.afterheat_room_source)}</select><Help>{lang === "da" ? "Automatisk bruger gennemsnittet af dine HA-rum med temperatur (badeværelser og brændeovns- og udeluftsfølere tæller ikke med). Tilføj rummene med dine egne temperaturfølere i HCH5 Control-integrationen under Smart Auto-rum, gerne med styring slået fra. Findes der ingen, bruges T3, som er udsugningsluft og også indeholder luft fra køkken og bad. T5 sidder i HRC2-fjernbetjeningen og opdateres ikke, når Pi'en har erstattet HCP4." : "Automatic uses the average of your HA rooms with a temperature (bathrooms and stove or outdoor sensors are left out). Add rooms with your own temperature sensors in the HCH5 Control integration under Smart Auto rooms, ideally with control turned off. Without any, T3 is used, which is extract air and includes kitchen and bathroom air. T5 sits in the HRC2 remote and is not updated once the Pi has replaced HCP4."}</Help></label>
+          <label>{lang === "da" ? "Rumtemperatur fra" : "Room temperature from"}<select value={s(form.afterheat_room_source, "auto")} onChange={e => set("afterheat_room_source", e.target.value)}><option value="auto">{lang === "da" ? "Automatisk: HA-rum, ellers T3" : "Automatic: HA rooms, else T3"}</option><option value="t3">{lang === "da" ? "Udsugningsluft T3" : "Extract air T3"}</option><option value="t5">{lang === "da" ? "HRC2-rumføler T5 (upålidelig uden HCP4)" : "HRC2 room sensor T5 (unreliable without HCP4)"}</option><option value="ha_average">{lang === "da" ? "Gennemsnit af HA-rum" : "Average of HA rooms"}</option>{roomOptions(form.afterheat_room_source)}</select><Help>{lang === "da" ? "Automatisk bruger gennemsnittet af dine HA-rum med temperatur (badeværelser og brændeovns- og udeluftsfølere tæller ikke med). Rummene og deres følere vælges på siden Rum. Findes der ingen, bruges T3, som er udsugningsluft og også indeholder luft fra køkken og bad. T5 sidder i HRC2-fjernbetjeningen og opdateres ikke, når Pi'en har erstattet HCP4." : "Automatic uses the average of your HA rooms with a temperature (bathrooms and stove or outdoor sensors are left out). Add rooms with your own temperature sensors in the HCH5 Control integration under Smart Auto rooms, ideally with control turned off. Without any, T3 is used, which is extract air and includes kitchen and bathroom air. T5 sits in the HRC2 remote and is not updated once the Pi has replaced HCP4."}</Help></label>
           <label>{lang === "da" ? "Ønsket rumtemperatur" : "Wanted room temperature"}<input type="number" min="15" max="26" step="0.5" value={n(form.afterheat_room_target, 21)} onChange={num("afterheat_room_target")}/><span>°C</span><Help>{lang === "da" ? "Sæt den lidt under radiatorernes eller gulvvarmens, så de ikke modarbejder hinanden." : "Set it slightly below the radiators or floor heating so they do not work against each other."}</Help></label>
           <label>{lang === "da" ? "Forstærkning" : "Gain"}<input type="number" min="0.5" max="5" step="0.5" value={n(form.afterheat_room_gain, 1.5)} onChange={num("afterheat_room_gain")}/><span>°C/°C</span><Help>{lang === "da" ? "Grader indblæsning pr. grad rummet afviger." : "Degrees of supply air per degree of room deviation."}</Help></label>
           <label>{lang === "da" ? "Laveste indblæsning" : "Lowest supply"}<input type="number" min="10" max="35" value={n(form.afterheat_room_min, 17)} onChange={num("afterheat_room_min")}/><span>°C</span><Help>{lang === "da" ? "Under ca. 17 °C kan indblæsningen føles som træk." : "Below about 17 °C the supply air can feel draughty."}</Help></label>
@@ -671,7 +659,7 @@ export function SettingsPage() {
       {typeof controller.afterheat_control_mode === "string" && <AfterheatControlCard lang={lang} form={form} controller={controller} set={set}/>}
       {(readFrostLock(controller).known || typeof controller.frost_lock_enabled === "boolean") && <FrostLockCard lang={lang} form={form} controller={controller} set={set}/>}
     </>,
-    cooling: <Card title={t(SECTIONS[5].title)} lead={t(SECTIONS[5].lead)} icon={Snowflake}>
+    cooling: <Card title={lang === "da" ? "Frikøling" : "Free cooling"} lead={t(sectionInfo("cooling").lead)} icon={Snowflake}>
       <div className="settings-grid">
         <label className="check-row"><input type="checkbox" checked={form.cooling_enabled === true} onChange={check("cooling_enabled")}/> {lang === "da" ? "Frikøling" : "Free cooling"}</label>
         <Help>{lang === "da" ? "Er det for varmt inde og køligere ude, åbnes bypass, så udeluften går uden om varmeveksleren. Bypass-spjældet er langsomt (ca. 3 minutter), derfor venter controlleren og holder minimumstider." : "If it is too warm inside and cooler outside, the bypass opens so outdoor air skips the heat exchanger. The damper is slow (about 3 minutes), so the controller waits and keeps minimum times."}</Help>
@@ -685,7 +673,7 @@ export function SettingsPage() {
         <label>{lang === "da" ? "Mindste tid slukket" : "Minimum off time"}<input type="number" min="0" max="3600" step="60" value={n(form.cooling_min_off_seconds, 300)} onChange={num("cooling_min_off_seconds")}/><span>s</span></label>
       </div>
     </Card>,
-    fireplace: <Card title={t(SECTIONS[6].title)} lead={lang === "da" ? "Holder anlæggets pejsefunktion, så længe der fyres" : "Holds the unit's fireplace mode while the stove burns"} icon={Flame}>
+    fireplace: <Card title={t(sectionInfo("fireplace").title)} lead={lang === "da" ? "Holder anlæggets pejsefunktion, så længe der fyres" : "Holds the unit's fireplace mode while the stove burns"} icon={Flame}>
       <div className="settings-grid">
         <label className="check-row"><input type="checkbox" checked={form.fireplace_auto_enabled === true} onChange={check("fireplace_auto_enabled")}/> {lang === "da" ? "Automatisk pejsefunktion" : "Automatic fireplace mode"}</label>
         <Help>{lang === "da" ? "Pejsefunktionen giver overtryk i huset, så røgen ikke suges ind. Den startes af brændeovnens føler eller af en ekstern switch (Home Assistant, knap, automation). Bypass lukkes, mens den er aktiv. Slukker du pejsefunktionen manuelt, venter automatikken, til signalet har været væk." : "Fireplace mode gives positive pressure so smoke is not drawn in. It is started by the stove sensor or by an external switch (Home Assistant, button, automation). The bypass is closed while it is active. If you turn fireplace mode off manually, the automation waits until the signal has cleared."}</Help>
@@ -700,7 +688,7 @@ export function SettingsPage() {
         <span>{lang === "da" ? "Automatik" : "Automation"}<strong>{controller.fireplace_auto_active === true ? t(T.on) : t(T.off)}</strong></span>
       </div>
     </Card>,
-    ui: <Card title={t(SECTIONS[7].title)} lead={lang === "da" ? "Gemmes kun i denne browser" : "Stored in this browser only"} icon={Monitor}>
+    ui: <Card title={t(sectionInfo("ui").title)} lead={lang === "da" ? "Gemmes kun i denne browser" : "Stored in this browser only"} icon={Monitor}>
       <div className="settings-grid">
         <label>{lang === "da" ? "Sprog" : "Language"}<select value={language} onChange={e => setLanguage(e.target.value === "en" ? "en" : "da")}><option value="da">Dansk</option><option value="en">English</option></select><Help>{lang === "da" ? "Indstillinger og forklaringer vises på det valgte sprog." : "Settings and explanations are shown in the chosen language."}</Help></label>
         <label>{lang === "da" ? "Stil" : "Style"}<select value={skin} onChange={e => { const next = e.target.value === "aurora" ? "aurora" : "command"; setSkin(next); setTheme(SKIN_PRESETS[next].theme); setNavPosition(SKIN_PRESETS[next].nav); }}><option value="command">{lang === "da" ? "Command – mørk med sidemenu" : "Command – dark, side menu"}</option><option value="aurora">{lang === "da" ? "Aurora – lys med topmenu" : "Aurora – light, top menu"}</option></select><Help>{lang === "da" ? "Samme to stilarter som Fleetdeck. Tema og menu kan bagefter vælges hver for sig." : "The same two styles as Fleetdeck. Theme and menu can then be changed separately."}</Help></label>
@@ -711,7 +699,7 @@ export function SettingsPage() {
         <button className="secondary-action" onClick={uiSave}>{t(T.saveUi)}</button>
       </div>
     </Card>,
-    security: <Card title={t(SECTIONS[8].title)} lead={t(SECTIONS[8].lead)} icon={ShieldCheck}>
+    security: <Card title={t(sectionInfo("security").title)} lead={t(sectionInfo("security").lead)} icon={ShieldCheck}>
       <AccountPanel lang={lang}/>
       {can("configure") && <><div className="settings-summary">
         <span>Master<strong>{s(controller.active_master, "—")}</strong></span>
@@ -719,10 +707,10 @@ export function SettingsPage() {
       </div>
       <p className="settings-help">{lang === "da" ? "Pi'en skriver kun til anlægget, når den er master. Sidder HCP4-panelet på bussen, vinder det altid." : "The Pi only writes to the unit when it is master. If the HCP4 panel is on the bus, it always wins."}</p></>}
     </Card>,
-    users: <Card title={t(SECTIONS[10].title)} lead={lang === "da" ? "Giv familien, teknikeren og dig selv hver deres login og rolle" : "Give the family, the technician and yourself their own login and role"} icon={Users}>
+    users: <Card title={t(sectionInfo("users").title)} lead={lang === "da" ? "Giv familien, teknikeren og dig selv hver deres login og rolle" : "Give the family, the technician and yourself their own login and role"} icon={Users}>
       <UsersPanel lang={lang}/>
     </Card>,
-    mail: <Card title={t(SECTIONS[11].title)} lead={lang === "da" ? "Mail ved fejl på anlægget og link til ny adgangskode" : "Mail on unit faults and links for a new password"} icon={Mail}>
+    mail: <Card title={t(sectionInfo("mail").title)} lead={lang === "da" ? "Mail ved fejl på anlægget og link til ny adgangskode" : "Mail on unit faults and links for a new password"} icon={Mail}>
       <MailPanel lang={lang}/>
     </Card>,
   };
@@ -732,7 +720,11 @@ export function SettingsPage() {
   return <section className="dashboard-overview page-enter">
     <header className="overview-heading-row"><div><span className="eyebrow">{t(T.eyebrow)}</span><h1>{t(T.title)}</h1><p>{t(T.intro)}</p></div></header>
     <div className="settings-layout">
-      <nav className="settings-nav" aria-label={t(T.eyebrow)}>{visible.map(item => { const Icon = item.icon; return <button key={item.id} type="button" aria-current={item.id === active.id ? "page" : undefined} onClick={() => setSection(item.id)}><Icon size={16}/><span><strong>{t(item.title)}</strong><small>{t(item.lead)}</small></span></button>; })}</nav>
+      <nav className="settings-nav" aria-label={t(T.eyebrow)}>{visible.map((item, index) => { const Icon = item.icon; const first = index === 0 || visible[index - 1].group !== item.group; return <div key={item.id} className="settings-nav-item">
+        {first && <span className="settings-nav-group">{t(item.group)}</span>}
+        <button type="button" aria-current={item.id === active.id ? "page" : undefined} onClick={() => setSection(item.id)}><Icon size={16}/><span><strong>{t(item.title)}</strong><small>{t(item.lead)}</small></span></button>
+        {item.id === "sensors" && can("configure") && <a className="settings-nav-link" href="#/rooms"><DoorOpen size={16}/><span><strong>{lang === "da" ? "Rum" : "Rooms"}</strong><small>{lang === "da" ? "Rum og følere fra Home Assistant" : "Rooms and sensors from Home Assistant"}</small></span></a>}
+      </div>; })}</nav>
       <div className="settings-content" data-section={active.id}>{sections[active.id]}</div>
     </div>
     {!SELF_SAVING.includes(active.id) && <div className="settings-savebar"><span>{notice || t(T.saveHint)}</span><button className="primary-action" disabled={busy || !csrf} onClick={() => void save()}><Save size={15}/>{busy ? t(T.saving) : t(T.save)}</button></div>}
