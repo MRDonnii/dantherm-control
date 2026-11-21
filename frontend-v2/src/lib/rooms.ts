@@ -128,6 +128,9 @@ const hasClimate = (area: CatalogArea) => area.sensors.some(sensor => sensor.kin
  * that is not set up yet (same area or same name). Garages come in as not
  * ventilated; the unit's own sensor goes to the dining room if no room has it.
  */
+/** HA sends the weather service's sensors (DMI) as this virtual area: they lead the list for outdoor rooms and never become a room. */
+export const WEATHER_AREA_ID = "_weather";
+
 export function addAllFromCatalog(rooms: Room[], catalog: CatalogArea[]): { rooms: Room[]; added: string[] } {
   const next = [...rooms];
   const added: string[] = [];
@@ -135,7 +138,7 @@ export function addAllFromCatalog(rooms: Room[], catalog: CatalogArea[]): { room
   const usedNames = new Set(rooms.map(room => room.name.toLocaleLowerCase("da")));
   for (const area of catalog) {
     if (next.length >= MAX_ROOMS) break;
-    if (!hasClimate(area) || usedAreas.has(area.area_id) || usedNames.has(area.area_name.toLocaleLowerCase("da"))) continue;
+    if (area.area_id === WEATHER_AREA_ID || !hasClimate(area) || usedAreas.has(area.area_id) || usedNames.has(area.area_name.toLocaleLowerCase("da"))) continue;
     const room = roomFromArea(area, next);
     next.push(room);
     added.push(room.name);
@@ -166,11 +169,12 @@ export function withUnitSensor(rooms: Room[], id: string, on: boolean): Room[] {
 }
 
 /** Sensor choices for one kind, the room's own area first, then the rest by area. */
-export function sensorGroups(catalog: CatalogArea[], kind: SensorKind, areaId: string | null): { label: string; sensors: CatalogSensor[] }[] {
+export function sensorGroups(catalog: CatalogArea[], kind: SensorKind, areaId: string | null, outdoor = false): { label: string; sensors: CatalogSensor[] }[] {
   const groups = catalog
     .map(area => ({ id: area.area_id, label: area.area_name, sensors: area.sensors.filter(sensor => sensor.kind === kind) }))
     .filter(group => group.sensors.length);
-  groups.sort((a, b) => (a.id === areaId ? -1 : b.id === areaId ? 1 : a.label.localeCompare(b.label, "da")));
+  const rank = (id: string) => (outdoor && id === WEATHER_AREA_ID ? 0 : id === areaId ? 1 : !outdoor && id === WEATHER_AREA_ID ? 3 : 2);
+  groups.sort((a, b) => rank(a.id) - rank(b.id) || a.label.localeCompare(b.label, "da"));
   return groups.map(({ label, sensors }) => ({ label, sensors }));
 }
 

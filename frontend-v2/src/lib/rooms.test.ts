@@ -3,6 +3,7 @@ import {
   addAllFromCatalog, blankRoom, guessType, liveValues, roomProblems, sensorGroups, slug, toPayload, withArea, withType, withUnitSensor,
   type CatalogArea, type Room,
 } from "./rooms";
+import { WEATHER_AREA_ID } from "./rooms";
 
 const area = (area_id: string, area_name: string, ...sensors: [string, CatalogArea["sensors"][number]["kind"]][]): CatalogArea =>
   ({ area_id, area_name, sensors: sensors.map(([entity_id, kind]) => ({ entity_id, name: entity_id, kind })) });
@@ -77,5 +78,17 @@ describe("room setup helpers", () => {
     const state = { smart_rooms: { Spisestue: { temperature: 21.4, humidity: 44, unit_sensor: true } } };
     expect(liveValues(state, "spisestue")).toEqual({ temperature: 21.4, humidity: 44, unit_sensor: true });
     expect(liveValues(state, "Garage")).toBeNull();
+  });
+});
+
+describe("weather sensors (DMI)", () => {
+  const withWeather = [...CATALOG, { area_id: WEATHER_AREA_ID, area_name: "Vejr (DMI)", sensors: [{ entity_id: "sensor.dmi_vejr_temperatur", name: "DMI temperatur", kind: "temperature" as const }] }];
+  it("lead the list for an outdoor room and come last for an indoor one", () => {
+    expect(sensorGroups(withWeather, "temperature", "udenfor", true)[0].label).toBe("Vejr (DMI)");
+    const indoor = sensorGroups(withWeather, "temperature", "spisestue");
+    expect(indoor[indoor.length - 1].label).toBe("Vejr (DMI)");
+  });
+  it("never become a room of their own", () => {
+    expect(addAllFromCatalog([], withWeather).added).not.toContain("Vejr (DMI)");
   });
 });

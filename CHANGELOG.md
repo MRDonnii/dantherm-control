@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.11.3
+
+- **Rum:** the weather service's sensors (DMI current temperature and humidity, sent by the HA integration as
+  "Vejr (DMI)") are listed first in the sensor pickers of outdoor rooms, and last for indoor rooms. They never become
+  a room of their own with "Tilføj alle rum fra HA".
+
 ## 1.11.2
 
 - **Rum:** the room cards no longer overflow into each other when a field holds a long sensor name (fields shrink and

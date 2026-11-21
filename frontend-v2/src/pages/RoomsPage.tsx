@@ -29,7 +29,7 @@ function LiveChips({ state, room }: { state: State; room: Room }) {
 }
 
 function SensorPicker({ kind, room, catalog, onChange }: { kind: SensorKind; room: Room; catalog: CatalogArea[]; onChange: (value: string | null) => void }) {
-  const groups = sensorGroups(catalog, kind, room.area_id);
+  const groups = sensorGroups(catalog, kind, room.area_id, room.type === "outdoor");
   const current = room.sensors[kind];
   const known = !current || groups.some(group => group.sensors.some(sensor => sensor.entity_id === current));
   return <label>{KIND_LABELS[kind]}
