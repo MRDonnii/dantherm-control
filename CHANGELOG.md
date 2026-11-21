@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.2
+
+- **Afterheat under the frost lock: on/off and cycling at the low end.** The coil never cools the air, so with the air
+  into it (1-Wire T2) above the floor HAC1 can hold, no level can take the air below it: the Pi may step down to and
+  cycle between low levels again (it held level 2 at 25 °C with the target 22 °C). Level 0 is allowed under the lock
+  while the air into the coil and the water-side frost sensor are both at least 12 °C, so the Pi can switch 0/1 on
+  mild days. The frost lock still keeps the setpoint floor and blocks turning the afterheat off.
+
 ## 1.10.1
 
 - **Afterheat frost rule uses what each level really gives.** A level held for 5 minutes is remembered (the lowest

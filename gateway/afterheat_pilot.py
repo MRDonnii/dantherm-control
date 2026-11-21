@@ -204,6 +204,15 @@ FROST_BLIP_SHARE = 0.5
 # in the 2026-11-20 trial, the next level 5-6 K, which the model learns short):
 # a step down to it is judged as losing all the heat of the level above.
 FROST_MIN_LEVEL = 1
+# The coil only adds heat: with the valve open at all, the air after it is never
+# colder than the air before it (the 1-Wire T2). With that air this far above the
+# frost floor no level can take the air below it, whatever the model says.
+FROST_AIR_BEFORE_MARGIN_K = 0.3
+# Under the frost lock HAC1 may go to level 0 (on/off between 0 and 1) only while
+# the air into the coil and the water side (frost sensor) are both this warm:
+# nothing can freeze then, and level 1 alone would overheat on mild days.
+FROST_ZERO_AIR_C = 12.0
+FROST_ZERO_WATER_C = 12.0
 # Far too warm (URGENT_WARM_K) this long under the frost lock: one step down is allowed anyway.
 WARM_ESCAPE_S = 10 * 60.0
 # A level is "seen" once it has been held this long (dead time + two lags); the
@@ -471,6 +480,9 @@ class PilotInputs:
     t2ah_raw: float | None = None
     fan_supply: float | None = None
     water_flow: float | None = None
+    # The air before the coil (1-Wire T2) and the water-side frost sensor, when known.
+    before_heater: float | None = None
+    frost_sensor: float | None = None
     outdoor: float | None = None
     extract: float | None = None
     master: bool = False
@@ -1071,7 +1083,21 @@ class AfterheatPilot:
         floor: they say where the air is too cold, this says which levels are
         worth stepping down to.
         """
-        return inp.frost_lock and float(inp.target) + error < math.ceil(float(inp.frost_floor)) + FROST_MARGIN_K
+        settle = float(inp.target) + error
+        before = _num(inp.before_heater)
+        if before is not None and -30 < before < 60:
+            settle = max(settle, before)  # the coil never cools the air
+        return inp.frost_lock and settle < math.ceil(float(inp.frost_floor)) + FROST_MARGIN_K
+
+    @staticmethod
+    def frost_min_level(inp: PilotInputs) -> int:
+        """Lowest level the Pi may use: 1 under the frost lock, 0 when the coil is warm on both sides."""
+        if not inp.frost_lock:
+            return 0
+        air, water = _num(inp.before_heater), _num(inp.frost_sensor)
+        if air is not None and water is not None and air >= FROST_ZERO_AIR_C and water >= FROST_ZERO_WATER_C:
+            return 0
+        return FROST_MIN_LEVEL
 
     def _neighbour_error(self, level: int, move: int, error: float | None = None) -> float:
         """Where the air settles (error, K) one level ``move`` (+1/-1) from ``level``."""
@@ -1090,6 +1116,9 @@ class AfterheatPilot:
         """
         if not inp.frost_lock or level <= 0:
             return False
+        before = _num(inp.before_heater)
+        if before is not None and before >= math.ceil(float(inp.frost_floor)) + FROST_MARGIN_K + FROST_AIR_BEFORE_MARGIN_K:
+            return False  # the air into the coil is already above the floor HAC1 can hold
         error = self.error_settled if error is None else error
         if (self.warm_since is not None and inp.now - self.warm_since >= WARM_ESCAPE_S
                 and float(inp.target) + error - (self.scale or 1.0) * max(
@@ -1608,7 +1637,7 @@ class AfterheatPilot:
         self.target_raised_from = float(inp.target) if effective != float(inp.target) else None
         if self.target_raised_from is not None:
             inp = replace(inp, target=effective)  # everything below (and the snapshot) steers for it
-        low = 1 if inp.frost_lock else 0
+        low = self.frost_min_level(inp)
         high = LEVEL_MAX
         self.control_target = hold_friendly(float(inp.target))
         if not self.active:
@@ -1661,7 +1690,7 @@ class AfterheatPilot:
         level = int(inp.level)
         temperature = float(inp.t2ah)
         target = float(inp.target)
-        low = 1 if inp.frost_lock else 0
+        low = self.frost_min_level(inp)
         if inp.frost_lock and level < low:
             return "Frostsikring: mindst trin 1"
         if self.note and inp.now - self.note_at <= 2 * self.clock.period and self.note.startswith(("HAC1 sommerspærre", "Trin ", "HAC1 tog", "HAC1 fulgte", "Frostsikring: HAC1")):

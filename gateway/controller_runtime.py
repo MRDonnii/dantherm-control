@@ -247,6 +247,8 @@ class ControllerRuntime:
             "t2ah_raw": robust_temperature(value for _at, value in samples),
             "fan_supply": self._safe_number(self._first(state, "fan_supply_percent", "supply_fan_percent"), 0, 100),
             "water_flow": self.onewire.by_role("water_flow"),
+            "before_heater": self.onewire.by_role("t2"),
+            "frost_sensor": self._safe_number(fresh_sensor_value(state, "heating_coil_frost_temperature"), -50, 100),
             # The air before the coil (a 1-Wire T2; the unit's own T2 register repeats T2AH).
             "master": self.master.writes_allowed(),
         }

@@ -2511,6 +2511,7 @@ class ControllerEngine:
             level_changed_at=values.get("level_changed_at"),
             t2ah=values.get("t2ah"), t2ah_age=age("t2ah_at"), t2ah_raw=values.get("t2ah_raw"),
             fan_supply=values.get("fan_supply"), water_flow=values.get("water_flow"),
+            before_heater=values.get("before_heater"), frost_sensor=values.get("frost_sensor"),
             outdoor=self.external.get("outdoor_temperature"), extract=self.external.get("extract_temp"),
             master=values.get("master") is True,
             cool_boost=bool(flags.get("cool_boost_active")), free_cooling=bool(flags.get("cooling_active")),

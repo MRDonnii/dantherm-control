@@ -1044,6 +1044,21 @@ class PilotDecisionTests(unittest.TestCase):
         self.assertFalse([r for r in late if r["level"] <= 1])
         self.assertEqual(pilot.follow_failures, 0)
 
+    def test_warm_air_into_the_coil_allows_low_levels_under_the_frost_lock(self):
+        # Live 2026-11-21: air into the coil 18.4 C, floor 18; the Pi held level 2 at 25 C.
+        pilot, inp = self.frost_pilot(level=2, t2ah=25.0, t2ah_raw=25.0)
+        pilot.error_settled = 3.0
+        pilot.heat.lasting_step = lambda index: 8.0
+        warm = pilot_module.replace(inp, before_heater=18.6)
+        self.assertFalse(pilot._down_below_frost_floor(warm, 2))
+        self.assertFalse(pilot._below_frost_floor(warm, -10.0))
+        cold = pilot_module.replace(inp, before_heater=16.0)
+        self.assertTrue(pilot._down_below_frost_floor(cold, 2))
+        # Level 0 (on/off) only with both the air in and the water side warm.
+        self.assertEqual(AfterheatPilot.frost_min_level(pilot_module.replace(inp, before_heater=18.0, frost_sensor=17.0)), 0)
+        self.assertEqual(AfterheatPilot.frost_min_level(pilot_module.replace(inp, before_heater=18.0, frost_sensor=9.0)), 1)
+        self.assertEqual(AfterheatPilot.frost_min_level(pilot_module.replace(inp, before_heater=None, frost_sensor=17.0)), 1)
+
     def test_a_level_seen_well_above_the_floor_may_be_stepped_down_to(self):
         # Live 2026-11-21: level 1 settled at ~20.5 C with the floor 18, yet the
         # model rule (all heat above level 0 lost) kept the Pi on level 2.
