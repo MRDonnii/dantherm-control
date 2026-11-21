@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Activity, Cpu, GitBranch, Radio, Waves } from "lucide-react";
 import { InfoList } from "../components/InfoList";
-import { nightCoolText, presenceText, roomTargetText } from "../lib/automation";
+import { nightCoolText, roomTargetText } from "../lib/automation";
 import { requestJson } from "../lib/api";
 import { usePollHealth, useSinglePoll } from "../lib/connection";
 import { bypassTravel, formatRemaining } from "../lib/bypass";
@@ -148,15 +148,12 @@ export function TechniquePage() {
         </article>
 
         <article className="surface panel-card">
-          <div className="pro-card-head compact"><div><h2>Automatik</h2><p>Rumstyret eftervarme, natkøling og tilstedeværelse</p></div><GitBranch size={20}/></div>
+          <div className="pro-card-head compact"><div><h2>Automatik</h2><p>Rumstyret eftervarme og natkøling</p></div><GitBranch size={20}/></div>
           <InfoList rows={[
             { label: "Mål fra rummene", value: roomTargetText(controller)?.replace("Mål fra rummene: ", "") ?? "Slået fra" },
             { label: "Natkøling", value: nightCoolText(controller) ?? (controller.night_cool_enabled === true ? "Venter på natvinduet" : "Slået fra"), tone: controller.night_cool_active === true ? "ok" : undefined },
             { label: "Kølesæson (5-døgns middel ude)", value: controller.night_cool_season_mean !== null && controller.night_cool_season_mean !== undefined ? `${text(controller.night_cool_season_mean)} °C` : "—" },
             { label: "Højeste i morgen / i dag", value: `${controller.night_cool_forecast_high ?? "—"} / ${controller.night_cool_today_high ?? "—"} °C` },
-            { label: "Tilstedeværelse", value: presenceText(controller)?.replace("Tilstedeværelse: ", "") ?? "Slået fra" },
-            { label: "Rum i brug", value: Array.isArray(controller.occupied_rooms) && controller.occupied_rooms.length ? controller.occupied_rooms.join(", ") : "Ingen" },
-            { label: "Hjemme/ude", value: controller.home_state === "away" ? `Ingen hjemme${controller.home_reason ? ` (${text(controller.home_reason)})` : ""}` : controller.home_state === "home" ? `Hjemme${controller.home_reason ? ` (${text(controller.home_reason)})` : ""}` : "Ukendt" },
           ]}/>
         </article>
 

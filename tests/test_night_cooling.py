@@ -184,24 +184,25 @@ class NightCoolingEngineTests(unittest.TestCase):
 
 
 class ForecastSignalTests(unittest.TestCase):
-    def test_forecast_and_home_are_leased_signals(self):
+    def test_forecast_highs_are_leased_signals(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         runtime = ControllerRuntime(gateway_state={}, hardware=HardwareAdapter(),
                                     state_path=Path(temp.name) / "controller.json")
         runtime.hardware_writes_allowed = lambda: False
+        # home/home_reason from an older integration (0.9.0-beta.11) are ignored, not refused.
         result = runtime.external_signals({"valid_for_s": 300, "forecast_high_c": 26.4, "today_high_c": 21.0,
                                            "home": False, "home_reason": "Alarm: armed_away"})
         self.assertEqual(result["night_cool_forecast_high"], 26.4)
         self.assertEqual(result["night_cool_today_high"], 21.0)
-        self.assertEqual(result["home_state"], "away")
-        self.assertEqual(result["home_reason"], "Alarm: armed_away")
+        self.assertNotIn("home_state", result)
+        self.assertNotIn("home_reason", result)
         runtime.climate_signals_until = {key: 0.0 for key in runtime.climate_signals_until}
         result = runtime.snapshot()
         self.assertIsNone(result["night_cool_forecast_high"])
-        self.assertIsNone(result["home_state"])
+        runtime.external_signals({"valid_for_s": 300, "home": "yes"})
         with self.assertRaises(Exception):
-            runtime.external_signals({"valid_for_s": 300, "home": "yes"})
+            runtime.external_signals({"valid_for_s": 300, "forecast_high_c": "varmt"})
 
 
 if __name__ == "__main__":

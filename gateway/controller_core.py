@@ -413,14 +413,6 @@ class ControllerState:
         "night_cool_level": 4,
         # Completed daily outdoor means [[date, mean, hours], ...] for the cooling season (set by the engine).
         "outdoor_daily_means": [],
-        # Ventilation after occupancy (presence sensors per room, home/away from HA).
-        "presence_away_enabled": False,
-        "presence_away_level": 2,
-        # This many occupied rooms raise the base level by one.
-        "presence_busy_enabled": False,
-        "presence_busy_rooms": 4,
-        "presence_on_minutes": 5,
-        "presence_off_minutes": 15,
         # Frost lock for a water afterheat coil (see FROST_LOCK_*): T1 or the
         # attic at or below frost_lock_outdoor_c, or the water-side frost
         # sensor at or below frost_lock_coil_c, keeps the afterheat on.
@@ -751,7 +743,7 @@ class ControllerState:
     BOOL_KEYS = ("sizing_enabled", "afterheat_room_enabled", "fireplace_auto_enabled",
                  "humidity_smart_enabled", "dry_protection_enabled", "balance_enabled", "pm25_enabled",
                  "bathroom_night_drying", "winter_dry_enabled", "frost_lock_enabled",
-                 "afterheat_room_weighted", "night_cool_enabled", "presence_away_enabled", "presence_busy_enabled")
+                 "afterheat_room_weighted", "night_cool_enabled")
     TIME_KEYS = (("night_cool_start", "Natkøling start", "23:00"), ("night_cool_end", "Natkøling slut", "07:00"))
 
     def _sanitize_advanced(self) -> None:
@@ -856,8 +848,7 @@ class ControllerState:
         ("winter_level", 1, None), ("winter_hold_minutes", 5, 240),
         ("dry_hold_minutes", 1, 240),
         ("afterheat_pi_min_dwell_ticks", *PI_MIN_DWELL_TICKS_RANGE),
-        ("night_cool_level", 1, None), ("presence_away_level", 1, None),
-        ("presence_busy_rooms", 1, 32), ("presence_on_minutes", 1, 60), ("presence_off_minutes", 1, 120),
+        ("night_cool_level", 1, None),
     )
 
     @staticmethod
@@ -1113,6 +1104,11 @@ class ControllerState:
             except OSError:
                 pass
 
+    REMOVED_KEYS = frozenset({
+        "presence_away_enabled", "presence_away_level", "presence_busy_enabled", "presence_busy_rooms",
+        "presence_on_minutes", "presence_off_minutes",
+    })
+
     def configure(self, patch: dict[str, object]) -> dict[str, object]:
         with self.lock:
             backup = copy.deepcopy(self.data)
@@ -1142,6 +1138,8 @@ class ControllerState:
                 "cooling_min_on_seconds", "cooling_min_off_seconds", "cooling_transition_timeout_seconds",
                 *self.ADVANCED_KEYS, "room_setup",
             }
+            # Settings removed in a later version (occupancy, 1.12.2): dropped silently, e.g. from a cached WebUI.
+            patch = {key: value for key, value in patch.items() if key not in self.REMOVED_KEYS}
             unknown = set(patch) - allowed
             if unknown:
                 raise ControllerError(f"Ukendt controller-felt: {sorted(unknown)[0]}")
@@ -1428,9 +1426,6 @@ class ControllerState:
         "afterheat_room_band_k", "afterheat_room_offset_k",
         "night_cool_enabled", "night_cool_start", "night_cool_end", "night_cool_forecast_c", "night_cool_today_c",
         "night_cool_season_c", "night_cool_delta_k", "night_cool_min_indoor_c", "night_cool_level",
-        "presence_away_enabled", "presence_busy_enabled", "presence_away_level", "presence_busy_rooms",
-        "presence_on_minutes",
-        "presence_off_minutes",
     )
     ADVANCED_LABELS = {
         "house_area_m2": "Boligareal", "ceiling_height_m": "Loftshøjde",
@@ -1444,8 +1439,6 @@ class ControllerState:
         "night_cool_forecast_c": "Natkøling: varm dag i morgen fra", "night_cool_today_c": "Natkøling: varm dag i dag fra",
         "night_cool_season_c": "Natkøling: kølesæson over", "night_cool_delta_k": "Natkøling: ude køligere end inde med",
         "night_cool_min_indoor_c": "Natkøling: inde mindst", "night_cool_level": "Natkøling: trin",
-        "presence_away_level": "Ude: højeste trin", "presence_busy_rooms": "Mange rum i brug",
-        "presence_on_minutes": "Tilstede efter", "presence_off_minutes": "Fri efter",
         "fireplace_auto_on_temp": "Pejs start", "fireplace_auto_off_temp": "Pejs stop",
         "fireplace_afterrun_minutes": "Efterløb", "fireplace_max_hours": "Maks. varighed",
         "humidity_margin_gm3": "Fugtmargin", "dry_rh_limit": "Tør luft-grænse",
@@ -1869,9 +1862,6 @@ class ControllerEngine:
         # Night cooling from the forecast and the outdoor history it uses (night_cooling.py).
         self.night_cooling = NightCooling()
         self.outdoor_history = OutdoorHistory(config.data.get("outdoor_daily_means"))
-        # Occupancy (presence_*): last decision for the snapshot.
-        self.presence_state = "disabled"
-        self.presence_reason = ""
         # The last afterheat control snapshot (saturation for the room loop).
         self.last_pilot: dict[str, object] = {}
         # Pi-side afterheat level control (afterheat_pilot) and what it is fed with.
@@ -2039,11 +2029,9 @@ class ControllerEngine:
         d = self.config.data
         now = datetime.fromtimestamp(now_ts).astimezone()
         flags = {"schedule_active": False, "night_active": False, "vacation_active": False, "quick_boost_active": False, "cooling_active": False, "cool_boost_active": False,
-                 "night_cool_active": False, "presence_away_active": False, "presence_busy_active": False}
+                 "night_cool_active": False}
         effective_bypass = "on" if d["bypass"] == "on" else "off"
         self._schedule_key = None
-        # The level from the air quality (CO2/RH) before any plan: above the normal level it is real demand.
-        base_level = level
 
         if self.config.vacation_running(now_ts):
             flags["vacation_active"] = True
@@ -2068,7 +2056,6 @@ class ControllerEngine:
                     if planned["min_level"] is not None:
                         level = max(level, int(planned["min_level"]))
                     reason = f"{reason}; ugeplan {name} · trin {planned['set_level'] or planned['min_level']}"
-            level, source, reason = self._presence_overlay(d, level, base_level, source, reason, now, flags)
             if d.get("night_enabled") and _time_window_active(now, str(d["night_start"]), str(d["night_end"])):
                 flags["night_active"] = True
                 rh, co2 = self.measurements.get("rh"), self.measurements.get("co2")
@@ -2163,10 +2150,6 @@ class ControllerEngine:
                     self._stop_cooling(now_ts, "disabled")
         else:
             self._stop_cooling(now_ts, "manual_mode")
-        if self.config.vacation_running(now_ts) or d["mode"] == "manual":
-            self.presence_state, self.presence_reason = (
-                ("disabled", "") if not (d.get("presence_away_enabled") or d.get("presence_busy_enabled"))
-                else ("paused", "Ferie styrer trinnet" if flags["vacation_active"] else "Manuelt valgt trin"))
 
         night_cool = self.night_cooling.update(
             now=now_ts, local=now, settings=d, indoor=self._night_indoor(), outdoor=self._night_outdoor(),
@@ -2635,58 +2618,6 @@ class ControllerEngine:
             return "frostsikring"
         return None
 
-    def _presence_overlay(self, d: dict, level: int, base_level: int, source: str, reason: str,
-                          now: datetime, flags: dict) -> tuple[int, str, str]:
-        """Ventilation after occupancy: lower when nobody is home, one step up when many rooms are in use.
-
-        Air-quality demand (the base level above the normal level) is never cut
-        when away. At night (night mode window) occupancy never raises the level:
-        sleeping in the bedrooms keeps the night limits.
-        """
-        away_on, busy_on = d.get("presence_away_enabled") is True, d.get("presence_busy_enabled") is True
-        if not away_on and not busy_on:
-            self.presence_state, self.presence_reason = "disabled", ""
-            return level, source, reason
-        home = self.external.get("home_state")
-        occupied = list(self.external.get("occupied_rooms") or [])
-        normal = self.config.normal_level()
-        if home == "away" and away_on:
-            limit = int(d["presence_away_level"])
-            if base_level > normal:
-                self.presence_state = "away_demand"
-                self.presence_reason = f"Ingen hjemme, men luftkvaliteten kræver trin {level}"
-                return level, source, reason
-            self.presence_state = "away"
-            self.presence_reason = f"Ingen hjemme: højst trin {limit}"
-            if level > limit:
-                flags["presence_away_active"] = True
-                return limit, "presence_away", f"Ingen hjemme · højst trin {limit}"
-            return level, source, reason
-        busy = int(d["presence_busy_rooms"])
-        count = len(occupied)
-        if home == "away":
-            self.presence_state, self.presence_reason = "away", "Ingen hjemme"
-            return level, source, reason
-        if busy_on and count >= busy:
-            night = d.get("night_enabled") and _time_window_active(now, str(d["night_start"]), str(d["night_end"]))
-            if night:
-                self.presence_state = "busy_night"
-                self.presence_reason = f"{count} rum i brug, men natten bestemmer"
-                return level, source, reason
-            wanted = min(self.config.max_level(), normal + 1)
-            self.presence_state = "busy"
-            self.presence_reason = f"{count} rum i brug: mindst trin {wanted}"
-            if level < wanted:
-                flags["presence_busy_active"] = True
-                return wanted, "presence_busy", f"{reason}; {count} rum i brug · trin {wanted}"
-            return level, source, reason
-        if home is None and not self.external.get("presence_rooms"):
-            self.presence_state, self.presence_reason = "unknown", "Ingen tilstedeværelse fra Home Assistant"
-        else:
-            self.presence_state = "home"
-            self.presence_reason = f"{count} rum i brug" if count else "Hjemme"
-        return level, source, reason
-
     def _afterheat_saturation(self) -> str | None:
         """'high' when the afterheat is at full output and the supply is still too cold, 'low' when off and too warm."""
         level = self.last_pilot.get("afterheat_level")
@@ -2927,12 +2858,6 @@ class ControllerEngine:
                 "night_cool_indoor": self._night_indoor(),
                 "night_cool_forecast_high": self.external.get("forecast_high_c"),
                 "night_cool_today_high": self._today_high(),
-                "presence_state": self.presence_state,
-                "presence_reason": self.presence_reason,
-                "home_state": self.external.get("home_state"),
-                "occupied_rooms": list(self.external.get("occupied_rooms") or []),
-                "occupied_count": len(self.external.get("occupied_rooms") or []),
-                "presence_rooms": self.external.get("presence_rooms"),
                 "indoor_absolute_humidity": _round(self.indoor_absolute_humidity()),
                 "outdoor_absolute_humidity": _round(self.outdoor_absolute_humidity()),
                 "outdoor_humidity": self.external.get("outdoor_rh"),

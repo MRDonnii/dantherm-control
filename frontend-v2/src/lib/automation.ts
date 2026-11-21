@@ -1,7 +1,6 @@
 // The Pi's newer automatic rules as short Danish status lines for Oversigt and
-// Teknik: the afterheat target from the rooms, the night cooling from the
-// forecast and the ventilation after occupancy. The Pi decides; this only reads
-// the snapshot. Older firmware without the keys gives no lines.
+// Teknik: the afterheat target from the rooms and the night cooling from the
+// forecast. The Pi decides; this only reads the snapshot. Older firmware without the keys gives no lines.
 
 type Data = Record<string, unknown>;
 
@@ -13,10 +12,6 @@ export const ROOM_TARGET_SETTINGS = [
 export const NIGHT_COOL_SETTINGS = [
   "night_cool_enabled", "night_cool_start", "night_cool_end", "night_cool_forecast_c", "night_cool_today_c",
   "night_cool_season_c", "night_cool_delta_k", "night_cool_min_indoor_c", "night_cool_level",
-] as const;
-export const PRESENCE_SETTINGS = [
-  "presence_away_enabled", "presence_away_level", "presence_busy_enabled", "presence_busy_rooms",
-  "presence_on_minutes", "presence_off_minutes",
 ] as const;
 
 function finite(value: unknown): number | null {
@@ -54,24 +49,11 @@ export function nightCoolText(c: Data): string | null {
   return reason || null;
 }
 
-const HOME_LABEL: Record<string, string> = { home: "hjemme", away: "ingen hjemme" };
-
-/** "3 rum i brug · hjemme (4 personer hjemme)" and the rule that acts, or null when both rules are off. */
-export function presenceText(c: Data): string | null {
-  const state = String(c.presence_state ?? "");
-  if (!state || state === "disabled") return null;
-  const count = finite(c.occupied_count) ?? 0;
-  const home = HOME_LABEL[String(c.home_state ?? "")] ?? "hjemme/ude ukendt";
-  const why = typeof c.home_reason === "string" && c.home_reason ? ` (${c.home_reason})` : "";
-  const reason = typeof c.presence_reason === "string" && c.presence_reason ? ` · ${c.presence_reason}` : "";
-  return `Tilstedeværelse: ${count} rum i brug · ${home}${why}${reason}`;
-}
-
 /** All active automation lines, for the "Aktiv beslutning" box. */
 export function automationLines(c: Data): string[] {
-  return [roomTargetText(c), nightCoolText(c), presenceText(c)].filter((line): line is string => Boolean(line));
+  return [roomTargetText(c), nightCoolText(c)].filter((line): line is string => Boolean(line));
 }
 
 export const SOURCE_LABELS: Record<string, string> = {
-  night_cooling: "natkøling", presence_away: "ingen hjemme", presence_busy: "mange rum i brug",
+  night_cooling: "natkøling",
 };

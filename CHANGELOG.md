@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.12.2 – Tilstedeværelse fjernet
+
+- **Tilstedeværelse removed:** the ventilation after occupancy from 1.12.0 is gone again (the settings page Ventilation →
+  Tilstedeværelse, the presence picker and the presence chip on the page Rum, the lines on Oversigt and Teknik, and the
+  Pi's occupancy rules, hold times and home/away). Old settings (presence_*), a stored presence sensor per room and
+  presence or home/away still sent by an older HA integration are ignored silently; nothing is refused.
+- Kept from 1.12.0: Mål fra rummene (with dead band and duct offset), Natkøling efter vejrudsigt (forecast highs from
+  HA and the 5-day outdoor mean) and the room type "Kun kanalmåling (udsugning)"; the 1.12.1 afterheat fix is unchanged.
+
 ## 1.12.1
 
 - **Afterheat Pi control:** with the air more than 1 K above the target, a hold setpoint never sits above the air HAC1

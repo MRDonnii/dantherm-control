@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { automationLines, nightCoolText, presenceText, roomTargetText } from "./automation";
+import { automationLines, nightCoolText, roomTargetText } from "./automation";
 
 describe("automation status lines", () => {
   it("shows the target from the rooms with and without the duct offset", () => {
@@ -17,10 +17,8 @@ describe("automation status lines", () => {
       .toBe("Natkøling: varm dag i morgen (26 °C), ude 14 °C, inde 24,0 °C");
   });
 
-  it("shows occupancy and home/away", () => {
-    expect(presenceText({ presence_state: "disabled" })).toBeNull();
-    expect(presenceText({ presence_state: "away", occupied_count: 0, home_state: "away", home_reason: "Alarm: armed_away", presence_reason: "Ingen hjemme: højst trin 2" }))
-      .toBe("Tilstedeværelse: 0 rum i brug · ingen hjemme (Alarm: armed_away) · Ingen hjemme: højst trin 2");
-    expect(automationLines({ presence_state: "home", occupied_count: 3, home_state: "home" })).toEqual(["Tilstedeværelse: 3 rum i brug · hjemme"]);
+  it("collects only the room target and night cooling lines", () => {
+    expect(automationLines({ presence_state: "home", occupied_count: 3, home_state: "home" })).toEqual([]);
+    expect(automationLines({ night_cool_state: "active", night_cool_reason: "Natkøling: kører" })).toEqual(["Natkøling: kører"]);
   });
 });

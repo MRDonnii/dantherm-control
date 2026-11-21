@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import { CloudMoon, Thermometer, UserCheck } from "lucide-react";
-import { da as num1, nightCoolText, presenceText } from "../lib/automation";
+import { CloudMoon, Thermometer } from "lucide-react";
+import { da as num1, nightCoolText } from "../lib/automation";
 import type { Lang } from "../lib/i18n";
 
 type Data = Record<string, unknown>;
@@ -91,32 +91,5 @@ export function NightCoolCard({ lang, form, controller, set, maxLevel }: Props &
       <span>{d ? "Ude / inde" : "Outdoor / indoor"}<strong>{deg(controller.night_cool_outdoor, "")} / {deg(controller.night_cool_indoor)}</strong></span>
     </div>
     <p className="settings-help">{nightCoolText(controller) ?? s(controller.night_cool_reason)}</p>
-  </Card>;
-}
-
-/** Ventilation after occupancy. Section Ventilation → Tilstedeværelse. */
-export function PresenceCard({ lang, form, controller, set, maxLevel }: Props & { maxLevel: number }) {
-  const d = lang === "da";
-  const numKey = (key: string) => (e: { target: { value: string } }) => set(key, Number(e.target.value));
-  const occupied = Array.isArray(controller.occupied_rooms) ? controller.occupied_rooms.map(String) : [];
-  const home = controller.home_state === "away" ? (d ? "Ingen hjemme" : "Away") : controller.home_state === "home" ? (d ? "Hjemme" : "Home") : (d ? "Ukendt" : "Unknown");
-  return <Card title={d ? "Tilstedeværelse" : "Occupancy"} lead={d ? "Ventilation efter om nogen er hjemme, og hvor mange rum der er i brug" : "Ventilation by who is home and how many rooms are in use"} icon={UserCheck}>
-    <div className="settings-grid">
-      <label className="check-row"><input type="checkbox" checked={form.presence_away_enabled === true} onChange={e => set("presence_away_enabled", e.target.checked)}/> {d ? "Lavere trin, når ingen er hjemme" : "Lower level when nobody is home"}</label>
-      <Help>{d ? "Hjemme/ude kommer fra Home Assistant: alarmen tilkoblet ude/ferie eller ingen personer i zone.home (kan ændres i integrationens Energi- og vejrdata). Fugt- og CO₂-behov over grundtrinnet skæres aldrig, og husets minimum gælder stadig." : "Home/away comes from Home Assistant (alarm armed away/vacation or nobody in zone.home). Humidity and CO₂ demand above the base level is never cut."}</Help>
-      <label>{d ? "Højeste trin, når ingen er hjemme" : "Highest level when away"}<input type="number" min="1" max={maxLevel} value={n(form.presence_away_level, 2)} onChange={numKey("presence_away_level")}/></label>
-      <label className="check-row"><input type="checkbox" checked={form.presence_busy_enabled === true} onChange={e => set("presence_busy_enabled", e.target.checked)}/> {d ? "Et trin op, når mange rum er i brug" : "One level up when many rooms are in use"}</label>
-      <Help>{d ? "Løfter grundtrinnet med ét trin, før CO₂ når at stige. Gælder ikke i Natdriftens tidsrum: sover I i soverummene, bestemmer natten. Badeværelser tæller ikke som rum i brug." : "Lifts the base level one step before CO₂ rises. Not during night mode; bathrooms do not count."}</Help>
-      <label>{d ? "Mange rum er" : "Many rooms means"}<input type="number" min="1" max="32" value={n(form.presence_busy_rooms, 4)} onChange={numKey("presence_busy_rooms")}/><span>{d ? "rum" : "rooms"}</span></label>
-      <label>{d ? "I brug efter" : "In use after"}<input type="number" min="1" max="60" value={n(form.presence_on_minutes, 5)} onChange={numKey("presence_on_minutes")}/><span>min</span><Help>{d ? "Så længe skal føleren have set nogen, før rummet tæller (korte udfald under 1½ min ignoreres)." : "Presence needed before a room counts."}</Help></label>
-      <label>{d ? "Fri efter" : "Free after"}<input type="number" min="1" max="120" value={n(form.presence_off_minutes, 15)} onChange={numKey("presence_off_minutes")}/><span>min</span><Help>{d ? "Så længe uden nogen, før rummet ikke længere tæller." : "Time without presence before a room is released."}</Help></label>
-      <p className="settings-help">{d ? "Tilstedeværelsesføleren vælges pr. rum på siden Rum (vælges automatisk ud fra området)." : "The presence sensor is chosen per room on the Rooms page."}</p>
-    </div>
-    <div className="settings-summary">
-      <span>{d ? "Rum i brug" : "Rooms in use"}<strong>{occupied.length}{occupied.length ? ` · ${occupied.join(", ")}` : ""}</strong></span>
-      <span>{d ? "Hjemme/ude" : "Home/away"}<strong>{home}{typeof controller.home_reason === "string" && controller.home_reason ? ` (${controller.home_reason})` : ""}</strong></span>
-      <span>{d ? "Rum med føler" : "Rooms with a sensor"}<strong>{s(controller.presence_rooms, "0")}</strong></span>
-    </div>
-    <p className="settings-help">{presenceText(controller) ?? (d ? "Begge regler er slået fra." : "Both rules are off.")}</p>
   </Card>;
 }

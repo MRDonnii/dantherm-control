@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { NAV_KEY, SKIN_KEY, SKIN_PRESETS, readNav, readSkin, type NavPosition, type Skin } from "../lib/appearance";
-import { Activity, DoorOpen, Droplets, Fan, Flame, Gauge, House, Mail, Monitor, Moon, RotateCcw, Save, Scale, ShieldCheck, ShowerHead, Snowflake, Thermometer, Timer, UserCheck, Users, Wind } from "lucide-react";
+import { Activity, DoorOpen, Droplets, Fan, Flame, Gauge, House, Mail, Monitor, Moon, RotateCcw, Save, Scale, ShieldCheck, ShowerHead, Snowflake, Thermometer, Timer, Users, Wind } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { postJson, requestJson } from "../lib/api";
 import { airflowPlan, balancedProfiles, effectiveProfiles, sideConstants, type AirflowProfiles, type RatioSource } from "../lib/airflow";
@@ -9,8 +9,8 @@ import { LANG_KEY, currentLang, useLang, type Lang } from "../lib/i18n";
 import { useSession, type Permission } from "../lib/session";
 import { FROST_LOCK_SETTINGS, formatFloor, readFrostLock } from "../lib/frostLock";
 import { AFTERHEAT_CONTROL_SETTINGS, controlLabel, readAfterheatControl } from "../lib/afterheatControl";
-import { NIGHT_COOL_SETTINGS, PRESENCE_SETTINGS, ROOM_TARGET_SETTINGS } from "../lib/automation";
-import { NightCoolCard, PresenceCard, RoomTargetCard } from "../components/AutomationCards";
+import { NIGHT_COOL_SETTINGS, ROOM_TARGET_SETTINGS } from "../lib/automation";
+import { NightCoolCard, RoomTargetCard } from "../components/AutomationCards";
 import { AccountPanel } from "../components/AccountPanel";
 import { MailPanel } from "../components/MailPanel";
 import { UsersPanel } from "../components/UsersPanel";
@@ -41,7 +41,7 @@ export const CONTROLLER_KEYS = [
   "auto_step_rh", "auto_step_co2",
   "bathroom_rh_setpoint", "bathroom_rh_hysteresis", "bathroom_max_level",
   "night_enabled", "night_start", "night_end", "night_level", "night_air_quality_max_level",
-  "afterheat_setpoint", "afterheat_coil", ...ROOM_TARGET_SETTINGS, ...NIGHT_COOL_SETTINGS, ...PRESENCE_SETTINGS,
+  "afterheat_setpoint", "afterheat_coil", ...ROOM_TARGET_SETTINGS, ...NIGHT_COOL_SETTINGS,
   ...FROST_LOCK_SETTINGS, ...AFTERHEAT_CONTROL_SETTINGS,
   "cooling_enabled", "cooling_room_setpoint", "cooling_hysteresis", "cooling_outdoor_min", "cooling_min_delta",
   "cooling_level", "cooling_start_delay_seconds", "cooling_min_on_seconds", "cooling_min_off_seconds",
@@ -70,7 +70,7 @@ const T = {
   level: { da: "Trin", en: "Level" }, status: { da: "Status lige nu", en: "Status right now" },
 } satisfies Record<string, Text>;
 
-type SectionId = "ui" | "house" | "air" | "humidity" | "night" | "presence" | "afterheat" | "cooling" | "fireplace" | "security" | "sensors" | "users" | "mail";
+type SectionId = "ui" | "house" | "air" | "humidity" | "night" | "afterheat" | "cooling" | "fireplace" | "security" | "sensors" | "users" | "mail";
 type Section = { id: SectionId; icon: LucideIcon; title: Text; lead: Text; group: Text };
 const GROUP = {
   ventilation: { da: "Ventilation", en: "Ventilation" },
@@ -83,7 +83,6 @@ const GROUP = {
 const SECTIONS: Section[] = [
   { id: "house", group: GROUP.ventilation, icon: House, title: { da: "Trin og luftmængde", en: "Steps and airflow" }, lead: { da: "Trinstyring, grundtrin, grænser og luftbalance", en: "Step control, base level, limits and air balance" } },
   { id: "night", group: GROUP.ventilation, icon: Moon, title: { da: "Nat", en: "Night" }, lead: { da: "Lavere trin mens I sover", en: "Lower level while you sleep" } },
-  { id: "presence", group: GROUP.ventilation, icon: UserCheck, title: { da: "Tilstedeværelse", en: "Occupancy" }, lead: { da: "Lavere når ingen er hjemme, højere når mange rum er i brug", en: "Lower when away, higher when many rooms are in use" } },
   { id: "air", group: GROUP.air, icon: Wind, title: { da: "Fugt og CO₂", en: "Humidity and CO₂" }, lead: { da: "Grænser der løfter ventilationen, og PM2.5", en: "Limits that raise the ventilation, and PM2.5" } },
   { id: "humidity", group: GROUP.air, icon: Droplets, title: { da: "Badeværelse og tør luft", en: "Bathroom and dry air" }, lead: { da: "Udtørring efter bad, udeluftens fugt og vinter", en: "Drying after a shower, outdoor humidity and winter" } },
   { id: "afterheat", group: GROUP.heat, icon: Thermometer, title: { da: "Eftervarme og frost", en: "Afterheat and frost" }, lead: { da: "Indblæsningens temperatur og frostlås", en: "Supply air temperature and frost lock" } },
@@ -660,7 +659,6 @@ export function SettingsPage() {
     </Card>
       <NightCoolCard lang={lang} form={form} controller={controller} set={set} maxLevel={maxLevel}/>
     </>,
-    presence: <PresenceCard lang={lang} form={form} controller={controller} set={set} maxLevel={maxLevel}/>,
     fireplace: <Card title={t(sectionInfo("fireplace").title)} lead={lang === "da" ? "Holder anlæggets pejsefunktion, så længe der fyres" : "Holds the unit's fireplace mode while the stove burns"} icon={Flame}>
       <div className="settings-grid">
         <label className="check-row"><input type="checkbox" checked={form.fireplace_auto_enabled === true} onChange={check("fireplace_auto_enabled")}/> {lang === "da" ? "Automatisk pejsefunktion" : "Automatic fireplace mode"}</label>

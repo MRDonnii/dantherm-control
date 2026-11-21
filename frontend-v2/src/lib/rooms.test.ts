@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  TYPE_HELP, TYPE_LABELS, addAllFromCatalog, blankRoom, guessType, liveValues, roomFromArea, roomProblems, sensorGroups, slug, toPayload, withArea,
-  withSensor, withType, withUnitSensor,
+  TYPE_HELP, TYPE_LABELS, addAllFromCatalog, blankRoom, guessType, liveValues, roomProblems, sensorGroups, slug, toPayload, withArea,
+  withType, withUnitSensor,
   type CatalogArea, type Room,
 } from "./rooms";
 import { WEATHER_AREA_ID } from "./rooms";
@@ -36,7 +36,7 @@ describe("room setup helpers", () => {
     expect(by.Badeværelse.type).toBe("bathroom");
     expect(by.Udenfor.type).toBe("outdoor");
     expect(by.Udenfor.control).toBe(false);
-    expect(by.Køkkenet.sensors).toEqual({ temperature: "sensor.kok_t", humidity: "sensor.kok_rh", co2: "sensor.kok_co2", pm25: "sensor.kok_pm", presence: null });
+    expect(by.Køkkenet.sensors).toEqual({ temperature: "sensor.kok_t", humidity: "sensor.kok_rh", co2: "sensor.kok_co2", pm25: "sensor.kok_pm" });
     expect(by.Spisestue.sensors.temperature).toBe("sensor.spis_t");
     expect(rooms.filter(room => room.unit_sensor).map(room => room.name)).toEqual(["Spisestue"]);
   });
@@ -94,19 +94,7 @@ describe("weather sensors (DMI)", () => {
   });
 });
 
-describe("presence per room", () => {
-  const kontor = area("kontor", "Kontor", ["sensor.kontor_t", "temperature"], ["binary_sensor.hps_kontor_presence", "presence"]);
-  it("is picked with the area and 'Ingen' stops the automatic choice", () => {
-    const room = roomFromArea(kontor, []);
-    expect(room.sensors.presence).toBe("binary_sensor.hps_kontor_presence");
-    const none = withSensor(room, "presence", null);
-    expect(none.presence_auto).toBe(false);
-    expect(withSensor(none, "presence", "binary_sensor.x").presence_auto).toBeUndefined();
-    expect(withArea(none, kontor).presence_auto).toBeUndefined();
-  });
-  it("live presence is read as on/off", () => {
-    expect(liveValues({ smart_rooms: { Kontor: { temperature: 21, presence: true } } }, "kontor")).toEqual({ temperature: 21, presence: true });
-  });
+describe("room types", () => {
   it("the extract type says it does not take part in the control", () => {
     expect(TYPE_LABELS.extract).toBe("Kun kanalmåling (udsugning)");
     expect(TYPE_HELP.extract).toContain("IKKE med i styringen");

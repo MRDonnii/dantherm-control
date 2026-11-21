@@ -1,4 +1,5 @@
 import sys
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -38,8 +39,19 @@ class RoomSetupValidationTests(unittest.TestCase):
         self.assertEqual(cleaned["priority"], "auto")
         self.assertTrue(cleaned["control"])
         self.assertFalse(cleaned["unit_sensor"])
-        self.assertEqual(cleaned["sensors"], {"temperature": None, "humidity": None, "co2": "sensor.co2", "pm25": None,
-                                              "presence": None})
+        self.assertEqual(cleaned["sensors"], {"temperature": None, "humidity": None, "co2": "sensor.co2", "pm25": None})
+
+    def test_presence_from_1_12_0_is_dropped_silently(self):
+        cleaned = room_setup.clean_room({"name": "Stue", "presence_auto": False,
+                                         "sensors": {"temperature": "sensor.t", "presence": "binary_sensor.radar"}})
+        self.assertNotIn("presence", cleaned["sensors"])
+        self.assertNotIn("presence_auto", cleaned)
+        catalog = room_setup.clean_catalog([{"area_id": "stue", "sensors": [
+            *({"entity_id": f"binary_sensor.radar_{i}", "kind": "presence"} for i in range(8)),
+            *({"entity_id": f"sensor.t_{i}", "kind": "temperature"} for i in range(40)),
+        ]}])
+        self.assertEqual(len(catalog[0]["sensors"]), 40)
+        self.assertTrue(all(sensor["kind"] == "temperature" for sensor in catalog[0]["sensors"]))
 
     def test_bad_values_are_refused_with_danish_messages(self):
         for bad in (
@@ -155,6 +167,31 @@ class RoomSetupConfigTests(unittest.TestCase):
         runtime.config.configure({"room_setup": [room("Stue"), room("Mads")]})
         self.send(runtime, {"Stue": {"temperature": 21.0}, "Mads": {}})
         self.assertEqual(list(runtime.smart_rooms), ["Stue"])
+
+    def test_occupancy_from_1_12_0_is_ignored(self):
+        # A config saved by 1.12.0/1.12.1 with the occupancy settings and a presence sensor per room.
+        self.make_runtime()
+        self.path.write_text(json.dumps({
+            "presence_away_enabled": True, "presence_away_level": 1, "presence_busy_enabled": True,
+            "presence_busy_rooms": 2, "presence_on_minutes": 5, "presence_off_minutes": 15,
+            "room_setup": [{"name": "Stue", "presence_auto": False,
+                            "sensors": {"temperature": "sensor.t", "presence": "binary_sensor.radar"}}],
+        }), encoding="utf-8")
+        runtime = ControllerRuntime(gateway_state={}, hardware=HardwareAdapter(), state_path=self.path)
+        self.assertFalse(any(key.startswith("presence_") for key in runtime.config.data))
+        stue = runtime.config.data["room_setup"][0]
+        self.assertEqual(stue["sensors"]["temperature"], "sensor.t")
+        self.assertNotIn("presence", stue["sensors"])
+        self.assertNotIn("presence_auto", stue)
+        runtime.config.configure({"presence_away_enabled": True, "local_normal_level": 2})
+        self.assertNotIn("presence_away_enabled", runtime.config.data)
+        # Presence still sent by an older integration is skipped, never refused.
+        self.send(runtime, {"Stue": {"temperature": 21.0, "presence": True}, "Kontor": {"presence": False}})
+        self.assertEqual(list(runtime.smart_rooms), ["Stue"])
+        self.assertNotIn("presence", runtime.smart_rooms["Stue"])
+        snapshot = runtime.snapshot()
+        for key in ("presence_state", "occupied_rooms", "home_state"):
+            self.assertNotIn(key, snapshot)
 
     def test_unit_sensor_fills_its_room_instead_of_a_separate_room(self):
         runtime = self.make_runtime()

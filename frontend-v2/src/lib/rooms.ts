@@ -4,11 +4,8 @@
  * rules (gateway/room_setup.py); this file keeps the page's own logic testable.
  */
 
-export const SENSOR_KINDS = ["temperature", "humidity", "co2", "pm25", "presence"] as const;
+export const SENSOR_KINDS = ["temperature", "humidity", "co2", "pm25"] as const;
 export type SensorKind = typeof SENSOR_KINDS[number];
-/** The kinds with a number (presence is on/off from a binary sensor). */
-export const MEASUREMENT_KINDS = ["temperature", "humidity", "co2", "pm25"] as const;
-export type MeasurementKind = typeof MEASUREMENT_KINDS[number];
 
 export const ROOM_TYPES = ["normal", "bedroom", "bathroom", "kitchen", "source", "outdoor", "extract", "excluded"] as const;
 export type RoomType = typeof ROOM_TYPES[number];
@@ -32,8 +29,8 @@ export const TYPE_HELP: Record<RoomType, string> = {
   excluded: "Ingen ventilation her (fx garagen). Rummet ignoreres overalt.",
 };
 export const PRIORITY_LABELS: Record<Priority, string> = { auto: "Auto", low: "Lav", normal: "Normal", high: "Høj", critical: "Kritisk" };
-export const KIND_LABELS: Record<SensorKind, string> = { temperature: "Temperatur", humidity: "Fugt (RH)", co2: "CO₂", pm25: "PM2.5", presence: "Tilstedeværelse" };
-export const KIND_UNITS: Record<MeasurementKind, string> = { temperature: "°C", humidity: "%", co2: "ppm", pm25: "µg/m³" };
+export const KIND_LABELS: Record<SensorKind, string> = { temperature: "Temperatur", humidity: "Fugt (RH)", co2: "CO₂", pm25: "PM2.5" };
+export const KIND_UNITS: Record<SensorKind, string> = { temperature: "°C", humidity: "%", co2: "ppm", pm25: "µg/m³" };
 
 export interface Room {
   id: string;
@@ -46,8 +43,6 @@ export interface Room {
   enabled: boolean;
   unit_sensor: boolean;
   sensors: Record<SensorKind, string | null>;
-  /** False once "Ingen" is chosen for presence: the Pi then never picks one by itself. */
-  presence_auto?: boolean;
   rh_setpoint?: number;
   rh_hysteresis?: number;
   max_level?: number;
@@ -88,7 +83,7 @@ export function guessType(name: string): RoomType {
 }
 
 export function emptySensors(): Record<SensorKind, string | null> {
-  return { temperature: null, humidity: null, co2: null, pm25: null, presence: null };
+  return { temperature: null, humidity: null, co2: null, pm25: null };
 }
 
 /** The area's sensors are sorted best first by Home Assistant, so the first one is the automatic choice. */
@@ -158,19 +153,7 @@ export function addAllFromCatalog(rooms: Room[], catalog: CatalogArea[]): { room
 
 /** Pick another area: its sensors become the automatic choice for every kind. */
 export function withArea(room: Room, area: CatalogArea | undefined): Room {
-  const next: Room = { ...room, area_id: area?.area_id ?? null, area_name: area?.area_name ?? null, sensors: area ? autoSensors(area) : room.sensors };
-  if (area) delete next.presence_auto;
-  return next;
-}
-
-/** Choose a sensor; "Ingen" for presence also stops the Pi from picking one by itself. */
-export function withSensor(room: Room, kind: SensorKind, value: string | null): Room {
-  const next: Room = { ...room, sensors: { ...room.sensors, [kind]: value } };
-  if (kind === "presence") {
-    if (value) delete next.presence_auto;
-    else next.presence_auto = false;
-  }
-  return next;
+  return { ...room, area_id: area?.area_id ?? null, area_name: area?.area_name ?? null, sensors: area ? autoSensors(area) : room.sensors };
 }
 
 export function withType(room: Room, type: RoomType): Room {
@@ -201,7 +184,7 @@ export function sensorName(catalog: CatalogArea[], entityId: string | null): str
   return null;
 }
 
-export type LiveValues = Partial<Record<MeasurementKind, number>> & { unit_sensor?: boolean; presence?: boolean | null };
+export type LiveValues = Partial<Record<SensorKind, number>> & { unit_sensor?: boolean };
 
 /** The values the Pi uses for the room right now (smart_rooms in the controller state). */
 export function liveValues(state: Record<string, unknown>, name: string): LiveValues | null {
@@ -211,9 +194,8 @@ export function liveValues(state: Record<string, unknown>, name: string): LiveVa
   if (!key) return null;
   const raw = (rooms as Record<string, Record<string, unknown>>)[key] ?? {};
   const values: LiveValues = {};
-  for (const kind of MEASUREMENT_KINDS) if (typeof raw[kind] === "number") values[kind] = raw[kind] as number;
+  for (const kind of SENSOR_KINDS) if (typeof raw[kind] === "number") values[kind] = raw[kind] as number;
   if (raw.unit_sensor === true) values.unit_sensor = true;
-  if (typeof raw.presence === "boolean" || raw.presence === null) values.presence = raw.presence as boolean | null;
   return values;
 }
 

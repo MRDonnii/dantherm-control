@@ -1,12 +1,12 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { NightCoolCard, PresenceCard, RoomTargetCard } from "./AutomationCards";
+import { NightCoolCard, RoomTargetCard } from "./AutomationCards";
 import { CONTROLLER_KEYS } from "../pages/SettingsPage";
-import { NIGHT_COOL_SETTINGS, PRESENCE_SETTINGS, ROOM_TARGET_SETTINGS } from "../lib/automation";
+import { NIGHT_COOL_SETTINGS, ROOM_TARGET_SETTINGS } from "../lib/automation";
 
 describe("automation setting cards", () => {
   it("saves every new setting with the controller", () => {
-    for (const key of [...ROOM_TARGET_SETTINGS, ...NIGHT_COOL_SETTINGS, ...PRESENCE_SETTINGS]) expect(CONTROLLER_KEYS).toContain(key);
+    for (const key of [...ROOM_TARGET_SETTINGS, ...NIGHT_COOL_SETTINGS]) expect(CONTROLLER_KEYS).toContain(key);
   });
 
   it("room target card has its toggle, dead band, duct offset and the reason", () => {
@@ -26,13 +26,5 @@ describe("automation setting cards", () => {
     const markup = renderToStaticMarkup(<NightCoolCard lang="da" form={c} controller={c} set={() => {}} maxLevel={4}/>);
     for (const text of ["Natkøling efter vejrudsigt", "Varm dag i morgen fra", "Kølesæson over", "Køler", "16,2 °C", "varm dag i morgen (26 °C)"]) expect(markup).toContain(text);
     expect(markup).toContain('value="23:00"');
-  });
-
-  it("presence card has two separate toggles and shows the rooms in use", () => {
-    const c = { presence_away_enabled: false, presence_busy_enabled: true, occupied_rooms: ["Køkken", "Stue"], home_state: "home",
-      home_reason: "4 personer hjemme", presence_state: "home", occupied_count: 2, presence_rooms: 7 };
-    const markup = renderToStaticMarkup(<PresenceCard lang="da" form={c} controller={c} set={() => {}} maxLevel={4}/>);
-    for (const text of ["Lavere trin, når ingen er hjemme", "Et trin op, når mange rum er i brug", "2 · Køkken, Stue", "Hjemme (4 personer hjemme)"]) expect(markup).toContain(text);
-    expect((markup.match(/type="checkbox"/g) ?? []).length).toBe(2);
   });
 });
