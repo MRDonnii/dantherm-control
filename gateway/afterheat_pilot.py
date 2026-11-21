@@ -206,6 +206,13 @@ FROST_BLIP_SHARE = 0.5
 FROST_MIN_LEVEL = 1
 # Far too warm (URGENT_WARM_K) this long under the frost lock: one step down is allowed anyway.
 WARM_ESCAPE_S = 10 * 60.0
+# A level is "seen" once it has been held this long (dead time + two lags); the
+# lowest air seen on it is remembered this long and then decides a frost step down
+# to it, less this margin (live 2026-11-21: level 1 settled at ~20.5 C, yet the
+# 'lose all heat to level 0' rule kept the Pi on level 2 all night).
+LEVEL_SEEN_AFTER_S = MODEL_DEAD_TIME_S + 2 * MODEL_LAG_S
+LEVEL_SEEN_MEMORY_S = 2 * 3600.0
+FROST_SEEN_MARGIN_K = 0.3
 # How far off the trend's guess of the air at the tick may be while taking turns (K).
 PWM_GUESS_K = 0.08
 # A level's settled error is judged this long after the turn to it (dead time + two lags).
@@ -530,6 +537,8 @@ class AfterheatPilot:
         # whether it is below the frost floor while the frost lock is on.
         self.cold_since: float | None = None
         self.frost_cold = False
+        # level -> (when, lowest air seen on it, fan scale then); see LEVEL_SEEN_AFTER_S.
+        self.level_seen: dict[int, tuple[float, float, float]] = {}
         # Since when the air has been more than URGENT_WARM_K too warm (see WARM_ESCAPE_S).
         self.warm_since: float | None = None
         # Under the frost lock: the user's target when the Pi steers for a higher one (effective_target).
@@ -841,6 +850,11 @@ class AfterheatPilot:
         # The glitch-robust raw T2AH: the 15 s minimum (filtered) reads a little low.
         air = self._raw(inp)
         error_now = air - target
+        if (self.level_change_at is not None and inp.now - self.level_change_at >= LEVEL_SEEN_AFTER_S
+                and not self.fan_moved):
+            seen = self.level_seen.get(level)
+            fresh = seen is not None and seen[0] >= self.level_change_at
+            self.level_seen[level] = (inp.now, min(air, seen[1]) if fresh else air, scale)
         # Under the frost lock, air below the frost floor is always urgent (and HAC1 steps up by itself).
         self.frost_cold = bool(inp.frost_lock and air < float(inp.frost_floor))
         error_settled = error_now + scale * self.heat.heat(level) - self.kelvin_lagged
@@ -1085,6 +1099,12 @@ class AfterheatPilot:
             # ceil(floor), so it steps up by itself should the air reach it, and
             # the frost revert takes the level back up at the next tick.
             return False
+        seen = self.level_seen.get(level - 1)
+        if (seen is not None and inp.now - seen[0] <= LEVEL_SEEN_MEMORY_S
+                and (self.scale or 1.0) >= 0.9 * seen[2]):
+            # Seen lately at no more air than now: the air that level really
+            # settled at decides (with more air now, the model rule below does).
+            return seen[1] - FROST_SEEN_MARGIN_K < math.ceil(float(inp.frost_floor)) + FROST_MARGIN_K
         first = 0 if level - 1 <= FROST_MIN_LEVEL else level - 1
         step = sum(max(self.heat.step(index), self.heat.lasting_step(index)) for index in range(first, level))
         return self._below_frost_floor(inp, error - (self.scale or 1.0) * step * FROST_STEP_SAFETY)

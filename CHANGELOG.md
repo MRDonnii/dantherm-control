@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.10.1
+
+- **Afterheat frost rule uses what each level really gives.** A level held for 5 minutes is remembered (the lowest
+  air seen on it, kept 2 hours). Under the frost lock a step down to it is allowed when it was seen at least 0.3 K
+  above the floor HAC1 can hold, and the fan has not gone up since. Last night level 1 gave about 20.5 C, yet the
+  old rule (all heat above level 0 lost) kept the Pi on level 2.
+
 ## 1.10.0
 
 - **Adgang for programmer: named API keys.** A new page under Opsætning (administrators only) puts *Login fra

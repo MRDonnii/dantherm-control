@@ -1044,6 +1044,21 @@ class PilotDecisionTests(unittest.TestCase):
         self.assertFalse([r for r in late if r["level"] <= 1])
         self.assertEqual(pilot.follow_failures, 0)
 
+    def test_a_level_seen_well_above_the_floor_may_be_stepped_down_to(self):
+        # Live 2026-11-21: level 1 settled at ~20.5 C with the floor 18, yet the
+        # model rule (all heat above level 0 lost) kept the Pi on level 2.
+        pilot, inp = self.frost_pilot(level=2, t2ah=21.8, t2ah_raw=21.8)
+        pilot.error_settled = 1.0
+        pilot.scale = 1.0
+        pilot.level_seen[1] = (inp.now - 60, 20.5, 1.0)
+        self.assertFalse(pilot._down_below_frost_floor(inp, 2))
+        # Seen close to the floor, or with more air now: not allowed by it.
+        pilot.level_seen[1] = (inp.now - 60, 18.4, 1.0)
+        self.assertTrue(pilot._down_below_frost_floor(inp, 2))
+        pilot.level_seen[1] = (inp.now - 60, 20.5, 1.5)
+        pilot.heat.lasting_step = lambda index: 3.0
+        self.assertTrue(pilot._down_below_frost_floor(inp, 2))
+
     def test_frost_step_down_is_forbidden_only_where_a_blip_could_reach_the_floor(self):
         # Level 4 settles at 19.7 C, level 3 by the model (1.5 K x 1.5) too close
         # to the floor HAC1 can hold (18.2 C). HAC1 stepping down by itself for a
