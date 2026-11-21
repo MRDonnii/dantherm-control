@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.12.1
+
+- **Afterheat Pi control:** with the air more than 1 K above the target, a hold setpoint never sits above the air HAC1
+  reads now (the rising air's guess at the tick was not enough: "hold" at 24 with 23.5 °C and at 26 with 25.2 °C made
+  HAC1 step up from level 2 to 4 at 25–26 °C).
+
 ## 1.12.0
 
 - **Mål fra rummene (eftervarme, kaskade):** the room-based afterheat target now uses the rooms on the page Rum: the

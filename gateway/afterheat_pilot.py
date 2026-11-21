@@ -204,6 +204,8 @@ FROST_BLIP_SHARE = 0.5
 # in the 2026-11-20 trial, the next level 5-6 K, which the model learns short):
 # a step down to it is judged as losing all the heat of the level above.
 FROST_MIN_LEVEL = 1
+# Air this far above the target (as HAC1 reads it now): a hold setpoint never sits above it.
+HOLD_ABOVE_AIR_K = 1.5
 # The coil only adds heat: with the valve open at all, the air after it is never
 # colder than the air before it (the 1-Wire T2). With that air this far above the
 # frost floor no level can take the air below it, whatever the model says.
@@ -1410,10 +1412,12 @@ class AfterheatPilot:
             spread = max(HOLD_NOISE_K, (max(guesses) - min(guesses)) / 2)
         whole = math.floor(middle)
         candidates = [c for c in (whole - 1, whole, whole + 1) if c >= floor_sp] or [floor_sp]
-        if middle > float(inp.target) + URGENT_WARM_K:
-            # Far too warm: never a setpoint above the air, which makes HAC1 step up
-            # (live 2026-11-20: sp 27 at 26.96 C with the target 21).
-            candidates = [c for c in candidates if c <= middle] or candidates
+        if now > float(inp.target) + HOLD_ABOVE_AIR_K:
+            # Too warm: never a setpoint above the air HAC1 reads NOW. A guess that the
+            # rising air passes it by the tick is not enough: HAC1 steps up whenever it
+            # reads below the setpoint (live 2026-11-20: sp 27 at 26.96 C; 2026-11-21:
+            # "hold" sp 24 at 23.5 C and sp 26 at 25.2 C walked HAC1 from 2 to 4).
+            candidates = [c for c in candidates if c <= now] or [min(candidates)]
         restricted = False
         if forbidden:
             # HAC1 must not step down here (the frost minimum level, or a level
