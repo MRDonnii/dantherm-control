@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.11.2
+
+- **Rum:** the room cards no longer overflow into each other when a field holds a long sensor name (fields shrink and
+  cut long names with "…").
+- **Anlæggets egen føler:** the unit's RH (reads about 13–15 %) and a missing HRC2's 0 °C no longer fill in a room's
+  values; only plausible readings (RH 20–100 %, 5–40 °C) are used.
+
 ## 1.11.1
 
 - **Afterheat low end under the frost lock:** when the air into the coil and the water-side frost sensor are both at

@@ -605,8 +605,10 @@ class ControllerRuntime:
             "source": "unit",
         }
         co2 = self._safe_number(self._first(self.gateway_state, "co2"), 250, 10000)
+        # The unit's own RH sensor reads far too low (about 13-15 % against 35-50 % in the
+        # rooms): only a plausible value may fill in for a room without its own.
         rh = self._safe_number(
-            self._first(self.gateway_state, "humidity", "relative_humidity"), 0, 100
+            self._first(self.gateway_state, "humidity", "relative_humidity"), 20, 100
         )
         temp = self._safe_number(
             self._first(
@@ -616,8 +618,8 @@ class ControllerRuntime:
                 "room_temperature",
                 "extract_temp",
             ),
-            -30,
-            60,
+            5,  # a missing HRC2 reports 0 C, which is no room value
+            40,
         )
         if co2 is not None:
             local["co2"] = round(co2, 0)

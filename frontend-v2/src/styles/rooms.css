@@ -2,7 +2,11 @@
 .room-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 4px 0 12px; }
 .room-counts { margin-left: auto; color: var(--muted); font-size: 12.5px; }
 .room-setup-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 12px; }
-.room-setup-card { display: grid; gap: 10px; align-content: start; border-left: 3px solid var(--blue); }
+.room-setup-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-content: start; min-width: 0; overflow: hidden; border-left: 3px solid var(--blue); }
+.room-setup-card > * { min-width: 0; }
+.room-setup-grid > label, .room-setup-grid > div { min-width: 0; }
+.room-setup-grid select, .room-setup-grid input { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-setup-grid .settings-field-help { overflow-wrap: anywhere; }
 .room-setup-card[data-off] { border-left-color: var(--border-strong, var(--border)); }
 .room-setup-card[data-type="excluded"] { opacity: .78; }
 .room-setup-card[data-type="source"], .room-setup-card[data-type="outdoor"], .room-setup-card[data-type="extract"] { border-left-color: var(--orange, #d9822b); }
