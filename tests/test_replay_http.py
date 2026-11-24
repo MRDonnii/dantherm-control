@@ -46,7 +46,8 @@ class ReplayHttpTests(unittest.TestCase):
                 self.assertEqual(e.exception.code,400)
                 # One replay at a time: a second one is refused while the first runs.
                 import control_replay
-                self.assertTrue(control_replay.REPLAY_LOCK.acquire(blocking=False))
+                # The handler may still be releasing the lock after its reply.
+                self.assertTrue(control_replay.REPLAY_LOCK.acquire(timeout=2))
                 try:
                     with self.assertRaises(urllib.error.HTTPError) as e: request(sid,csrf)
                     self.assertEqual(e.exception.code,429)
