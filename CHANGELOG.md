@@ -1,11 +1,12 @@
 # Changelog
 
 
-## 1.13.0-rc.1 — Controller recovery, measurement quality and analysis
+## 1.13.0-rc.2 — Controller recovery, measurement quality and analysis
 
 - Recover the controller loop after cycle errors, expose a monotonic success heartbeat, and restart the gateway if the regulator dies or cannot complete a cycle for 120 seconds. Update health checks now require a working regulator.
 - Stamp local temperature, humidity and CO2 samples individually, including unchanged samples; expire them after 45 seconds. Explicit missing/invalid engine measurements clear old values. Temperature/control diagnostics share the same freshness rules.
 - Continue failed hardware commands with exponential backoff capped at five minutes (the frost retry cap remains shorter). Pending failures remain visible even when another command succeeds, and raise an alarm after 60 seconds.
+- Bound history to exactly 720 points even when a range includes two partial edge buckets; verified against the live 24-hour replay.
 - History now records humidity with per-measurement quality markers while retaining older history. The History page analyses observed afterheat target error, time in band, excursions, valve changes and settling after target changes.
 - Diagnostics shows regulator health, pending commands and sensor freshness. Its isolated Local Auto replay compares CO2/RH thresholds against up to 24 hours of history without applying settings or calling hardware. It does not reconstruct Smart Auto, schedules, winter overlays or thermal response; missing RH history is reported explicitly.
 - Replay inputs retain their DOM nodes, focus and unsaved edits during live polling. No Home Assistant dashboard or custom card was changed.

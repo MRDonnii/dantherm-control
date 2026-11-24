@@ -126,6 +126,19 @@ class DashboardTests(unittest.TestCase):
             ):
                 self.assertIsNone(row[field])
 
+    def test_history_range_with_two_partial_edge_buckets_is_bounded(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MODULE.HistoryStore(Path(tmp) / "history.sqlite3")
+            end = 9_000_061
+            rows = [(end - 86400 + i * 120, 800) for i in range(721)]
+            with store._connect() as db:
+                db.executemany("INSERT INTO samples (ts, co2) VALUES (?, ?)", rows)
+            with patch.object(MODULE.time, "time", return_value=end):
+                result = store.query("24h")
+            self.assertEqual(len(result), 720)
+            self.assertEqual(result[-1]["ts"], end)
+
     def test_system_snapshot_has_resource_fields_and_onewire_service(self):
         with tempfile.TemporaryDirectory() as tmp:
             server = MODULE.DashboardHttpServer("127.0.0.1", 0, {}, "Test", None, history_path=Path(tmp) / "history.sqlite3")

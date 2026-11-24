@@ -133,7 +133,9 @@ class HistoryStore:
             for key, item in sample.items():
                 if isinstance(item, float): sample[key] = round(item, 3)
             samples.append(sample)
-        return samples
+        # A range starting mid-bucket includes both partial edge buckets.
+        # Keep the newest points and enforce the advertised bound exactly.
+        return samples[-self.MAX_POINTS:]
 
 class DashboardHttpServer:
     """Serve the UI without exposing any write/control endpoint."""
