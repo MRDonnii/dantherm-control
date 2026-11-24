@@ -88,6 +88,8 @@ AFTERHEAT_OVERRIDE_MAX_SECONDS = 900
 FROST_LOCK_OUTDOOR_WORD_CAP_C = 10.0
 # A failed afterheat write under the frost lock is retried at least this often.
 FROST_LOCK_RETRY_MAX_SECONDS = 60.0
+# Longest pause between retries of a failed hardware command.
+RETRY_MAX_SECONDS = 300.0
 FROST_LOCK_OFF_ERROR = "Frostsikring: eftervarmen kan ikke slukkes, mens det fryser."
 FROST_LOCK_FLOOR_ERROR = "Frostsikring: eftervarmen kan ikke sættes under {floor} °C, mens det fryser."
 FROST_LOCK_COOL_ERROR = "Frostsikring: Køl kan ikke startes, mens det fryser."
@@ -2509,7 +2511,8 @@ class ControllerEngine:
         latches the frost state (a lone glitched reading does not).
         It releases only when every known value has been above its limit plus
         FROST_LOCK_RELEASE_MARGIN_C for FROST_LOCK_RELEASE_SECONDS without a
-        break. With no known value the previous state is kept (fail-safe).
+        break, and only while the outdoor air (T1 or the attic) is known.
+        With no known value the previous state is kept (fail-safe).
         The lock acts only when enabled and the coil is a water coil.
         """
         d = self.config.data
@@ -2535,7 +2538,13 @@ class ControllerEngine:
         elif latched:
             waiting = [(label, value, limit + FROST_LOCK_RELEASE_MARGIN_C) for label, value, limit in readings
                        if value <= limit + FROST_LOCK_RELEASE_MARGIN_C]
-            if waiting:
+            air_known = any(label in ("ude", "loft") for label, _value, _limit in readings)
+            if not air_known:
+                # A warm frost sensor alone cannot prove thaw: without T1 (or the
+                # attic) the lock stays and the half hour does not run.
+                self.frost_release_since = None
+                reason = "Frost: venter på udetemperatur (T1)"
+            elif waiting:
                 self.frost_release_since = None
                 reason = "Frost: venter på tø, " + ", ".join(
                     f"{label} {_danish_number(value, 1)} °C (slipper over {_danish_number(limit)} °C)"
@@ -2708,13 +2717,42 @@ class ControllerEngine:
             min_dwell_ticks=int(d.get("afterheat_pi_min_dwell_ticks", PI_MIN_DWELL_TICKS_DEFAULT)),
         ))
 
-    def afterheat_native_setpoint(self) -> int | None:
-        """The plain whole-degree target HAC1 should keep on its own (gateway stop), or None."""
-        with self.lock:
-            last = dict(self.last_afterheat)
+    def afterheat_native_setpoint(self, lock_timeout: float | None = None) -> int | None:
+        """The plain whole-degree target HAC1 should keep on its own (gateway stop), or None.
+
+        With lock_timeout the engine lock is only waited for that long: a
+        stalled controller thread may hold it on the watchdog exit path. Then
+        the configured setpoint (with the frost floor while frost is latched)
+        is used instead of the last resolved one.
+        """
+        if lock_timeout is None:
+            with self.lock:
+                last = dict(self.last_afterheat)
+        elif self.lock.acquire(timeout=max(0.0, lock_timeout)):
+            try:
+                last = dict(self.last_afterheat)
+            finally:
+                self.lock.release()
+        else:
+            if dict(self.last_afterheat).get("command") is None:
+                return None
+            return self.fallback_native_setpoint()
         if last.get("command") is None:
             return None
         return last.get("native")
+
+    def fallback_native_setpoint(self) -> int:
+        """The configured afterheat setpoint in whole degrees, raised to the frost floor while frost is latched.
+
+        Reads the config without its lock (exit path only).
+        """
+        try:
+            native = math.floor(float(self.config.data.get("afterheat_setpoint", 20)) + 0.5)
+        except (TypeError, ValueError):
+            native = 20
+        if self.config.frost_lock_in_force():
+            native = max(native, math.ceil(self.config.frost_lock_floor()))
+        return int(min(35, max(10, native)))
 
     def resolve(self, now: float | None = None) -> dict[str, object]:
         now = now or time.time()
@@ -2915,6 +2953,12 @@ class ControllerEngine:
             self._failure_values[key] = value
             self._failure_counts[key] = 0
             self._retry_at[key] = 0.0
+        # A retry planned earlier never waits longer than the current cap: the
+        # frost lock's 60 s also applies to a retry scheduled before it engaged,
+        # and a wall clock stepped back cannot push a retry far out.
+        cap = FROST_LOCK_RETRY_MAX_SECONDS if keep_retrying else RETRY_MAX_SECONDS
+        if self._retry_at.get(key, 0.0) > now + cap:
+            self._retry_at[key] = now + cap
         if now < self._retry_at.get(key, 0.0):
             return
         if fn is None:
@@ -2923,7 +2967,7 @@ class ControllerEngine:
             self.command_errors[key] = self.last_error
             self.write_failures += 1
             self._failure_counts[key] = self._failure_counts.get(key, 0) + 1
-            self._retry_at[key] = now + min(300.0, self.retry_base_seconds * 2 ** min(6, self._failure_counts[key] - 1))
+            self._retry_at[key] = now + min(RETRY_MAX_SECONDS, self.retry_base_seconds * 2 ** min(6, self._failure_counts[key] - 1))
             raise error
         try:
             fn(*args)
@@ -2932,7 +2976,7 @@ class ControllerEngine:
             self.command_errors[key] = self.last_error
             self.write_failures += 1
             self._failure_counts[key] = self._failure_counts.get(key, 0) + 1
-            delay = min(300.0, self.retry_base_seconds * 2 ** min(6, self._failure_counts[key] - 1))
+            delay = min(RETRY_MAX_SECONDS, self.retry_base_seconds * 2 ** min(6, self._failure_counts[key] - 1))
             if keep_retrying:
                 delay = min(delay, FROST_LOCK_RETRY_MAX_SECONDS)
             self._retry_at[key] = now + delay

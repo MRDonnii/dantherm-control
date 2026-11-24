@@ -272,9 +272,19 @@ expected_configured=0; [[ -n ${auth_before} ]] && expected_configured=1
 curl -fsS --max-time 3 "http://127.0.0.1:${web_port}/api/auth/status" \
   | python3 -c 'import json,sys; expected=int(sys.argv[1]); data=json.load(sys.stdin); assert isinstance(data.get("configured"), bool); assert (not expected) or data["configured"] is True' "${expected_configured}"
 
-curl -fsS --max-time 3 -H "Authorization: Bearer ${check_key}" \
-  "http://127.0.0.1:${web_port}/api/controller/state" \
-  | python3 -c 'import json,sys; data=json.load(sys.stdin); assert isinstance(data,dict); assert "active_master" in data; assert data.get("controller_health",{}).get("state") == "healthy", "Controller loop is not healthy"'
+# The first controller cycle may take a while after a restart (MQTT, bus
+# arbitration): poll for up to 60 s before the update counts as failed.
+controller_healthy=0
+for _ in $(seq 1 30); do
+  if curl -fsS --max-time 3 -H "Authorization: Bearer ${check_key}" \
+      "http://127.0.0.1:${web_port}/api/controller/state" 2>/dev/null \
+      | python3 -c 'import json,sys; data=json.load(sys.stdin); assert isinstance(data,dict); assert "active_master" in data; assert data.get("controller_health",{}).get("state") == "healthy"' 2>/dev/null; then
+    controller_healthy=1
+    break
+  fi
+  sleep 2
+done
+[[ ${controller_healthy} -eq 1 ]] || { echo "Controller loop did not become healthy within 60 seconds." >&2; false; }
 # The keys survived the update, and Home Assistant still has a key that can
 # control the unit if it had one before (moved key, or the old token in
 # fallback mode).

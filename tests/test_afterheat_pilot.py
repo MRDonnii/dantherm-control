@@ -1400,7 +1400,7 @@ class RuntimeTests(unittest.TestCase):
         gateway = dantherm_gateway.Gateway.__new__(dantherm_gateway.Gateway)
         written = []
         gateway.write_afterheat_setpoint = lambda ser, value: written.append(value)
-        engine = types.SimpleNamespace(afterheat_native_setpoint=lambda: 22, last_applied={"afterheat_setpoint": 24})
+        engine = types.SimpleNamespace(afterheat_native_setpoint=lambda **_: 22, last_applied={"afterheat_setpoint": 24})
         master = types.SimpleNamespace(writes_allowed=lambda: True)
         gateway.controller = types.SimpleNamespace(engine=engine, master=master)
         gateway.restore_afterheat_on_exit(None)

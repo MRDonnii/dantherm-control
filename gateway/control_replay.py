@@ -3,12 +3,26 @@ from __future__ import annotations
 import copy
 import math
 import tempfile
+import threading
+import time
 from pathlib import Path
 from controller_core import ControllerEngine, ControllerError, ControllerState, HardwareAdapter
 
 REPLAY_SETTINGS = frozenset({"co2_setpoint", "rh_setpoint", "co2_hysteresis", "rh_hysteresis",
     "auto_step_co2", "auto_step_rh", "local_normal_level", "air_quality_max_level",
     "downshift_delay_seconds", "boost_hold_seconds"})
+
+# One replay at a time: each is CPU-heavy and shares the GIL with the live controller.
+REPLAY_LOCK = threading.Lock()
+REPLAY_BUSY_TEXT = "En prøvekørsel kører allerede"
+# Let other threads run every this many history points.
+REPLAY_YIELD_EVERY = 50
+
+
+def _yield_now(index: int) -> None:
+    if index % REPLAY_YIELD_EVERY == REPLAY_YIELD_EVERY - 1:
+        time.sleep(0)
+
 
 class MemoryState(ControllerState):
     def save(self):
@@ -30,7 +44,8 @@ def replay_local_auto(settings: dict, samples: list[dict], patch: dict) -> dict:
         output = []
         previous = None
         covered = changed = 0.0
-        for sample in sorted(samples, key=lambda row: row.get("ts") or 0):
+        for index, sample in enumerate(sorted(samples, key=lambda row: row.get("ts") or 0)):
+            _yield_now(index)
             ts = sample.get("ts")
             if not isinstance(ts, (int, float)) or not math.isfinite(ts):
                 continue
@@ -98,7 +113,8 @@ def replay_smart_auto(settings: dict, samples: list[dict], patch: dict) -> dict:
         output = []
         covered = different = 0.0
         previous = None
-        for sample in sorted(samples, key=lambda row: row.get('ts') or 0):
+        for sample_index, sample in enumerate(sorted(samples, key=lambda row: row.get('ts') or 0)):
+            _yield_now(sample_index)
             ts = sample.get('ts')
             if not isinstance(ts, (int, float)) or isinstance(ts, bool) or not math.isfinite(ts):
                 continue

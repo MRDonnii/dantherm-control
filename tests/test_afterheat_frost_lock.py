@@ -143,6 +143,33 @@ class FrostLockEngineTests(unittest.TestCase):
         self.assertTrue(result["afterheat_frost_lock"])
         self.assertIn("ingen temperaturer", result["afterheat_frost_lock_reason"])
 
+    def test_missing_outdoor_blocks_release_on_a_warm_frost_sensor(self):
+        engine = self.make_engine()
+        now = time.time()
+        self.readings(engine, outdoor=0.0)
+        self.assertTrue(engine.resolve(now)["afterheat_frost_lock"])
+        # T1 goes stale (None) while the water-side frost sensor reads 25 °C.
+        self.readings(engine, outdoor=None, frost=25.0)
+        for minute in range(0, 41, 5):
+            result = engine.resolve(now + 60 + minute * 60)
+            self.assertTrue(result["afterheat_frost_lock"])
+            self.assertEqual(result["afterheat_frost_lock_reason"], "Frost: venter på udetemperatur (T1)")
+            self.assertIsNone(engine.frost_release_since)
+        # T1 back and warm: the half hour starts only now.
+        self.readings(engine, outdoor=12.0, frost=25.0)
+        back = now + 60 + 41 * 60
+        self.assertTrue(engine.resolve(back)["afterheat_frost_lock"])
+        self.assertFalse(engine.resolve(back + FROST_LOCK_RELEASE_SECONDS)["afterheat_frost_lock"])
+
+    def test_attic_alone_may_release_without_t1(self):
+        engine = self.make_engine()
+        now = time.time()
+        self.readings(engine, outdoor=0.0)
+        engine.resolve(now)
+        self.readings(engine, outdoor=None, attic=12.0, frost=25.0)
+        engine.resolve(now + 10)
+        self.assertFalse(engine.resolve(now + 10 + FROST_LOCK_RELEASE_SECONDS)["afterheat_frost_lock"])
+
     def test_latch_survives_a_restart(self):
         engine = self.make_engine()
         self.readings(engine, outdoor=-3.0)

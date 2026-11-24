@@ -35,8 +35,16 @@ from controller_core import FROST_LOCK_OUTDOOR_WORD_CAP_C, HardwareAdapter
 from controller_dashboard_server import ControllerDashboardHttpServer
 from controller_runtime import ControllerRuntime
 from sensor_freshness import SENSOR_SAMPLE_TIMESTAMPS, CONTROL_SENSOR_TIMESTAMPS, fresh_sensor_value
+from diagnostics import WATCHDOG_RESTART_FILE, record_watchdog_restart
 
 LOG = logging.getLogger("dantherm_gateway")
+# Watchdog: a running controller must finish a cycle this often; the first
+# cycle gets longer for MQTT and startup. After a watchdog exit the process is
+# killed hard if the cleanup has not finished in HARD_EXIT_SECONDS.
+CONTROLLER_STALL_SECONDS = 120.0
+CONTROLLER_FIRST_CYCLE_GRACE_SECONDS = 300.0
+HARD_EXIT_SECONDS = 20.0
+EXIT_LOCK_TIMEOUT_SECONDS = 2.0
 
 # High-frequency measurements can change every few seconds. Keep them at
 # DEBUG so journald remains useful for lifecycle events and real faults.
@@ -2663,6 +2671,30 @@ class Gateway:
         self.last_control_verify = time.monotonic()
         LOG.info("Mode aktiveret: %s", mode)
 
+    def watchdog_exit(self, reason: str) -> RuntimeError:
+        """Record a watchdog exit and arm a hard exit, so a hung cleanup cannot keep the process alive.
+
+        systemd's Restart=always only acts once the process is gone. The
+        cleanup in the finally (controller stop, afterheat restore) may block
+        on a lock held by the very thread that stalled.
+        """
+        LOG.error("Vagthund: %s", reason)
+        controller = getattr(self, "controller", None)
+        config = getattr(controller, "config", None)
+        if config is not None:
+            record_watchdog_restart(Path(config.path).parent / WATCHDOG_RESTART_FILE, reason)
+        self.arm_hard_exit()
+        return RuntimeError(reason)
+
+    def arm_hard_exit(self, seconds: float | None = None) -> threading.Timer:
+        timer = getattr(self, "hard_exit_timer", None)
+        if timer is None:
+            timer = threading.Timer(HARD_EXIT_SECONDS if seconds is None else seconds, os._exit, (1,))
+            timer.daemon = True
+            timer.start()
+            self.hard_exit_timer = timer
+        return timer
+
     def restore_on_exit(self, ser: serial.Serial):
         if not self.control_enabled:
             return
@@ -2694,7 +2726,8 @@ class Gateway:
         try:
             if not controller.master.writes_allowed():
                 return
-            target = controller.engine.afterheat_native_setpoint()
+            # A stalled controller thread may hold the engine lock: wait only briefly.
+            target = controller.engine.afterheat_native_setpoint(lock_timeout=EXIT_LOCK_TIMEOUT_SECONDS)
             if target is None or controller.engine.last_applied.get("afterheat_setpoint") == target:
                 return
             self.write_afterheat_setpoint(ser, target)
@@ -2841,11 +2874,15 @@ class Gateway:
                     # A dead regulator must not be masked by a working HTTP server.
                     health = self.controller.loop_health()
                     if self.controller.thread is not None and not health["thread_alive"]:
-                        raise RuntimeError("Controller thread stopped; restarting gateway")
+                        raise self.watchdog_exit("Controller thread stopped; restarting gateway")
                     age = health["last_success_age_seconds"]
-                    if ((age is not None and age > 120) or
-                            (age is None and time.time() - self.controller.engine.started_at > 120)):
-                        raise RuntimeError("Controller has not completed a cycle for 120 s; restarting gateway")
+                    started = self.controller.started_monotonic
+                    if age is not None and age > CONTROLLER_STALL_SECONDS:
+                        raise self.watchdog_exit("Controller has not completed a cycle for 120 s; restarting gateway")
+                    if (age is None and started is not None
+                            and time.monotonic() - started > CONTROLLER_FIRST_CYCLE_GRACE_SECONDS):
+                        raise self.watchdog_exit(
+                            "Controller has not completed its first cycle in 300 s; restarting gateway")
                     if self.controller_reload_requested:
                         self.controller_reload_requested = False
                         with self.controller.config.lock:
@@ -2949,7 +2986,7 @@ class Gateway:
                         self.publish("bus_traffic", age < 10)
                         self.last_bus_health_publish = now
                         if now - self.reader_started_at >= 60 and age >= 60:
-                            raise RuntimeError(
+                            raise self.watchdog_exit(
                                 f"Ingen RS485-frames i {age:.1f} sekunder; genstarter gateway"
                             )
                     if time.monotonic() - self.last_filter_publish >= 60.0:

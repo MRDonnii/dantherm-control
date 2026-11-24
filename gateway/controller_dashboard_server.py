@@ -21,7 +21,7 @@ from controller_core import ControllerError
 from dashboard_server import ASSET_TYPES, DashboardHttpServer, WEBUI_CSP
 from balancing_store import BalancingError, BalancingStore
 from controller_token import ControllerTokenStore
-from control_replay import replay_local_auto, replay_smart_auto
+from control_replay import REPLAY_BUSY_TEXT, REPLAY_LOCK, replay_local_auto, replay_smart_auto
 from control_history import ControlHistory
 from api_keys import ApiKeyStore, SCOPE_LABELS
 from event_log import ALARM_KINDS, EventLog
@@ -628,6 +628,8 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                     name = data.get("range", "24h")
                     if name not in ("1h", "6h", "24h"):
                         return self._json_error(400, "Vælg højst 24 timer")
+                    if not REPLAY_LOCK.acquire(blocking=False):
+                        return self._json_error(429, REPLAY_BUSY_TEXT)
                     try:
                         with dashboard.controller_runtime.config.lock:
                             import copy
@@ -641,6 +643,8 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                         return self._json(replay_local_auto(settings, dashboard.history.query(name), data.get("settings", {})))
                     except (ControllerError, TypeError, ValueError) as error:
                         return self._json_error(400, str(error))
+                    finally:
+                        REPLAY_LOCK.release()
                 if self.path == "/api/controller/config":
                     data = self._read_json() or {}
                     denied = config_allowed(session.get("role", "user"), data)

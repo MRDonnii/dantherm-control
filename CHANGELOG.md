@@ -2,7 +2,8 @@
 
 ## 1.13.0-beta.1 — First public beta
 
-- Publish the validated RC1–RC3 changes on the existing beta channel. The updater and installers recognize `beta.N` tags; runtime code and compiled frontend are unchanged from RC3.
+- Publish the validated RC1–RC3 changes on the existing beta channel. The updater and installers recognize `beta.N` tags. The compiled frontend is unchanged from RC3.
+- Fixes after review (A–J): the frost lock cannot release while outdoor T1 is unknown (no attic value); a watchdog exit arms a 20 s hard exit and the afterheat restore takes the engine lock with a timeout; the stale local sensor alarm only covers sensors seen since start (no permanent alarm without a CO2 sensor); watchdog restarts are recorded and three within 30 min raise a critical alarm; the startup watchdog uses a monotonic start time with a 300 s first-cycle grace; `update.sh` polls up to 60 s for a healthy controller; an already scheduled retry is capped (60 s under frost, 300 s otherwise); pending command failures are cleared when the Pi releases master and the alarm only applies while writes are allowed; one replay at a time (HTTP 429) with a yield every 50 points; a CO2 offset change re-publishes only a fresh reading and keeps its sample time.
 - Complete cumulative release notes, update requirements, validation and known issues: [1.13.0-beta.1](docs/releases/1.13.0-beta.1.md).
 
 ## 1.13.0-rc.3 — Room measurement ages and Smart Auto demand replay

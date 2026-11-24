@@ -53,6 +53,8 @@ ALARM_DELAYS = {
     "balance_overpressure": 3600,
     # The count already spans an hour.
     "level_flapping": 0,
+    # The restart file already spans 30 minutes.
+    "watchdog_restarts": 0,
 }
 ALARM_TEXT = {
     "controller_command_failed": "En styrekommando er ikke gennemført; Pi forsøger igen med pause",
@@ -67,6 +69,7 @@ ALARM_TEXT = {
     "filter_clogging": "Ventilatorernes strøm ved samme gear afviger fra rene filtre: filter eller rist stopper til",
     "balance_overpressure": "Overtryk i huset: indblæsningen giver mere luft end udsugningen, så fugtig luft kan presses ud i konstruktionen. Slå luftbalancen til",
     "level_flapping": "Automatikken skifter trin for tit (over 12 gange i timen): en grænse eller en føler svinger",
+    "watchdog_restarts": "Vagthunden har genstartet styringen 3 gange eller mere inden for 30 min: se loggen på Pi'en",
 }
 ALARM_SEVERITY = {
     "controller_command_failed": "critical",
@@ -81,6 +84,7 @@ ALARM_SEVERITY = {
     "filter_clogging": "info",
     "balance_overpressure": "info",
     "level_flapping": "warning",
+    "watchdog_restarts": "critical",
 }
 FROST_WATCH_T4 = 3.0
 FROST_RISK_T4 = 0.5
@@ -108,6 +112,36 @@ LEVEL_FLAP_QUIET_SECONDS = 900
 LEVEL_FLAP_REARM_SECONDS = 3600 - LEVEL_FLAP_QUIET_SECONDS
 SAVE_EVERY = 300.0
 MAX_STEP = 60.0
+# The gateway records each watchdog exit; this many within the window is a restart loop.
+WATCHDOG_RESTART_FILE = "watchdog-restarts.json"
+WATCHDOG_RESTART_LIMIT = 3
+WATCHDOG_RESTART_WINDOW = 1800.0
+WATCHDOG_RESTART_KEEP = 50
+
+
+def _read_restarts(path: Path) -> list[dict[str, object]]:
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    entries = saved.get("restarts") if isinstance(saved, dict) else None
+    return [e for e in entries or [] if isinstance(e, dict) and _num(e.get("at")) is not None]
+
+
+def record_watchdog_restart(path: str | Path, reason: str, now: float | None = None) -> None:
+    """Append one watchdog exit (wall-clock time and reason) to the restart file."""
+    path = Path(path)
+    now = time.time() if now is None else now
+    entries = [e for e in _read_restarts(path) if now - float(e["at"]) <= 86400]
+    entries.append({"at": round(now, 1), "reason": str(reason)[:200]})
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".watchdog-", dir=path.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"restarts": entries[-WATCHDOG_RESTART_KEEP:]}, handle)
+        os.replace(tmp, path)
+    except OSError as error:
+        LOG.warning("Unable to record the watchdog restart: %s", error)
 
 
 def _num(value: object) -> float | None:
@@ -140,7 +174,26 @@ class Diagnostics:
         self.last_update: float | None = None
         self.last_save = 0.0
         self.result: dict[str, object] = {}
+        # Local sensors that have had a value since start: only those can go stale.
+        self.seen_sensors: set[str] = set()
+        self.restart_path = self.path.parent / WATCHDOG_RESTART_FILE if self.path else None
+        self.restart_mtime: float | None = None
+        self.restart_times: list[float] = []
         self._load()
+
+    def _watchdog_restarts(self, now: float) -> int:
+        """Watchdog exits within the last WATCHDOG_RESTART_WINDOW seconds (file re-read when it changes)."""
+        if self.restart_path is None:
+            return 0
+        try:
+            mtime = self.restart_path.stat().st_mtime
+        except OSError:
+            mtime = None
+        if mtime != self.restart_mtime:
+            self.restart_mtime = mtime
+            self.restart_times = ([] if mtime is None else
+                                  [float(e["at"]) for e in _read_restarts(self.restart_path)])
+        return sum(1 for at in self.restart_times if 0 <= now - at <= WATCHDOG_RESTART_WINDOW)
 
     # ---- persistence -------------------------------------------------
     def _load(self) -> None:
@@ -308,9 +361,17 @@ class Diagnostics:
         level_flapping = self._level_flapping(_num(s.get("level_changes_last_hour")),
                                               _num(s.get("level_change_quiet_seconds")), now)
         health = (s.get("data_health") or {}).get("sensors") or {}
+        for key in ("outdoor", "co2"):
+            if health.get(key, {}).get("value") is not None:
+                self.seen_sensors.add(key)
+        restarts = self._watchdog_restarts(now)
         conditions = {
-            "controller_command_failed": bool(s.get("pending_commands")),
-            "local_sensor_stale": any(health.get(key, {}).get("fresh") is False for key in ("outdoor", "co2")),
+            # Only while the Pi may write: a released master has nothing pending.
+            "controller_command_failed": bool(s.get("pending_commands"))
+                and s.get("hardware_writes_allowed") is not False,
+            # A sensor this unit never had (e.g. no CO2 sensor) is not stale.
+            "local_sensor_stale": any(key in self.seen_sensors and health.get(key, {}).get("fresh") is False
+                                      for key in ("outdoor", "co2")),
             "frost_risk": frost_state == "risk",
             "recovery_low": cold and supply_recovery is not None and supply_recovery < 60,
             "recovery_mismatch": cold and supply_recovery is not None and extract_recovery is not None
@@ -331,6 +392,7 @@ class Diagnostics:
                 and _num(s.get("balance_running_excess_percent")) is not None
                 and _num(s.get("balance_running_excess_percent")) < -OVERPRESSURE_PERCENT,
             "level_flapping": level_flapping,
+            "watchdog_restarts": restarts >= WATCHDOG_RESTART_LIMIT,
         }
         for code, holds in conditions.items():
             if holds:
@@ -356,6 +418,7 @@ class Diagnostics:
             "diagnostics_alarms": alarms,
             "diagnostics_alarm_count": len(alarms),
             "diagnostics_alarm_text": "; ".join(a["text"] for a in alarms) or "Ingen",
+            "watchdog_restarts_30min": restarts,
             "frost_state": frost_state,
             "extract_recovery_percent": None if extract_recovery is None else round(max(0.0, min(100.0, extract_recovery)), 1),
             "specific_fan_power": None if sfp is None else round(sfp),

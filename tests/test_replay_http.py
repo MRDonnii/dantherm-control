@@ -44,5 +44,15 @@ class ReplayHttpTests(unittest.TestCase):
                 with self.assertRaises(urllib.error.HTTPError) as e:
                     request(sid,csrf,{'mode':'invalid'})
                 self.assertEqual(e.exception.code,400)
+                # One replay at a time: a second one is refused while the first runs.
+                import control_replay
+                self.assertTrue(control_replay.REPLAY_LOCK.acquire(blocking=False))
+                try:
+                    with self.assertRaises(urllib.error.HTTPError) as e: request(sid,csrf)
+                    self.assertEqual(e.exception.code,429)
+                    self.assertEqual(json.load(e.exception)['error'],'En prøvekørsel kører allerede')
+                finally:
+                    control_replay.REPLAY_LOCK.release()
+                with request(sid,csrf) as response: self.assertEqual(json.load(response)['scope'],'local_auto')
                 self.assertEqual(runtime.config.path.read_bytes(),before)
             finally: server.stop()

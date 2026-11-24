@@ -65,6 +65,8 @@ class ControllerRuntime:
         self.tick_seconds = max(1.0, float(tick_seconds))
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
+        # Monotonic time of start(): the watchdog's startup grace counts from here.
+        self.started_monotonic: float | None = None
         self.apply_lock = threading.Lock()
         self._history_fan_pair = None
         self._history_fan_changed_at: float | None = None
@@ -181,7 +183,12 @@ class ControllerRuntime:
             self.engine.last_error = None
             LOG.warning("Raspberry Pi became active master; desired state will be reapplied")
         elif old == MasterArbitrator.PI:
+            # Writes are paused: a command that failed as master is no longer pending.
             self.engine._retry_at.clear()
+            self.engine._failure_values.clear()
+            self.engine._failure_counts.clear()
+            self.engine.command_errors.clear()
+            self.engine.last_error = None
             LOG.warning("Raspberry Pi released mastership to %s; controller writes paused", new)
 
     def _evaluate_master(self) -> None:
@@ -1723,6 +1730,7 @@ class ControllerRuntime:
         if self.thread and self.thread.is_alive():
             return
         self.stop_event.clear()
+        self.started_monotonic = time.monotonic()
         self.thread = threading.Thread(target=self._run, name="hch-controller", daemon=True)
         self.thread.start()
         self.onewire.start()

@@ -19,6 +19,7 @@ import yaml
 from controller_observability import install_controller_observability
 from dantherm_gateway import Gateway as BaseGateway
 from master_arbitration import MasterArbitrator
+from sensor_freshness import CONTROL_SENSOR_TIMESTAMPS, SENSOR_FRESHNESS_SECONDS, sensor_sample_age
 
 LOG = logging.getLogger("dantherm_controller_gateway")
 
@@ -83,10 +84,21 @@ class Gateway(BaseGateway):
         super().publish(key, value, source=source)
 
     def _refresh_co2_offset(self) -> None:
-        """Re-publish CO2 right away when the calibration offset is changed."""
+        """Re-publish CO2 right away when the calibration offset is changed.
+
+        Only a fresh reading is re-published, and it keeps its own sample
+        time: an old raw value must not look like a new measurement.
+        """
         raw = self.state.get("co2_raw")
-        if isinstance(raw, (int, float)) and self._co2_offset() != getattr(self, "_co2_offset_applied", None):
-            self.publish("co2", raw)
+        if not isinstance(raw, (int, float)) or self._co2_offset() == getattr(self, "_co2_offset_applied", None):
+            return
+        age = sensor_sample_age(self.state, "co2")
+        if age is None or age > SENSOR_FRESHNESS_SECONDS:
+            return  # the next real sample gets the new offset
+        stamp = CONTROL_SENSOR_TIMESTAMPS["co2"][0]
+        sampled_at = self.state.get(stamp)
+        self.publish("co2", raw)
+        self.state[stamp] = sampled_at
 
     def serial_read(self, ser: serial.Serial, size: int) -> bytes:
         data = super().serial_read(ser, size)

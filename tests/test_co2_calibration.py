@@ -65,6 +65,27 @@ class Co2CalibrationTests(unittest.TestCase):
         self.assertEqual(state["co2"], 750)
 
     @unittest.skipIf(Gateway is None, "gateway dependencies not installed")
+    def test_offset_change_keeps_the_sample_time_and_skips_a_stale_reading(self):
+        state = {}
+        runtime = self.make_runtime(state)
+        gateway = self.make_gateway(runtime, state)
+        gateway.publish("co2", 900)
+        stamp = state["co2_sample_monotonic"] - 10.0
+        state["co2_sample_monotonic"] = stamp
+        runtime.config.configure({"co2_offset": -150})
+        gateway._refresh_co2_offset()
+        self.assertEqual(state["co2"], 750)
+        self.assertEqual(state["co2_sample_monotonic"], stamp)  # not a new measurement
+        # A stale raw value is not re-emitted as if it were new.
+        state["co2_sample_monotonic"] = stamp - 120.0
+        runtime.config.configure({"co2_offset": -100})
+        gateway._refresh_co2_offset()
+        self.assertEqual(state["co2"], 750)
+        self.assertEqual(state["co2_sample_monotonic"], stamp - 120.0)
+        gateway.publish("co2", 900)  # the next real sample gets the new offset
+        self.assertEqual(state["co2"], 800)
+
+    @unittest.skipIf(Gateway is None, "gateway dependencies not installed")
     def test_smart_auto_controls_on_the_corrected_value(self):
         state = {}
         runtime = self.make_runtime(state)
