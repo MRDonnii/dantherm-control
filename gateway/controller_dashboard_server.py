@@ -23,11 +23,13 @@ from balancing_store import BalancingError, BalancingStore
 from controller_token import ControllerTokenStore
 from control_replay import (REPLAY_BUSY_TEXT, REPLAY_LOCK, learned_steps, replay_afterheat, replay_local_auto,
                             replay_smart_auto)
-from diagnostics import WATCHDOG_RESTART_FILE, read_watchdog_restarts
-from history_analysis import HEALTH_CONTEXTS, HEALTH_DAYS, HEALTH_FIELDS, SCALE_FIELDS, afterheat_scale, weekly_health
+from diagnostics import WATCHDOG_RESTART_FILE, WATCHDOG_RESTART_RETENTION, read_watchdog_restarts
+from history_analysis import (COMPARE_FIELDS, COMPARE_WINDOWS, HEALTH_CONTEXTS, HEALTH_DAYS, HEALTH_FIELDS, SCALE_FIELDS,
+                              afterheat_scale, comparison_windows, update_comparison, weekly_health)
+from update_history import UPDATE_HISTORY_FILE, find_version_file, merged_updates, record_start
 from control_history import ControlHistory
 from api_keys import ApiKeyStore, SCOPE_LABELS
-from event_log import ALARM_KINDS, EventLog
+from event_log import ALARM_KINDS, MAX_EVENTS, EventLog
 from webui_auth import ROLE_LABELS
 from webui_mail import AlarmMailer, MailError, MailService
 from webui_permissions import admin_action_allowed, can, capabilities, config_allowed
@@ -97,6 +99,7 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
         self.kontrolrum_sso = self._create_kontrolrum_sso()
         self.auth.session_guard = self._kontrolrum_session_problem
         self.alarm_mailer = AlarmMailer(self.mail, lambda: {**controller_runtime.snapshot(), **self.ha_link()}, events=self.events)
+        self._record_version()
 
     def _create_kontrolrum_sso(self):
         if KontrolrumSso is None:
@@ -174,6 +177,49 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                              events=self.events.list(kinds=ALARM_KINDS, limit=500), restarts=restarts,
                              controller=controller, now=now, context=context,
                              history=self.history.status())
+
+    def _record_version(self) -> None:
+        """Note the running version when it differs from the last one (the update comparison's timeline)."""
+        try:
+            entry = record_start(self.auth.path.with_name(UPDATE_HISTORY_FILE), find_version_file(Path(__file__)))
+            if entry:
+                LOG.info("Version %s recorded as installed at %s", entry["version"], time.ctime(entry["at"]))
+        except Exception as error:  # noqa: BLE001 - a diagnostic file never stops the gateway
+            LOG.warning("Version history not recorded: %s", error)
+
+    def update_comparison(self, update_id: str | None, window: str, context: str,
+                          now: float | None = None) -> dict | None:
+        """Regulation quality before and after one update (read-only). None: unknown update."""
+        now = time.time() if now is None else now
+        updates = merged_updates(self.auth.path.parent)
+        # Only an update with a known previous version can be compared.
+        comparable = [index for index, item in enumerate(updates) if item["previous_version"]]
+        listed = [updates[index] for index in reversed(comparable)]
+        if update_id is None:
+            if not comparable:
+                return {"updates": [], "comparison": None, "windows": list(COMPARE_WINDOWS)}
+            index = comparable[-1]
+        else:
+            matches = [index for index in comparable if updates[index]["id"] == update_id]
+            if not matches:
+                return None
+            index = matches[0]
+        windows = comparison_windows(updates, index, COMPARE_WINDOWS[window], now)
+        sides = {}
+        for name in ("before", "after"):
+            start, end = windows[name]["start"], windows[name]["end"]
+            sides[name] = self.history.rows(max(0, end - start), COMPARE_FIELDS, now=end) if end > start else []
+        with self.events.lock:
+            log = list(self.events.events)
+        events_known_since = (float(log[0].get("time") or 0) if len(log) >= MAX_EVENTS else -float("inf"))
+        config_path = getattr(getattr(self.controller_runtime, "config", None), "path", None)
+        restarts = read_watchdog_restarts(Path(config_path).parent / WATCHDOG_RESTART_FILE) if config_path else []
+        comparison = update_comparison(
+            updates[index], windows, sides["before"], sides["after"], context=context, window=window,
+            events=[e for e in log if e.get("kind") in ALARM_KINDS], events_known_since=events_known_since,
+            restarts=restarts, restarts_known_since=now - WATCHDOG_RESTART_RETENTION)
+        return {"updates": listed, "comparison": comparison, "windows": list(COMPARE_WINDOWS),
+                "history": self.history.status()}
 
     def afterheat_replay(self, settings: dict, seconds: int, patch: dict) -> dict:
         """Replay the Pi afterheat control on stored minutes; pure simulation (see control_replay)."""
@@ -424,6 +470,22 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                         if context not in HEALTH_CONTEXTS:
                             return self._json_error(400, "Ugyldig driftstilstand")
                         self._json(dashboard.weekly_health(context=context))
+                elif parsed.path == "/api/health/update-comparison":
+                    if self._require("diagnostics") is not None:
+                        query = parse_qs(parsed.query)
+                        context = query.get("context", ["all"])[0]
+                        window = query.get("window", ["24h"])[0]
+                        update_id = query.get("update", [None])[0]
+                        if context not in HEALTH_CONTEXTS:
+                            return self._json_error(400, "Ugyldig driftstilstand")
+                        if window not in COMPARE_WINDOWS:
+                            return self._json_error(400, "Ugyldig periode")
+                        if update_id is not None and not re.fullmatch(r"\d{1,12}", update_id):
+                            return self._json_error(400, "Ugyldig opdatering")
+                        result = dashboard.update_comparison(update_id, window, context)
+                        if result is None:
+                            return self._json_error(400, "Ukendt opdatering")
+                        self._json(result)
                 elif parsed.path == "/api/diagnostics/report":
                     if self._require("diagnostics") is not None:
                         self._diagnostic_report()

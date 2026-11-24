@@ -315,6 +315,13 @@ if [[ -f ${source_dir}/scripts/netboot/hch-nfs-watchdog-guard.sh && -f ${source_
   bash "${source_dir}/scripts/netboot/hch-nfs-watchdog-guard.sh" "${source_dir}/scripts/netboot/hch-root-is-nfs" \
     || echo "NFS watchdog guard could not be applied; the update itself is fine." >&2
 fi
+# The Ugerapport's before/after comparison: which version each update backup
+# replaced and when it was installed (read-only, newest backups first, bounded to 25 s).
+if [[ -f ${source_dir}/gateway/update_history.py ]]; then
+  timeout --kill-after=2s 25s nice -n 19 python3 -B "${source_dir}/gateway/update_history.py" --backfill /var/backups "${state_dir}" \
+    && chown passivelink-webui:passivelink-webui "${state_dir}/update-history-backfill.json" \
+    || echo "Update history could not be read from the backups; the update itself is fine." >&2
+fi
 # The admin helper only restarts itself after an update it ran. After a manual
 # update.sh it would keep running the old helper code (and its last update
 # status) until the next reboot, so restart it here.

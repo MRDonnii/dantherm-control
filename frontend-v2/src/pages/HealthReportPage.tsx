@@ -6,6 +6,7 @@ import { haRoomsStatus, type HaRoomsHealth } from "../lib/haRoomsHealth";
 import { requestJson } from "../lib/api";
 import { AFTERHEAT_CONTEXTS } from "../lib/afterheatAnalysis";
 import { usePullRefresh } from "../lib/pullRefresh";
+import { UpdateComparison } from "../components/UpdateComparison";
 
 type Period = { samples: number; gap_minutes: number; supply_minutes: number; target_mean: number | null; air_min: number | null;
   air_max: number | null; error_mean: number | null; error_sd: number | null; max_over: number | null; max_under: number | null;
@@ -63,6 +64,7 @@ export function HealthReportPage() {
     {basis && !basis.ok && <p className="health-basis-warning" role="alert"><strong>{basis.text}</strong>
       {basis.state === "paused" && basis.next_retry_at ? ` Prøver igen kl. ${new Date(basis.next_retry_at * 1000).toLocaleTimeString("da-DK", { hour: "2-digit", minute: "2-digit" })}.` : ""}
       {basis.error ? ` (${basis.error})` : ""}</p>}
+    <UpdateComparison context={context}/>
     {report && t && <>
       <div className="panel-grid">
         <article className="surface panel-card" aria-label="Indblæsning mod målet"><div className="pro-card-head compact"><div><h2>Indblæsning mod målet</h2>

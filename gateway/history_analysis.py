@@ -224,6 +224,7 @@ class _Period:
         self.covered_s = 0.0
         self.hour_changes: dict[str, int] = defaultdict(int)
         self.stale: dict[str, int] = defaultdict(int)
+        self.outdoor: list[float] = []
 
     def result(self) -> dict:
         errors = self.errors
@@ -249,22 +250,18 @@ class _Period:
         }
 
 
-def weekly_health(rows: list[dict], *, events: list[dict], restarts: list[dict], controller: dict,
-                  now: float | None = None, days: int = HEALTH_DAYS, context: str = "all",
-                  history: dict | None = None) -> dict:
-    """``context`` filters the afterheat precision (spread, min/max, in band, over/undershoot,
-    level changes) by operating mode; samples, gaps, fan changes, stale minutes and alarms
-    are never filtered. ``history`` is HistoryStore.status() for the data basis."""
-    now = time.time() if now is None else now
-    context = context if context in HEALTH_CONTEXTS else "all"
-    since = now - days * 86400
-    total, per_day = _Period(), defaultdict(_Period)
+def _scan(rows: list[dict], *, since: float, until: float, context: str, total: "_Period",
+          per_day: dict | None = None) -> float | None:
+    """Count the samples in [since, until] into ``total`` (and ``per_day``); the last sample time.
+
+    ``context`` filters the afterheat precision and the level changes; samples, gaps,
+    fan changes and stale minutes are never filtered."""
     previous = None
     for row in rows:
         ts = _number(row.get("ts"))
-        if ts is None or ts < since:
+        if ts is None or ts < since or ts > until:
             continue
-        periods = (total, per_day[_day(ts)])
+        periods = (total, per_day[_day(ts)]) if per_day is not None else (total,)
         selected = context == "all" or row_context(row) == context
         for period in periods:
             period.samples += 1
@@ -272,6 +269,10 @@ def weekly_health(rows: list[dict], *, events: list[dict], restarts: list[dict],
             for key in STALE_SENSORS:
                 if row.get(f"{key}_sample_fresh") == 0:
                     period.stale[key] += 1
+        if selected:
+            outdoor = _number(row.get("outdoor_temp"))
+            if outdoor is not None:
+                total.outdoor.append(outdoor)
         air, target = _number(row.get("heating_coil_after_temperature")), _number(row.get("afterheat_target"))
         active = _number(row.get("afterheat_active"))
         if (selected and air is not None and target is not None and active is not None and active > 0
@@ -283,7 +284,10 @@ def weekly_health(rows: list[dict], *, events: list[dict], restarts: list[dict],
         if previous is not None:
             gap = ts - previous["_ts"]
             if gap > 3 * SAMPLE_GAP_S:
-                _add_gap(total, per_day, previous["_ts"], ts)
+                if per_day is not None:
+                    _add_gap(total, per_day, previous["_ts"], ts)
+                else:
+                    total.gap_minutes += gap / 60
             elif 0 < gap <= SAMPLE_GAP_S:
                 level, before = _number(row.get("afterheat_level")), _number(previous.get("afterheat_level"))
                 fan, fan_before = _number(row.get("fan_supply_percent")), _number(previous.get("fan_supply_percent"))
@@ -298,8 +302,21 @@ def weekly_health(rows: list[dict], *, events: list[dict], restarts: list[dict],
                     for period in periods:
                         period.fan_changes += 1
         previous = {**row, "_ts": ts}
+    return previous["_ts"] if previous is not None else None
+
+
+def weekly_health(rows: list[dict], *, events: list[dict], restarts: list[dict], controller: dict,
+                  now: float | None = None, days: int = HEALTH_DAYS, context: str = "all",
+                  history: dict | None = None) -> dict:
+    """``context`` filters the afterheat precision (spread, min/max, in band, over/undershoot,
+    level changes) by operating mode; samples, gaps, fan changes, stale minutes and alarms
+    are never filtered. ``history`` is HistoryStore.status() for the data basis."""
+    now = time.time() if now is None else now
+    context = context if context in HEALTH_CONTEXTS else "all"
+    since = now - days * 86400
+    total, per_day = _Period(), defaultdict(_Period)
+    last_ts = _scan(rows, since=since, until=math.inf, context=context, total=total, per_day=per_day)
     # A gap still open now (no sample for a while) counts too, split over the days it spans.
-    last_ts = previous["_ts"] if previous is not None else None
     open_gap_s = now - last_ts if last_ts is not None else 0.0
     if open_gap_s > 3 * SAMPLE_GAP_S:
         _add_gap(total, per_day, last_ts, now)
@@ -361,4 +378,180 @@ def weekly_health(rows: list[dict], *, events: list[dict], restarts: list[dict],
         "note": ("Beregnet på gemte målinger én gang i minuttet; korte trinskift mellem to målinger tælles ikke. "
                  "Indblæsning sammenlignes med eftervarmens mål, mens eftervarmen er aktiv (ikke slukket eller køling). "
                  "For gamle målinger tælles fra opdateringen, hvor kvalitetsmarkørerne blev gemt."),
+    }
+
+
+# --- Before/after a software update -------------------------------------------------------
+
+COMPARE_FIELDS = ("heating_coil_after_temperature", "afterheat_target", "afterheat_active", "afterheat_level",
+                  "fan_supply_percent", "afterheat_context", "outdoor_temp")
+COMPARE_WINDOWS = {"24h": 86400, "3d": 3 * 86400, "7d": 7 * 86400}
+# Start-up and settling after an update are left out of both windows.
+COMPARE_SETTLE_S = 30 * 60
+# Fewer minutes than this measured against the target on a side: no verdict.
+COMPARE_MIN_MINUTES = 6 * 60
+COMPARE_LABELS = {"better": "Bedre", "worse": "Dårligere", "unchanged": "Uændret",
+                  "too_little": "For lidt data", "none": "–"}
+# key, Danish label, unit, which way is better (None = not judged), noise threshold, relative threshold.
+COMPARE_METRICS = (
+    ("error_sd", "Spredning (standardafvigelse)", "K", "lower", 0.1, 0.0),
+    ("error_mean", "Gennemsnitlig afvigelse", "K", "closer_to_zero", 0.1, 0.0),
+    ("in_band_percent", "Tid inden for ±0,5 °C", "%", "higher", 5.0, 0.0),
+    ("max_over", "Største oversving", "K", "lower", 0.3, 0.0),
+    ("max_under", "Største undersving", "K", "lower", 0.3, 0.0),
+    ("level_changes_per_hour", "Eftervarme: trinskift pr. time", "", "lower", 0.5, 0.2),
+    ("fan_changes_per_hour", "Blæser: trinskift pr. time", "", None, 0.0, 0.0),
+    ("command_errors", "Alarmer for fejlede kommandoer", "", "lower_count", 1.0, 0.0),
+    ("watchdog_restarts", "Genstarter fra vagthunden", "", "lower_count", 1.0, 0.0),
+)
+
+
+def comparison_windows(updates: list[dict], index: int, window_s: float, now: float) -> dict:
+    """The before and after windows of ``updates[index]`` (oldest-first list).
+
+    Before: up to ``window_s`` ending at the update, starting no earlier than the settled
+    start of the previous version. After: from the settled start, up to ``window_s``, ending
+    no later than the next update or now. So the two never mix versions."""
+    at = float(updates[index]["at"])
+    previous_at = float(updates[index - 1]["at"]) if index > 0 else None
+    next_at = float(updates[index + 1]["at"]) if index + 1 < len(updates) else None
+    before_start = at - window_s
+    if previous_at is not None:
+        before_start = max(before_start, previous_at + COMPARE_SETTLE_S)
+    after_start = at + COMPARE_SETTLE_S
+    after_end = after_start + window_s
+    limits = [after_end, now]
+    if next_at is not None:
+        limits.append(next_at)
+    after_end = min(limits)
+    return {
+        "before": {"start": round(min(before_start, at)), "end": round(at),
+                   "cut_by_previous_update": previous_at is not None and previous_at + COMPARE_SETTLE_S > at - window_s},
+        "after": {"start": round(after_start), "end": round(max(after_start, after_end)),
+                  "cut_by_next_update": next_at is not None and next_at < min(after_start + window_s, now),
+                  "ongoing": next_at is None and now < after_start + window_s},
+    }
+
+
+def _window_side(rows: list[dict], start: float, end: float, context: str, events: list[dict],
+                 events_known_since: float, restarts: list[dict], restarts_known_since: float) -> dict:
+    period = _Period()
+    first_ts = None
+    for row in rows:
+        ts = _number(row.get("ts"))
+        if ts is not None and start <= ts < end:
+            first_ts = ts
+            break
+    # Half-open windows: a sample at the update/next update belongs to the new version.
+    last_ts = _scan(rows, since=start, until=math.nextafter(end, -math.inf), context=context, total=period)
+    window_minutes = max(0.0, (end - start) / 60)
+    # A missing start or end of the window is a gap too.
+    if first_ts is None:
+        period.gap_minutes += window_minutes
+    else:
+        if first_ts - start > 3 * SAMPLE_GAP_S:
+            period.gap_minutes += (first_ts - start) / 60
+        if last_ts is not None and end - last_ts > 3 * SAMPLE_GAP_S:
+            period.gap_minutes += (end - last_ts) / 60
+    result = period.result()
+    hours = window_minutes / 60
+    sample_hours = period.samples / 60
+    errors = [e for e in events if e.get("kind") == "alarm_raised" and e.get("code") == "controller_command_failed"
+              and start <= (_number(e.get("time")) or 0) <= end]
+    window_restarts = [r for r in restarts if start <= (_number(r.get("at")) or 0) <= end]
+    outdoor = period.outdoor
+    return {
+        "start": round(start), "end": round(end), "window_minutes": round(window_minutes),
+        "samples": result["samples"], "context_minutes": result["context_minutes"],
+        "supply_minutes": result["supply_minutes"], "gap_minutes": round(period.gap_minutes),
+        "coverage_percent": min(100.0, round(100 * result["context_minutes"] / window_minutes, 1)) if window_minutes >= 1 else 0.0,
+        "enough": result["supply_minutes"] >= COMPARE_MIN_MINUTES,
+        "outdoor_min": round(min(outdoor), 1) if outdoor else None,
+        "outdoor_mean": round(statistics.fmean(outdoor), 1) if outdoor else None,
+        "outdoor_max": round(max(outdoor), 1) if outdoor else None,
+        "target_mean": result["target_mean"],
+        "error_sd": result["error_sd"], "error_mean": result["error_mean"],
+        "in_band_percent": result["in_band_percent"],
+        "max_over": result["max_over"], "max_under": result["max_under"],
+        "level_changes": result["level_changes"], "level_changes_per_hour": result["level_changes_per_hour"],
+        "fan_changes": result["fan_changes"],
+        "fan_changes_per_hour": round(result["fan_changes"] / sample_hours, 2) if sample_hours >= 0.5 else None,
+        # The alarm log keeps the last 500 events and restarts are kept 8 days: older is unknown.
+        "command_errors": len(errors) if start >= events_known_since else None,
+        "watchdog_restarts": len(window_restarts) if start >= restarts_known_since else None,
+        "hours": round(hours, 2),
+    }
+
+
+def _judge(key: str, direction: str | None, threshold: float, relative: float, before: dict, after: dict,
+           enough: bool) -> str:
+    a, b = before.get(key), after.get(key)
+    if a is None or b is None or direction is None:
+        return "none"
+    if not enough:
+        return "too_little"
+    if direction == "lower_count":
+        # Events are counted, so a shorter window expects fewer: compare with the before rate.
+        hours_a, hours_b = before.get("hours") or 0, after.get("hours") or 0
+        expected = a * hours_b / hours_a if hours_a > 0 else a
+        if b >= expected + threshold:
+            return "worse"
+        if b <= expected - threshold:
+            return "better"
+        return "unchanged"
+    if direction == "closer_to_zero":
+        a, b, direction = abs(a), abs(b), "lower"
+    limit = max(threshold, relative * abs(a))
+    delta = b - a
+    if abs(delta) < limit or delta == 0:
+        return "unchanged"
+    improved = delta < 0 if direction == "lower" else delta > 0
+    return "better" if improved else "worse"
+
+
+def update_comparison(update: dict, windows: dict, before_rows: list[dict], after_rows: list[dict], *,
+                      context: str = "all", window: str = "24h", events: list[dict] | None = None,
+                      events_known_since: float = -math.inf, restarts: list[dict] | None = None,
+                      restarts_known_since: float = -math.inf) -> dict:
+    """Regulation quality in the windows before and after one update (read-only).
+
+    The afterheat precision uses the weekly report's rules and its ``context`` filter.
+    No verdict when a side has under COMPARE_MIN_MINUTES measured against the target."""
+    context = context if context in HEALTH_CONTEXTS else "all"
+    events, restarts = events or [], restarts or []
+    sides = {}
+    for name, rows in (("before", before_rows), ("after", after_rows)):
+        span = windows[name]
+        sides[name] = {**_window_side(rows, span["start"], span["end"], context, events, events_known_since,
+                                      restarts, restarts_known_since),
+                       **{key: value for key, value in span.items() if key not in ("start", "end")}}
+    before, after = sides["before"], sides["after"]
+    enough = before["enough"] and after["enough"]
+    metrics, counts = [], {"better": 0, "worse": 0, "unchanged": 0}
+    for key, label, unit, direction, threshold, relative in COMPARE_METRICS:
+        verdict = _judge(key, direction, threshold, relative, before, after, enough)
+        if verdict in counts:
+            counts[verdict] += 1
+        a, b = before.get(key), after.get(key)
+        metrics.append({
+            "key": key, "label": label, "unit": unit, "before": a, "after": b,
+            "delta": round(b - a, 2) if a is not None and b is not None else None,
+            "judged": direction is not None, "threshold": threshold, "relative_threshold": relative,
+            "verdict": verdict, "verdict_text": COMPARE_LABELS[verdict],
+        })
+    if not enough:
+        short = [text for side, text in (("before", "før"), ("after", "efter")) if not sides[side]["enough"]]
+        summary = (f"For lidt data {' og '.join(short)} opdateringen til at sammenligne: under "
+                   f"{COMPARE_MIN_MINUTES // 60} timer med indblæsning mod målet i den valgte driftstilstand.")
+    else:
+        summary = f"{counts['better']} bedre · {counts['worse']} dårligere · {counts['unchanged']} uændret"
+    return {
+        "update": update, "window": window, "window_seconds": COMPARE_WINDOWS.get(window),
+        "context": context, "settle_minutes": COMPARE_SETTLE_S // 60, "min_minutes": COMPARE_MIN_MINUTES,
+        "enough": enough, "before": before, "after": after, "metrics": metrics, "counts": counts,
+        "summary": summary,
+        "note": ("Vejr og brug er ikke ens i de to perioder: se udetemperaturen og dækningen. "
+                 f"De første {COMPARE_SETTLE_S // 60} min efter opdateringen tælles ikke med, og perioden før "
+                 "stopper ved den forrige opdatering, så to versioner aldrig blandes. "
+                 "Forskelle under tærsklen kaldes uændret."),
     }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.13.0-beta.7
+
+- Sammenlign reguleringskvalitet før og efter opdateringer fra Ugerapporten med valg af driftstilstand, periode, datadækning og vejrforhold.
+- Registrér versionsskift og genfind tidligere installationer fra updater-backups med afgrænset køretid.
+- Bevar eksisterende eftervarmestyring og indstillinger; alt nyt er læsning og visning.
+
+Se [release notes](docs/releases/1.13.0-beta.7.md).
+
 ## 1.13.0-beta.6 — Pull to refresh keeps edits made while it waits
 
 - **Pull to refresh:** the page now decides whether to keep its draft when the answer arrives, not when the pull starts. An edit made while the refresh waited for the Pi is kept (Rooms, Week plan, Settings, Balancing). `PullRefreshContext.keepDraft` is now a function asked at apply time.
