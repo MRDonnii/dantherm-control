@@ -337,7 +337,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="app-shell fd-app" data-collapsed={collapsed && nav === "side" ? "" : undefined}>
-      <header className="fd-header topbar-v2 pro-topbar">
+      <header className="fd-header topbar-v2 pro-topbar" data-update={updateCount ? "" : undefined}>
         <span className="only-mobile"><span className="fd-mobile-brand"><Logo size={26}/><strong>{title}</strong></span></span>
         {nav === "top"
           ? <>
@@ -369,7 +369,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </button>
           </span>
           <TopbarWeather outdoorTemp={outdoorTemp} weather={weather} />
-          {availableUpdate && session.can("system") && <NavLink className="topbar-update-tab" to="/updates" title={availableUpdate}><RefreshCw size={15}/><span>{availableUpdate === "Installerer opdatering" ? availableUpdate : "Opdatering klar"}</span>{availableUpdate !== "Installerer opdatering" && <small>{availableUpdate}</small>}</NavLink>}
+          {availableUpdate && session.can("system") && <NavLink className="topbar-update-tab" to="/updates" title={availableUpdate} aria-label={availableUpdate === "Installerer opdatering" ? availableUpdate : `Opdatering klar: ${availableUpdate}`}><RefreshCw size={15}/><span className="topbar-update-label">{availableUpdate === "Installerer opdatering" ? availableUpdate : "Opdatering klar"}</span><span className="topbar-update-mobile-label">{availableUpdate === "Installerer opdatering" ? "Installerer" : "Opdatering"}</span>{availableUpdate !== "Installerer opdatering" && <small>{availableUpdate}</small>}</NavLink>}
           <div className="topbar-clock only-desktop"><strong>{now.toLocaleTimeString("da-DK", { hour: "2-digit", minute: "2-digit" })}</strong><span>{now.toLocaleDateString("da-DK", { day: "2-digit", month: "short", year: "numeric" })}</span></div>
           {notice && <div className={`topbar-control-notice${notice.startsWith("Kunne") ? " error" : ""}`} role="status" title={notice}><strong>Seneste ændring</strong><span>{notice}</span></div>}
           <span className={`status-chip fd-activity${online ? " ok" : " muted"}`} title={online ? "Forbindelse til anlægget" : "Venter på data fra anlægget"}><span className="live-dot" /> {online ? "Forbundet" : "Afventer"}</span>

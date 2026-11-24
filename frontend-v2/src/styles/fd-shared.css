@@ -294,7 +294,7 @@ table.fd-table { width: 100%; border-collapse: collapse; font-size: 14px; line-h
     padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); background: color-mix(in srgb, var(--body) 88%, transparent);
     backdrop-filter: blur(16px); border-top: 1px solid var(--fd-border); }
   .fd-tabbar a { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 10.5px; font-weight: 500; color: var(--dimmed); padding: 4px 0; }
-  .fd-tabbar a span { position: relative; }
+  .fd-tabbar :is(a, button) > span { position: relative; display: inline-flex; }
   .fd-tabbar svg.i { width: 22px; height: 22px; stroke-width: 1.7; }
   .fd-tabbar [data-active] { color: var(--primary); font-weight: 600; }
   .fd-tabbar b { position: absolute; top: -4px; right: -10px; min-width: 16px; height: 16px; border-radius: 8px; padding: 0 4px; font-size: 10px; line-height: 16px; text-align: center; background: var(--fd-warn); color: #fff; }

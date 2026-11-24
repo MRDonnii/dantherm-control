@@ -123,6 +123,7 @@
 :root[data-skin] .topbar-update-tab { height: 34px; display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; border: 0; border-radius: var(--r-btn); background: var(--primary-light); color: var(--primary-lc);
   font-size: 13px; font-weight: 600; text-decoration: none; box-shadow: none; }
 :root[data-skin] .topbar-update-tab small { color: inherit; opacity: .8; }
+:root[data-skin] .topbar-update-mobile-label { display: none; }
 :root[data-skin] .fd-icon-btn.icon-button { width: 34px; height: 34px; border-radius: var(--r-default); border: 1px solid var(--default-border); background: var(--default); color: var(--default-color); box-shadow: none; }
 :root[data-skin] .fd-icon-btn.icon-button:hover { transform: none; background: var(--default-hover); border-color: var(--default-border); }
 :root[data-skin] .topbar-user { padding: 0; border: 0; background: transparent; box-shadow: none; }

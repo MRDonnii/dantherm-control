@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.13.0-beta.8 — Mobil topbjælke og opdateringsbadge
+
+- På telefoner viger vejrvisningen, når en opdatering er klar eller installeres. Opdateringsknappen får en kort tekst, så søgning, HA-status og konto bliver inden for skærmen uden at overlappe sidetitlen.
+- Den røde opdateringsbadge på **Mere** er nu forankret ved ikonet og bliver inden for bundbjælken.
+- Desktopvisning og regulering er bevaret. Se [release notes](docs/releases/1.13.0-beta.8.md).
+
 ## 1.13.0-beta.7
 
 - Sammenlign reguleringskvalitet før og efter opdateringer fra Ugerapporten med valg af driftstilstand, periode, datadækning og vejrforhold.

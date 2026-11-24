@@ -51,12 +51,19 @@ html, body { overflow-x: clip; }
 
   /* Titlen giver plads og afkortes med "…"; knapperne til højre krymper aldrig ud over kanten. */
   :root[data-skin] .fd-header > .only-mobile { display: flex !important; flex: 1 1 auto; min-width: 0; }
-  :root[data-skin] .fd-mobile-brand { min-width: 0; gap: 8px; }
+  :root[data-skin] .fd-mobile-brand { min-width: 0; width: 100%; gap: 8px; }
   :root[data-skin] .fd-mobile-brand > :first-child { flex: none; }
   :root[data-skin] .fd-mobile-brand strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   :root[data-skin] .fd-header > .spacer { display: none; }
-  :root[data-skin] .topbar-actions { flex: 0 1 auto; min-width: 0; flex-wrap: nowrap; gap: 6px; }
+  :root[data-skin] .topbar-actions { flex: none; min-width: 0; flex-wrap: nowrap; gap: 6px; }
   :root[data-skin] .topbar-actions > * { flex: none; }
+  /* En opdatering har forrang for vejret; versionsnummeret findes på Opdateringer.
+     Bevar de samme noder ved polling, så åbne menuer og fokus ikke nulstilles. */
+  :root[data-skin] .fd-header[data-update] .topbar-weather { display: none; }
+  :root[data-skin] .topbar-update-tab { padding: 0 8px; white-space: nowrap; }
+  :root[data-skin] .topbar-update-tab .topbar-update-label,
+  :root[data-skin] .topbar-update-tab small { display: none; }
+  :root[data-skin] .topbar-update-tab .topbar-update-mobile-label { display: inline; }
   :root[data-skin] .topbar-weather-button { gap: 6px; padding: 0 8px; }
   :root[data-skin] .topbar-weather-condition { display: none; }
   :root[data-skin] .fd-header .ha-chip small { display: none; }
