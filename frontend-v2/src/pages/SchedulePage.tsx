@@ -9,7 +9,7 @@ import {
 import { useTopbarNotice } from "../lib/topbar-notice";
 import { LEVEL_NAMES, levelList } from "../lib/fanSteps";
 import "../styles/schedule.css";
-import { usePullRefresh } from "../lib/pullRefresh";
+import { type DraftCheck, keepDraftNow, usePullRefresh } from "../lib/pullRefresh";
 
 type Data = Record<string, unknown>;
 type Selected = { day: number; index: number } | null;
@@ -54,16 +54,16 @@ export function SchedulePage() {
   const [vacation, setVacation] = useState({ enabled: false, from: "", until: "", level: 1 });
 
   // keepDraft: the week plan, its switch and the holiday form stay as edited; the rest is refreshed.
-  const apply = useCallback((next: Data, keepDraft = false) => {
+  const apply = useCallback((next: Data, keepDraft: DraftCheck = false) => {
     setController(next);
-    if (keepDraft) return;
+    if (keepDraftNow(keepDraft)) return;
     const week = cloneWeek(next.schedule_periods as WeekPeriods | undefined);
     setSaved(week); setDraft(week);
     setEnabled(next.schedule_enabled === true);
     setVacation(vacationForm(next));
   }, []);
 
-  const refresh = useCallback(async (keepDraft = false) => {
+  const refresh = useCallback(async (keepDraft: DraftCheck = false) => {
     const [state, auth] = await Promise.all([
       requestJson<Data>("/api/controller/state?compact=1", { timeoutMs: 4000 }),
       requestJson<{ csrf?: string | null }>("/api/auth/status", { timeoutMs: 3500 }),

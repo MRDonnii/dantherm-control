@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.13.0-beta.6 — Pull to refresh keeps edits made while it waits
+
+- **Pull to refresh:** the page now decides whether to keep its draft when the answer arrives, not when the pull starts. An edit made while the refresh waited for the Pi is kept (Rooms, Week plan, Settings, Balancing). `PullRefreshContext.keepDraft` is now a function asked at apply time.
+- Release notes: [1.13.0-beta.6](docs/releases/1.13.0-beta.6.md).
+
 ## 1.13.0-beta.5 — Review fixes: history resume, missing HA sensors, drafts on pull to refresh, weekly mode filter
 
 - **History resumes by itself:** a failed write to the minute history (`HistoryStore`) no longer switches it off until restart. Recording pauses and is retried with backoff (1 min doubling to 30 min, as the room recording); only the first failure and the recovery are logged, a deleted database file gets its table back, and a failed read never pauses recording. Stored minutes stay readable while paused. Status in `history_recording` (controller state) and `recording` (`/history.json`); Diagnostik shows "Historik (minutdata)" and the History page says when recording is paused.

@@ -2,9 +2,16 @@ import { useEffect, useRef } from "react";
 
 /** "Træk ned for at opdatere": sider melder her, hvordan de henter deres data igen.
  *  Har den viste side ingen, genindlæses hele siden (location.reload).
- *  En side med ugemte ændringer melder `dirty`; så kaldes dens funktion med `keepDraft: true`
- *  og henter kun det, der ikke er kladden. Ugemte ændringer går aldrig tabt ved et træk. */
-export type PullRefreshContext = { keepDraft: boolean };
+ *  En side med ugemte ændringer melder `dirty`; dens funktion får `keepDraft`, som siden skal
+ *  spørge EFTER hentningen (lige før svaret bruges): så bevares også en ændring, der blev lavet,
+ *  mens siden ventede på svaret. Ugemte ændringer går aldrig tabt ved et træk. */
+export type DraftCheck = boolean | (() => boolean);
+export type PullRefreshContext = { keepDraft: () => boolean };
+
+/** Skal kladden bevares lige nu? Kaldes når svaret er kommet, ikke før hentningen. */
+export function keepDraftNow(keepDraft: DraftCheck | undefined): boolean {
+  return typeof keepDraft === "function" ? keepDraft() : keepDraft === true;
+}
 type Entry = { refresh: (context: PullRefreshContext) => unknown; dirty: boolean };
 type Handler = { current: Entry };
 const handlers = new Set<Handler>();
@@ -23,9 +30,12 @@ export function usePullRefresh(refresh: (context: PullRefreshContext) => unknown
 /** "kept" = data hentet, men mindst én side beholdt sine ugemte ændringer. */
 export async function runPullRefresh(reload: () => void = () => window.location.reload()): Promise<"data" | "kept" | "reload"> {
   if (!handlers.size) { reload(); return "reload"; }
-  const entries = [...handlers].map(handler => handler.current);
-  await Promise.allSettled(entries.map(entry => Promise.resolve().then(() => entry.refresh({ keepDraft: entry.dirty }))));
-  return entries.some(entry => entry.dirty) ? "kept" : "data";
+  const started = [...handlers].map(handler => ({ handler, dirty: handler.current.dirty }));
+  // Dirty at the start, or made dirty while the answer was on its way (the latest render decides).
+  const keep = (item: { handler: Handler; dirty: boolean }) => item.dirty || item.handler.current.dirty;
+  await Promise.allSettled(started.map(item => Promise.resolve()
+    .then(() => item.handler.current.refresh({ keepDraft: () => keep(item) }))));
+  return started.some(keep) ? "kept" : "data";
 }
 
 /** The keys whose draft value differs from the saved one (compared as JSON). */

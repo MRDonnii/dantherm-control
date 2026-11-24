@@ -9,7 +9,7 @@ import {
   type CatalogArea, type Room, type RoomsView, type SensorKind,
 } from "../lib/rooms";
 import "../styles/panels.css"; import "../styles/management.css"; import "../styles/rooms.css";
-import { usePullRefresh } from "../lib/pullRefresh";
+import { type DraftCheck, keepDraftNow, usePullRefresh } from "../lib/pullRefresh";
 
 type State = Record<string, unknown>;
 
@@ -112,14 +112,14 @@ export function RoomsPage() {
   const [error, setError] = useState("");
 
   // keepDraft: unsaved room edits stay; only the catalog and the session are fetched again.
-  const load = useCallback(async (keepDraft = false) => {
+  const load = useCallback(async (keepDraft: DraftCheck = false) => {
     try {
       const [next, auth] = await Promise.all([
         requestJson<RoomsView>("/api/controller/rooms"),
         requestJson<{ csrf?: string | null }>("/api/auth/status"),
       ]);
       setView(next); setCsrf(auth.csrf ?? ""); setError("");
-      if (!keepDraft) { setRooms(next.rooms ?? []); setSaved(JSON.stringify(next.rooms ?? [])); }
+      if (!keepDraftNow(keepDraft)) { setRooms(next.rooms ?? []); setSaved(JSON.stringify(next.rooms ?? [])); }
     } catch (e) { setError(e instanceof Error ? e.message : "Rummene kunne ikke hentes"); }
   }, []);
   useEffect(() => { void load(); }, [load]);

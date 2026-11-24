@@ -9,7 +9,7 @@ import { levelList, stepCount } from "../lib/fanSteps";
 import { useTopbarNotice } from "../lib/topbar-notice";
 import { BalancingReport, buildReport, type Report } from "../components/BalancingReport";
 import "../styles/balancing.css";
-import { usePullRefresh } from "../lib/pullRefresh";
+import { type DraftCheck, keepDraftNow, usePullRefresh } from "../lib/pullRefresh";
 
 type Data = Record<string, unknown>;
 type Step = "rooms" | "design" | "measure" | "report";
@@ -51,14 +51,14 @@ export function BalancingPage() {
   const [previousMode, setPreviousMode] = useState<string | null>(null);
 
   // keepDraft: the unsaved project stays; reports, controller and session are refreshed.
-  const load = useCallback(async (keepDraft = false) => {
+  const load = useCallback(async (keepDraft: DraftCheck = false) => {
     const [state, ctrl, auth] = await Promise.all([
       requestJson<{ project: Project; reports: ReportSummary[] }>("/api/balancing"),
       requestJson<Data>("/api/controller/state?compact=1", { timeoutMs: 4000 }),
       requestJson<{ csrf?: string | null }>("/api/auth/status"),
     ]);
     const next = { ...state.project, meta: { ...emptyMeta(), ...state.project.meta } };
-    if (!keepDraft) { setSaved(next); setProject(next); }
+    if (!keepDraftNow(keepDraft)) { setSaved(next); setProject(next); }
     setReports(state.reports ?? []); setController(ctrl); setCsrf(auth.csrf ?? "");
     requestJson<Data>("/state.json", { timeoutMs: 3000 }).then(setUnitState).catch(() => {});
   }, []);

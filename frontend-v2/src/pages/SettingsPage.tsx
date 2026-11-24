@@ -15,7 +15,7 @@ import { AccountPanel } from "../components/AccountPanel";
 import { MailPanel } from "../components/MailPanel";
 import { UsersPanel } from "../components/UsersPanel";
 import "../styles/panels.css";import "../styles/management.css";
-import { changedKeys, usePullRefresh } from "../lib/pullRefresh";
+import { changedKeys, type DraftCheck, keepDraftNow, usePullRefresh } from "../lib/pullRefresh";
 
 type Data = Record<string, unknown>;
 type Auth = { csrf?: string | null; enabled?: boolean; username?: string | null };
@@ -257,10 +257,11 @@ export function SettingsPage() {
   const controllerRef = useRef<Data>(controller);
   controllerRef.current = controller;
   // keepDraft: the fields changed but not saved keep their value; everything else is refreshed.
-  const refresh = useCallback(async (keepDraft = false) => {
+  const refresh = useCallback(async (keepDraft: DraftCheck = false) => {
     const [c, a] = await Promise.all([requestJson<Data>("/api/controller/state?compact=1"), requestJson<Auth>("/api/auth/status")]);
     const base = controllerRef.current;
-    setForm(current => keepDraft ? { ...c, ...changedKeys(current, base, CONTROLLER_KEYS) } : c);
+    const keep = keepDraftNow(keepDraft);  // asked after the answer: an edit made while waiting counts
+    setForm(current => keep ? { ...c, ...changedKeys(current, base, CONTROLLER_KEYS) } : c);
     setController(c); setAuth(a); setCsrf(a.csrf ?? "");
   }, []);
   const dirty = Object.keys(changedKeys(form, controller, CONTROLLER_KEYS)).length > 0 || Object.keys(sixEdits).length > 0;

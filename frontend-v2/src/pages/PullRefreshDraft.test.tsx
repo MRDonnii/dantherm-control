@@ -11,10 +11,13 @@ import { RoomsPage } from "./RoomsPage";
 import { SchedulePage } from "./SchedulePage";
 import { SettingsPage } from "./SettingsPage";
 
-const api = vi.hoisted(() => ({ calls: [] as string[], responses: {} as Record<string, unknown> }));
+const api = vi.hoisted(() => ({ calls: [] as string[], responses: {} as Record<string, unknown>,
+  hold: {} as Record<string, Promise<void>> }));
 vi.mock("../lib/api", () => ({
   requestJson: async (endpoint: string) => {
     api.calls.push(endpoint);
+    const held = Object.keys(api.hold).find(prefix => endpoint.startsWith(prefix));
+    if (held) await api.hold[held];
     const key = Object.keys(api.responses).find(prefix => endpoint.startsWith(prefix));
     return key ? structuredClone(api.responses[key]) : {};
   },
@@ -24,11 +27,18 @@ vi.mock("../lib/api", () => ({
 const pull = async () => { let result = ""; await act(async () => { result = await runPullRefresh(() => {}); }); return result; };
 const callsTo = (prefix: string) => api.calls.filter(call => call.startsWith(prefix)).length;
 
-beforeEach(() => { api.calls = []; api.responses = { "/api/auth/status": { csrf: "t" } }; });
+beforeEach(() => { api.calls = []; api.hold = {}; api.responses = { "/api/auth/status": { csrf: "t" } }; });
+
+/** Holds the answers to `prefix` until release() is called: the user can edit while the pull waits. */
+function holdAnswers(prefix: string) {
+  let release = () => {};
+  api.hold[prefix] = new Promise<void>(resolve => { release = resolve; });
+  return () => { delete api.hold[prefix]; release(); };
+}
 afterEach(() => { cleanup(); localStorage.clear(); window.location.hash = ""; });
 
 describe("the pull-refresh hook", () => {
-  function Page({ dirty, refresh }: { dirty: boolean; refresh: (context: { keepDraft: boolean }) => unknown }) {
+  function Page({ dirty, refresh }: { dirty: boolean; refresh: (context: { keepDraft: () => boolean }) => unknown }) {
     usePullRefresh(refresh, { dirty });
     return <p>Side</p>;
   }
@@ -37,10 +47,10 @@ describe("the pull-refresh hook", () => {
     const refresh = vi.fn();
     const { rerender } = render(<Page dirty={false} refresh={refresh}/>);
     expect(await pull()).toBe("data");
-    expect(refresh).toHaveBeenLastCalledWith({ keepDraft: false });
+    expect(refresh.mock.lastCall?.[0].keepDraft()).toBe(false);
     rerender(<Page dirty refresh={refresh}/>);
     expect(await pull()).toBe("kept");
-    expect(refresh).toHaveBeenLastCalledWith({ keepDraft: true });
+    expect(refresh.mock.lastCall?.[0].keepDraft()).toBe(true);
   });
 
   it("tells the user that the unsaved changes were kept", async () => {
@@ -111,5 +121,35 @@ describe("pages keep their draft on pull to refresh", () => {
     expect(await pull()).toBe("kept");
     expect(callsTo("/api/balancing")).toBe(2);
     expect(screen.getByDisplayValue("Stuen")).toBeTruthy();
+  });
+});
+
+describe("an edit made while the pull waits for its answer", () => {
+  it("is asked about after the answer: keepDraft turns true when the page became dirty meanwhile", async () => {
+    let seen: boolean | null = null;
+    let finish = () => {};
+    function Page({ dirty }: { dirty: boolean }) {
+      usePullRefresh(async ({ keepDraft }) => { await new Promise<void>(r => { finish = r; }); seen = keepDraft(); }, { dirty });
+      return <p>Side</p>;
+    }
+    const { rerender } = render(<Page dirty={false}/>);
+    let result: Promise<string> = Promise.resolve("");
+    await act(async () => { result = runPullRefresh(() => {}); await Promise.resolve(); });
+    rerender(<Page dirty/>);
+    await act(async () => { finish(); expect(await result).toBe("kept"); });
+    expect(seen).toBe(true);
+  });
+
+  it("Rum keeps a name typed while the pull was waiting", async () => {
+    api.responses["/api/controller/rooms"] = { rooms: [{ id: "stue", name: "Stue", type: "normal", priority: "auto", control: true,
+      enabled: true, unit_sensor: false, sensors: {} }], catalog: [], catalog_age_seconds: 5 };
+    render(<RoomsPage/>);
+    await screen.findByDisplayValue("Stue");
+    const release = holdAnswers("/api/controller/rooms");
+    let result: Promise<string> = Promise.resolve("");
+    await act(async () => { result = runPullRefresh(() => {}); await Promise.resolve(); });
+    fireEvent.change(screen.getByLabelText("Rummets navn"), { target: { value: "Stuen" } });
+    await act(async () => { release(); expect(await result).toBe("kept"); });
+    expect((screen.getByLabelText("Rummets navn") as HTMLInputElement).value).toBe("Stuen");
   });
 });
