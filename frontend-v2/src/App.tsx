@@ -5,6 +5,7 @@ import { useSession } from "./lib/session";
 import { AccessPage } from "./pages/AccessPage";
 import { BalancingPage } from "./pages/BalancingPage";
 import { DiagnosticsPage } from "./pages/DiagnosticsPage";
+import { HealthReportPage } from "./pages/HealthReportPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { HomeAssistantPage } from "./pages/HomeAssistantPage";
 import { OverviewPage } from "./pages/OverviewPage";
@@ -35,6 +36,7 @@ export function App() {
     {guarded("/system", <SystemPage/>)}
     {guarded("/home-assistant", <HomeAssistantPage/>)}
     {guarded("/diagnostics", <DiagnosticsPage/>)}
+    {guarded("/health", <HealthReportPage/>)}
     {guarded("/balancing", <BalancingPage/>)}
     {guarded("/updates", <UpdatesPage />)}
     <Route path="/settings" element={<SettingsPage/>}/>

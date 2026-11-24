@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.13.0-beta.2 — Afterheat scale, afterheat replay, weekly health report
+
+- **History:** new view-only afterheat scale: air after the coil, lift, step size (K per HAC1 level), return and flow water per level 0–10 (0–100 % valve) and supply fan level, from minutes held at least 3 min on the same level and fan. The 1-Wire T2 (before the coil) is now recorded in the history (`afterheat_before_temperature`); older minutes fall back to a T1/T3/T4 estimate. The measured RLV scale from November 2026 is shown as reference. `GET /api/afterheat/scale`.
+- **Replay:** new `afterheat` mode replays the Pi afterheat control (fresh `AfterheatPilot` objects, HAC1 tick model, frost lock minimum level 1) on up to 12 h of stored minutes with a target offset, comfort band and minimum dwell, and compares level changes and deviation with the current settings and the recorded run. The coil is the recorded air plus the effect of the simulated levels (heat per level from the live pilot's learned model, else the history, else the prior). Same login/CSRF/configure checks and single-replay lock (429); the replay's pilot log lines are suppressed per thread. No config or hardware is touched.
+- **Weekly health report:** new page Teknik og drift → Ugerapport and `GET /api/health/weekly` (diagnostics): supply-air spread/min/max vs target, afterheat level changes per hour and max per hour, fan changes, history gaps, command-failure alarms, pending commands, watchdog restarts and stale-measurement minutes, per day and for the week. Watchdog restarts are kept 8 days instead of 24 h.
+- **Room recording resumes:** a failed write (or a failed start) of the optional room observation database pauses recording and retries with backoff (1 min doubling to 30 min) instead of stopping until restart. Only the first failure and the recovery are logged. Diagnostics shows the state (recording, paused with next retry, resumed).
+- Release notes: [1.13.0-beta.2](docs/releases/1.13.0-beta.2.md).
+
 ## 1.13.0-beta.1 — First public beta
 
 - Publish the validated RC1–RC3 changes on the existing beta channel. The updater and installers recognize `beta.N` tags. The compiled frontend is unchanged from RC3.

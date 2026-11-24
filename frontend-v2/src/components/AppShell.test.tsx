@@ -86,7 +86,7 @@ describe("AppShell menu structure", () => {
     expect(groups).toEqual(["Opsætning", "Teknik og drift", "System og adgang"]);
     const of = (group: string) => navigation.filter(item => item[4] === group).map(item => item[1]);
     expect(of("Opsætning")).toEqual(["Indstillinger", "Rum", "Indregulering"]);
-    expect(of("Teknik og drift")).toEqual(["Teknik", "Diagnostik"]);
+    expect(of("Teknik og drift")).toEqual(["Teknik", "Diagnostik", "Ugerapport"]);
     expect(of("System og adgang")).toEqual(["Home Assistant", "Adgang for programmer", "System", "Opdateringer"]);
     expect(navigation.filter(item => item[4] === null).map(item => item[1])).toEqual(["Overblik", "Historik", "Ugeplan"]);
   });

@@ -21,7 +21,10 @@ from controller_core import ControllerError
 from dashboard_server import ASSET_TYPES, DashboardHttpServer, WEBUI_CSP
 from balancing_store import BalancingError, BalancingStore
 from controller_token import ControllerTokenStore
-from control_replay import REPLAY_BUSY_TEXT, REPLAY_LOCK, replay_local_auto, replay_smart_auto
+from control_replay import (REPLAY_BUSY_TEXT, REPLAY_LOCK, learned_steps, replay_afterheat, replay_local_auto,
+                            replay_smart_auto)
+from diagnostics import WATCHDOG_RESTART_FILE, read_watchdog_restarts
+from history_analysis import HEALTH_DAYS, HEALTH_FIELDS, SCALE_FIELDS, afterheat_scale, weekly_health
 from control_history import ControlHistory
 from api_keys import ApiKeyStore, SCOPE_LABELS
 from event_log import ALARM_KINDS, EventLog
@@ -59,6 +62,11 @@ COMPRESSIBLE_TYPES = ("application/json", "text/", "image/svg+xml")
 # Left out of /api/controller/state?compact=1. The History page and the
 # legacy controller page ask for the full answer.
 COMPACT_OMITTED_KEYS = ("decision_log", "change_log")
+# Periods for the afterheat scale (hours) and the afterheat replay.
+AFTERHEAT_SCALE_HOURS = (24, 72, 168, 720)
+AFTERHEAT_REPLAY_RANGES = {"1h": 3600, "6h": 21600, "12h": 43200}
+# The replay's heat per level is measured over this much history before its end.
+AFTERHEAT_REPLAY_SCALE_SECONDS = 3 * 86400
 
 
 class ControllerDashboardHttpServer(DashboardHttpServer):
@@ -132,6 +140,17 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
             "ha_link_rejected_ip": self.ha_rejected_ip,
         }
 
+    def _compose_snapshot(self) -> dict[str, object]:
+        merged = super()._compose_snapshot()
+        # The air before the afterheat coil (1-Wire T2) for the history, so the
+        # afterheat analysis can measure the lift per level. Memory read only.
+        try:
+            onewire = getattr(self.controller_runtime, "onewire", None)
+            merged["afterheat_before_temperature"] = onewire.by_role("t2") if onewire is not None else None
+        except Exception:  # noqa: BLE001 - an optional history value never breaks the snapshot
+            merged["afterheat_before_temperature"] = None
+        return merged
+
     def record_additional_history(self) -> None:
         # The regulator is never held up by disk I/O for optional diagnostics.
         try:
@@ -139,6 +158,31 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                 self.control_history.record(self.controller_runtime.control_observations())
         except Exception as error:
             LOG.warning("Control replay recording skipped: %s", error)
+
+    def weekly_health(self, now: float | None = None) -> dict:
+        """The read-only weekly health report (history, alarm log, watchdog restarts)."""
+        now = time.time() if now is None else now
+        runtime = self.controller_runtime
+        config_path = getattr(getattr(runtime, "config", None), "path", None)
+        restarts = read_watchdog_restarts(Path(config_path).parent / WATCHDOG_RESTART_FILE) if config_path else []
+        try:
+            controller = runtime.snapshot()
+        except Exception:  # noqa: BLE001 - the report shows what it can
+            LOG.exception("Weekly health: controller snapshot unavailable")
+            controller = {}
+        return weekly_health(self.history.rows(HEALTH_DAYS * 86400, HEALTH_FIELDS, markers=True, now=now),
+                             events=self.events.list(kinds=ALARM_KINDS, limit=500), restarts=restarts,
+                             controller=controller, now=now)
+
+    def afterheat_replay(self, settings: dict, seconds: int, patch: dict) -> dict:
+        """Replay the Pi afterheat control on stored minutes; pure simulation (see control_replay)."""
+        now = time.time()
+        rows = self.history.rows(seconds, (*SCALE_FIELDS, "afterheat_active"), now=now)
+        scale = afterheat_scale(self.history.rows(AFTERHEAT_REPLAY_SCALE_SECONDS, SCALE_FIELDS, now=now),
+                                AFTERHEAT_REPLAY_SCALE_SECONDS / 3600)
+        pilot = getattr(getattr(self.controller_runtime, "engine", None), "afterheat_pilot", None)
+        return replay_afterheat(settings, rows, patch, scale["reference_steps"],
+                                learned_steps(pilot) if pilot is not None else None)
 
     def reset_base_url(self) -> str:
         configured = self.mail.load().get("base_url")
@@ -363,6 +407,18 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                 elif parsed.path in ("/state.json", "/api"):
                     self._json({**dashboard.snapshot(), **dashboard.ha_link(),
                                 "weather": dashboard.controller_runtime.weather_snapshot()})
+                elif parsed.path == "/api/afterheat/scale":
+                    # Read-only: what one HAC1 level is worth, measured in the history.
+                    try:
+                        hours = int(parse_qs(parsed.query).get("hours", ["168"])[0])
+                    except ValueError:
+                        hours = 0
+                    if hours not in AFTERHEAT_SCALE_HOURS:
+                        return self._json_error(400, "Ugyldig periode")
+                    self._json(afterheat_scale(dashboard.history.rows(hours * 3600, SCALE_FIELDS), hours))
+                elif parsed.path == "/api/health/weekly":
+                    if self._require("diagnostics") is not None:
+                        self._json(dashboard.weekly_health())
                 elif parsed.path == "/api/diagnostics/report":
                     if self._require("diagnostics") is not None:
                         self._diagnostic_report()
@@ -626,7 +682,11 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                     if not isinstance(data, dict):
                         return self._json_error(400, "Ugyldig prøve")
                     name = data.get("range", "24h")
-                    if name not in ("1h", "6h", "24h"):
+                    mode = data.get("mode", "local_auto")
+                    if mode == "afterheat":
+                        if name not in AFTERHEAT_REPLAY_RANGES:
+                            return self._json_error(400, "Vælg højst 12 timer")
+                    elif name not in ("1h", "6h", "24h"):
                         return self._json_error(400, "Vælg højst 24 timer")
                     if not REPLAY_LOCK.acquire(blocking=False):
                         return self._json_error(429, REPLAY_BUSY_TEXT)
@@ -634,7 +694,9 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                         with dashboard.controller_runtime.config.lock:
                             import copy
                             settings = copy.deepcopy(dashboard.controller_runtime.config.data)
-                        mode = data.get("mode", "local_auto")
+                        if mode == "afterheat":
+                            return self._json(dashboard.afterheat_replay(settings, AFTERHEAT_REPLAY_RANGES[name],
+                                                                         data.get("settings", {})))
                         if mode == "smart_auto":
                             samples = dashboard.control_history.query({"1h": 3600, "6h": 21600, "24h": 86400}[name])
                             return self._json(replay_smart_auto(settings, samples, data.get("settings", {})))

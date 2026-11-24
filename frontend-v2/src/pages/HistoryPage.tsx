@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type React from "react";
 import { Activity, Fan, Leaf, Recycle, SlidersHorizontal } from "lucide-react";
 import { AfterheatAnalysis } from "../components/AfterheatAnalysis";
+import { AfterheatScale } from "../components/AfterheatScale";
 import { AlarmHistory } from "../components/AlarmHistory";
 import { HistoryChart } from "../components/HistoryChart";
 import { requestJson } from "../lib/api";
@@ -192,6 +193,7 @@ export function HistoryPage() {
       </div>
 
       <AfterheatAnalysis samples={samples}/>
+      <AfterheatScale/>
 
       <div className="history-grid">
         <ChartCard wide title="Indblæsning og eftervarme" subtitle="Luften efter varmefladen mod dit mål, setpunktet sendt til HAC1, og ventilens åbning mod styringens beslutning" icon={<Activity size={20}/>}>

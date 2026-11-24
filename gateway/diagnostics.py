@@ -117,6 +117,8 @@ WATCHDOG_RESTART_FILE = "watchdog-restarts.json"
 WATCHDOG_RESTART_LIMIT = 3
 WATCHDOG_RESTART_WINDOW = 1800.0
 WATCHDOG_RESTART_KEEP = 50
+# Restarts are kept this long for the weekly health report.
+WATCHDOG_RESTART_RETENTION = 8 * 86400
 
 
 def _read_restarts(path: Path) -> list[dict[str, object]]:
@@ -128,11 +130,16 @@ def _read_restarts(path: Path) -> list[dict[str, object]]:
     return [e for e in entries or [] if isinstance(e, dict) and _num(e.get("at")) is not None]
 
 
+def read_watchdog_restarts(path: str | Path) -> list[dict[str, object]]:
+    """Recorded watchdog exits, oldest first ([] when none or unreadable)."""
+    return sorted(_read_restarts(Path(path)), key=lambda entry: float(entry["at"]))
+
+
 def record_watchdog_restart(path: str | Path, reason: str, now: float | None = None) -> None:
     """Append one watchdog exit (wall-clock time and reason) to the restart file."""
     path = Path(path)
     now = time.time() if now is None else now
-    entries = [e for e in _read_restarts(path) if now - float(e["at"]) <= 86400]
+    entries = [e for e in _read_restarts(path) if now - float(e["at"]) <= WATCHDOG_RESTART_RETENTION]
     entries.append({"at": round(now, 1), "reason": str(reason)[:200]})
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

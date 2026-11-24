@@ -25,7 +25,7 @@ ASSET_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; chars
 AUXILIARY_REFRESH_SECONDS = 5
 PREHEATER_STALE_SECONDS = 60
 RANGES = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000}
-HISTORY_FIELDS = ("humidity", "outdoor_temp", "supply_temp", "extract_temp", "exhaust_temp", "hrc2_t5_temperature", "heating_coil_after_temperature", "heating_coil_frost_temperature", "flow_temperature", "return_temperature", "co2", "fan_supply_rpm", "fan_extract_rpm", "fan_supply_percent", "fan_extract_percent", "heat_recovery_efficiency", "system_cpu_usage_percent", "pi_cpu_temperature", "system_memory_used_percent", "system_load_1m", "afterheat_setpoint", "afterheat_active", "afterheat_level", "afterheat_level_target", "afterheat_level_wanted", "afterheat_target", "afterheat_context")
+HISTORY_FIELDS = ("humidity", "outdoor_temp", "supply_temp", "extract_temp", "exhaust_temp", "hrc2_t5_temperature", "heating_coil_after_temperature", "heating_coil_frost_temperature", "flow_temperature", "return_temperature", "co2", "fan_supply_rpm", "fan_extract_rpm", "fan_supply_percent", "fan_extract_percent", "heat_recovery_efficiency", "system_cpu_usage_percent", "pi_cpu_temperature", "system_memory_used_percent", "system_load_1m", "afterheat_setpoint", "afterheat_active", "afterheat_level", "afterheat_level_target", "afterheat_level_wanted", "afterheat_target", "afterheat_context", "afterheat_before_temperature")
 HISTORY_SENSOR_MARKERS = {
     "humidity": "humidity_sample_fresh",
     "co2": "co2_sample_fresh",
@@ -93,6 +93,37 @@ class HistoryStore:
         except (OSError, sqlite3.Error) as error:
             self.available, self.error = False, str(error)
             LOGGER.warning("History write failed, disabling: %s", error)
+    @staticmethod
+    def _fresh_column(field: str) -> str:
+        """SQL for a field; a sample recorded as stale reads as NULL."""
+        marker = HISTORY_SENSOR_MARKERS.get(field)
+        if marker:
+            legacy = f'"{marker}" IS NULL OR ' if field in ("humidity", "co2", "outdoor_temp", "extract_temp", "exhaust_temp") else ""
+            return f'CASE WHEN {legacy}"{marker}" = 1 THEN "{field}" END'
+        return f'"{field}"'
+    MAX_RAW_SECONDS = 31 * 86400
+    def rows(self, seconds: int, fields: tuple[str, ...], *, markers: bool = False, now: float | None = None) -> list[dict[str, object]]:
+        """Raw one-minute samples (oldest first) of the last ``seconds`` for analyses.
+
+        Read-only: unlike a failed write, a failed read never disables the history.
+        With ``markers`` the freshness markers come along as recorded (1, 0 or None).
+        """
+        if not self.available: return []
+        known = (*HISTORY_FIELDS, *HISTORY_SENSOR_MARKERS.values())
+        fields = tuple(field for field in fields if field in HISTORY_FIELDS)
+        extra = tuple(HISTORY_SENSOR_MARKERS.values()) if markers else ()
+        columns = ", ".join(["ts", *(f'{self._fresh_column(field)} AS "{field}"' for field in fields),
+                             *(f'"{marker}"' for marker in extra if marker in known)])
+        until = int(time.time() if now is None else now)
+        since = until - max(0, min(int(seconds), self.MAX_RAW_SECONDS))
+        try:
+            with self.lock, self._connect() as db:
+                db.row_factory = sqlite3.Row
+                rows = db.execute(f"SELECT {columns} FROM samples WHERE ts >= ? AND ts <= ? ORDER BY ts", (since, until)).fetchall()
+        except (OSError, sqlite3.Error) as error:
+            LOGGER.warning("History analysis read failed: %s", error)
+            return []
+        return [dict(row) for row in rows]
     # Fields whose spread inside a bucket is worth showing (min/max band).
     HISTORY_SPREAD_FIELDS = ("heating_coil_after_temperature",)
     MAX_POINTS = 720
@@ -107,12 +138,7 @@ class HistoryStore:
         span = RANGES.get(range_name, RANGES["24h"])
         since = int(time.time()) - span
         bucket = max(self.sample_seconds, -(-span // self.MAX_POINTS))
-        def value(field: str) -> str:
-            marker = HISTORY_SENSOR_MARKERS.get(field)
-            if marker:
-                legacy = f'"{marker}" IS NULL OR ' if field in ("humidity", "co2", "outdoor_temp", "extract_temp", "exhaust_temp") else ""
-                return f'CASE WHEN {legacy}"{marker}" = 1 THEN "{field}" END'
-            return f'"{field}"'
+        value = self._fresh_column
         columns = [
             (f'CASE WHEN MIN("{field}") = MAX("{field}") AND COUNT("{field}") = COUNT(*) '
              f'THEN MIN("{field}") END AS "{field}"') if field == "afterheat_context" else

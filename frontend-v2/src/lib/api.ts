@@ -78,10 +78,10 @@ export async function requestJson<T>(endpoint: string, options: RequestOptions =
   throw new ApiError(lastError instanceof Error ? lastError.message : "Ukendt netværksfejl", undefined, endpoint);
 }
 
-export function postJson<T>(endpoint: string, body: unknown, csrf?: string): Promise<T> {
+export function postJson<T>(endpoint: string, body: unknown, csrf?: string, timeoutMs = 5000): Promise<T> {
   return requestJson<T>(endpoint, {
     method: "POST",
-    timeoutMs: 5000,
+    timeoutMs,
     headers: {
       "Content-Type": "application/json",
       ...(csrf ? { "X-CSRF-Token": csrf } : {}),
