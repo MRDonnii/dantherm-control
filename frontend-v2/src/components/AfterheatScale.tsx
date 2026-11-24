@@ -1,6 +1,7 @@
 import "../styles/panels.css"; import "../styles/management.css";
 import { useEffect, useState } from "react";
 import { requestJson } from "../lib/api";
+import { usePullRefresh } from "../lib/pullRefresh";
 
 export type ScaleLevel = { level: number; valve_percent: number; minutes: number; air: number | null; lift: number | null;
   step_k: number | null; return_temperature: number | null; flow_temperature: number | null };
@@ -21,6 +22,8 @@ export function AfterheatScale() {
   const [result, setResult] = useState<ScaleResult | null>(null);
   const [fan, setFan] = useState<number | null>(null);
   const [error, setError] = useState("");
+  const [reloads, setReloads] = useState(0);
+  usePullRefresh(() => setReloads(value => value + 1));
   useEffect(() => {
     let active = true;
     setError("");
@@ -28,7 +31,7 @@ export function AfterheatScale() {
       .then(value => { if (active) setResult(value); })
       .catch(e => { if (active) { setResult(null); setError(e instanceof Error ? e.message : "Kunne ikke hente analysen"); } });
     return () => { active = false; };
-  }, [hours]);
+  }, [hours, reloads]);
   const fans = result?.fans ?? [];
   const shown = fans.find(item => item.fan_percent === fan) ?? fans[0];
   const rows = shown ? shown.levels.filter(level => level.minutes > 0) : [];

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.13.0-beta.3 — Mobile layout, safe areas and pull to refresh
+
+- **Mobile layout:** no page is wider than the screen at 360–430 px. The page grid uses `minmax(0, 1fr)`, so a wide table (afterheat scale, weekly report) scrolls inside its own frame instead of stretching the whole page; the History period tabs, KPI tiles and cards fit. The top bar keeps its buttons on screen: the page title is shortened with "…", the weather chip shows only the temperature on a phone (and drops "T1" below 380 px), the HA chip only its dot and name. The "Mere" tab label lines up with the other tabs.
+- **Safe areas:** the top bar extends behind the status bar/notch (`env(safe-area-inset-top)`), left/right insets apply in landscape (also to the side menu), and the bottom inset is kept. `html` gets the theme background. The status-bar colour (`theme-color`) follows the active theme instead of a fixed light colour, and the theme is applied before the first paint. Home-screen app meta tags added (`apple-mobile-web-app-capable`, `mobile-web-app-capable`, status bar `black-translucent`). Desktop is unchanged.
+- **Pull to refresh:** on a touch screen, pulling down at the top of a page shows "Træk for at opdatere" / "Slip for at opdatere" / "Opdaterer…" and refetches the page's data after about 70 px (pages without a refetch reload). It also works as a home-screen app. It does not start on charts, tables or other scroll areas, fields, sliders, dialogs or the menu, or when the page is not at the top. Chrome's own pull to refresh is turned off with `overscroll-behavior-y`.
+- Release notes: [1.13.0-beta.3](docs/releases/1.13.0-beta.3.md).
+
 ## 1.13.0-beta.2 — Afterheat scale, afterheat replay, weekly health report
 
 - **History:** new view-only afterheat scale: air after the coil, lift, step size (K per HAC1 level), return and flow water per level 0–10 (0–100 % valve) and supply fan level, from minutes held at least 3 min on the same level and fan. The 1-Wire T2 (before the coil) is now recorded in the history (`afterheat_before_temperature`); older minutes fall back to a T1/T3/T4 estimate. The measured RLV scale from November 2026 is shown as reference. `GET /api/afterheat/scale`.

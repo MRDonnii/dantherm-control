@@ -6,6 +6,7 @@ import { copyText } from "../lib/clipboard";
 import { useSession } from "../lib/session";
 import "../styles/panels.css";
 import "../styles/access.css";
+import { usePullRefresh } from "../lib/pullRefresh";
 
 export type Scope = "read" | "control" | "admin";
 
@@ -291,6 +292,7 @@ export function AccessPage() {
     if (status.status === "fulfilled") { setSso(status.value); setSsoError(""); } else setSsoError(`Login fra Kontrolrum er ikke tilgængeligt: ${errorText(status.reason)}`);
     if (list.status === "fulfilled") setUsers(list.value.users ?? []);
   }, []);
+  usePullRefresh(() => Promise.all([loadKeys(), loadSso()]));
   useEffect(() => { void loadKeys(); void loadSso(); const timer = setInterval(() => void loadKeys(), 15000); return () => clearInterval(timer); }, [loadKeys, loadSso]);
 
   const run = async (work: () => Promise<void>, fail: (message: string) => void) => {

@@ -6,6 +6,7 @@ import { requestJson } from "../lib/api";
 import "../styles/panels.css";
 import "../styles/history.css";
 import "../styles/system.css";
+import { usePullRefresh } from "../lib/pullRefresh";
 
 type Data = Record<string, unknown>;
 type Sample = Record<string, number | null>;
@@ -64,6 +65,7 @@ export function SystemPage() {
     setSamples(history.status === "fulfilled" && Array.isArray(history.value.samples) ? history.value.samples : []);
     if (auth.status === "fulfilled") setCsrf(auth.value.csrf ?? "");
   }, []);
+  usePullRefresh(() => refresh(range));
   useEffect(() => { void refresh(range); const timer = window.setInterval(() => void refresh(range), 30000); return () => window.clearInterval(timer); }, [range, refresh]);
   useEffect(() => {
     if (!csrf) return;

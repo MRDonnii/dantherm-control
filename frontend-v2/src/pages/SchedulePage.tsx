@@ -9,6 +9,7 @@ import {
 import { useTopbarNotice } from "../lib/topbar-notice";
 import { LEVEL_NAMES, levelList } from "../lib/fanSteps";
 import "../styles/schedule.css";
+import { usePullRefresh } from "../lib/pullRefresh";
 
 type Data = Record<string, unknown>;
 type Selected = { day: number; index: number } | null;
@@ -62,6 +63,7 @@ export function SchedulePage() {
     ]);
     apply(state); setCsrf(auth.csrf ?? "");
   }, [apply]);
+  usePullRefresh(() => refresh().catch(() => setNotice("Kunne ikke hente ugeplanen.")));
   useEffect(() => { void refresh().catch(() => setNotice("Kunne ikke hente ugeplanen.")); }, [refresh, setNotice]);
   useEffect(() => { const timer = window.setInterval(() => setNow(new Date()), 30000); return () => window.clearInterval(timer); }, []);
 

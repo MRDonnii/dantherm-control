@@ -20,6 +20,7 @@ import { LEVEL_NAMES, MAX_LEVEL_HOURS, levelList, stepCount } from "../lib/fanSt
 import { OverviewSide } from "../components/OverviewSide";
 import { useSkin } from "../lib/appearance";
 import "../styles/overview.css";
+import { usePullRefresh } from "../lib/pullRefresh";
 
 type Data = Record<string, unknown>;
 type AfterheatValue = number | "off";
@@ -136,6 +137,7 @@ export function OverviewPage() {
     reportPoll(unitResult.status === "fulfilled" && controllerResult.status === "fulfilled");
   }, [reportPoll]));
 
+  usePullRefresh(refresh);
   useEffect(() => {
     void refresh();
     const timer = window.setInterval(() => void refresh(), 2000);

@@ -9,6 +9,7 @@ import { frostLockStatus, readFrostLock } from "../lib/frostLock";
 import { controlLabel, formatError, formatLevel, formatPercent, formatTarget, modeLabel, nextActionText, readAfterheatControl, readValvePercent, valveText, type AfterheatControl } from "../lib/afterheatControl";
 import type { InfoRow } from "../components/InfoList";
 import "../styles/panels.css";
+import { usePullRefresh } from "../lib/pullRefresh";
 
 type Data = Record<string, unknown>;
 
@@ -81,6 +82,7 @@ export function TechniquePage() {
     }
   }, [reportPoll]));
 
+  usePullRefresh(refresh);
   useEffect(() => {
     void refresh();
     const timer = window.setInterval(() => void refresh(), 2000);

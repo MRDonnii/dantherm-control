@@ -15,6 +15,7 @@ import { AccountPanel } from "../components/AccountPanel";
 import { MailPanel } from "../components/MailPanel";
 import { UsersPanel } from "../components/UsersPanel";
 import "../styles/panels.css";import "../styles/management.css";
+import { usePullRefresh } from "../lib/pullRefresh";
 
 type Data = Record<string, unknown>;
 type Auth = { csrf?: string | null; enabled?: boolean; username?: string | null };
@@ -257,6 +258,7 @@ export function SettingsPage() {
     const [c, a] = await Promise.all([requestJson<Data>("/api/controller/state?compact=1"), requestJson<Auth>("/api/auth/status")]);
     setController(c); setForm(c); setAuth(a); setCsrf(a.csrf ?? "");
   }, []);
+  usePullRefresh(refresh);
   useEffect(() => { void refresh(); }, [refresh]);
 
   const set = (key: string, value: unknown) => setForm(v => ({ ...v, [key]: value }));

@@ -8,6 +8,7 @@ import { HistoryChart } from "../components/HistoryChart";
 import { requestJson } from "../lib/api";
 import { AFTERHEAT_CHART, afterheatLayers, clean, withAfterheatLines } from "../lib/historyData";
 import "../styles/history.css";
+import { usePullRefresh } from "../lib/pullRefresh";
 
 type Sample = Record<string, number | null>;
 type HistoryResponse = { range: string; samples: Sample[] };
@@ -133,6 +134,7 @@ export function HistoryPage() {
     }
   }, []);
 
+  usePullRefresh(() => refresh(range));
   useEffect(() => {
     setLoading(true);
     setHover(null);

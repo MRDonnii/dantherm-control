@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle2, ExternalLink, RefreshCw, Rocket, ShieldCheck } from "lucide-react";
 import { ApiError, postJson, requestJson } from "../lib/api";
+import { usePullRefresh } from "../lib/pullRefresh";
 
 type Channel = "stable" | "beta";
 
@@ -110,6 +111,7 @@ export function UpdatesPage() {
     }
   }, [channel]);
 
+  usePullRefresh(() => refresh());
   useEffect(() => { void refresh("beta"); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function chooseChannel(next: Channel) {

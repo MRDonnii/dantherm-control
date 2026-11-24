@@ -1,0 +1,102 @@
+/* Mobil og sikre områder (iPhone notch/Dynamic Island, landskab).
+   Indlæses sidst. På en computer er env(safe-area-inset-*) 0, så desktop ser ud som før. */
+
+/* ---------- Baggrund helt ud til kanterne ---------- */
+/* Før temaet er sat (første billede) bruges appens standard: mørk. */
+html { background: var(--body, #0b0b0d); }
+/* Ingen sidelæns rystelse; på touchskærme heller ingen dobbelt træk-for-at-opdatere i Chrome (appen har sin egen). */
+html, body { overflow-x: clip; }
+@media (hover: none) and (pointer: coarse) { html, body { overscroll-behavior-y: none; } }
+
+/* ---------- Topbjælken går op bag statuslinjen ---------- */
+:root[data-skin] .fd-header {
+  height: calc(60px + env(safe-area-inset-top));
+  min-height: calc(60px + env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
+  padding-left: max(20px, env(safe-area-inset-left));
+  padding-right: max(20px, env(safe-area-inset-right));
+}
+/* Også når en smallere skærmregel sætter hele padding (fx topmenu på tablet). */
+:root[data-skin][data-theme] .fd-header { padding-top: env(safe-area-inset-top); }
+:root[data-skin] .fd-navbar { top: calc(60px + env(safe-area-inset-top)); width: calc(236px + env(safe-area-inset-left)); padding-left: calc(12px + env(safe-area-inset-left)); }
+:root[data-skin] .fd-main.content-stage { padding-top: calc(80px + env(safe-area-inset-top)); padding-right: max(20px, env(safe-area-inset-right)); }
+:root[data-skin][data-nav="side"] .fd-main.content-stage { padding-left: calc(256px + env(safe-area-inset-left)); }
+:root[data-skin] .fd-app[data-collapsed] .fd-navbar { width: calc(68px + env(safe-area-inset-left)); }
+:root[data-skin][data-nav="side"] .fd-app[data-collapsed] .fd-main.content-stage { padding-left: calc(88px + env(safe-area-inset-left)); }
+:root[data-skin][data-nav="top"] .fd-main.content-stage { padding-left: max(20px, env(safe-area-inset-left)); }
+
+/* Sidernes indhold: én kolonne, der aldrig bliver bredere end skærmen (en bred tabel må ikke strække siden). */
+.dashboard-overview { grid-template-columns: minmax(0, 1fr); }
+.dashboard-overview > * { min-width: 0; }
+.settings-table-wrap, .hx-table-wrap { max-width: 100%; }
+
+@media (max-width: 980px) { .history-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 920px) { .panel-grid { grid-template-columns: minmax(0, 1fr); } }
+
+@media (max-width: 48em) {
+  :root[data-skin] .fd-header {
+    gap: 8px;
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+  }
+  :root[data-skin][data-nav] .fd-app .fd-main.content-stage, :root[data-skin][data-nav] .fd-app[data-collapsed] .fd-main.content-stage {
+    padding: calc(72px + env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) calc(76px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  }
+  :root[data-skin] .fd-sheet[data-open] { top: calc(60px + env(safe-area-inset-top)); padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
+  :root[data-skin] .fd-tabbar { padding-left: max(4px, env(safe-area-inset-left)); padding-right: max(4px, env(safe-area-inset-right)); grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  :root[data-skin] .topbar-control-notice { top: calc(64px + env(safe-area-inset-top)); }
+  /* "Mere" er en knap: samme linjehøjde som fanerne, så teksten står på linje med de andre. */
+  :root[data-skin] .fd-tabbar button { line-height: 1.55; justify-content: flex-start; }
+  :root[data-skin] .fd-search[data-open] { top: calc(68px + env(safe-area-inset-top)); }
+
+  /* Titlen giver plads og afkortes med "…"; knapperne til højre krymper aldrig ud over kanten. */
+  :root[data-skin] .fd-header > .only-mobile { display: flex !important; flex: 1 1 auto; min-width: 0; }
+  :root[data-skin] .fd-mobile-brand { min-width: 0; gap: 8px; }
+  :root[data-skin] .fd-mobile-brand > :first-child { flex: none; }
+  :root[data-skin] .fd-mobile-brand strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  :root[data-skin] .fd-header > .spacer { display: none; }
+  :root[data-skin] .topbar-actions { flex: 0 1 auto; min-width: 0; flex-wrap: nowrap; gap: 6px; }
+  :root[data-skin] .topbar-actions > * { flex: none; }
+  :root[data-skin] .topbar-weather-button { gap: 6px; padding: 0 8px; }
+  :root[data-skin] .topbar-weather-condition { display: none; }
+  :root[data-skin] .fd-header .ha-chip small { display: none; }
+  :root[data-skin] .fd-header .status-chip { padding: 0 8px; gap: 6px; }
+
+  /* Rammer og tabeller holder sig inden for skærmen; tabeller ruller i deres egen ramme. */
+  .settings-table-wrap, .hx-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+  :root[data-skin] .fd-main :is(.panel-card, .surface, .history-card) { min-width: 0; }
+  :root[data-skin] .fd-main select { max-width: 100%; }
+  :root[data-skin] .fd-main .pro-card-head { min-width: 0; flex-wrap: wrap; }
+  :root[data-skin] .fd-main .pro-card-head > * { min-width: 0; }
+  :root[data-skin] .fd-main .diag-actions { flex-wrap: wrap; }
+  :root[data-skin] .fd-main .info-row { min-width: 0; }
+  :root[data-skin] .fd-main .info-row dd { overflow-wrap: anywhere; }
+
+  /* Historik: sidehoved, periodevalg og nøgletal. */
+  .overview-heading-row { min-width: 0; }
+  .overview-status-pills { min-width: 0; }
+  .hx-toolbar { min-width: 0; }
+  :root[data-skin] .history-range-segment { display: grid; width: 100%; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 2px; }
+  :root[data-skin] .history-range-segment button { min-width: 0; padding: 0 2px; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; }
+  .hx-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hx-stat { min-width: 0; }
+  .hx-stat > * { min-width: 0; overflow-wrap: anywhere; }
+}
+
+/* Smalle telefoner (360–375 px): nøgletal i én tekstlinje mindre. */
+@media (max-width: 380px) {
+  :root[data-skin] .topbar-weather-button > span > .topbar-weather-prefix { display: none; }
+  .hx-stat strong { font-size: 20px; }
+}
+
+/* ---------- Træk ned for at opdatere (kun berøring) ---------- */
+.ptr-indicator { position: fixed; left: 50%; top: calc(60px + env(safe-area-inset-top)); z-index: 95; display: flex; align-items: center; gap: 8px;
+  padding: 7px 14px 7px 10px; border: 1px solid var(--fd-border, var(--border)); border-radius: 999px; background: var(--fd-card, var(--surface));
+  color: var(--text); font-size: 13px; font-weight: 600; box-shadow: var(--shadow-md); pointer-events: none; white-space: nowrap;
+  transform: translate(-50%, calc(var(--ptr-pull, 0px) - 44px)); opacity: var(--ptr-opacity, 0); transition: opacity .15s; }
+.ptr-indicator[data-state="pulling"], .ptr-indicator[data-state="ready"] { transition: none; }
+.ptr-indicator svg { flex: none; transition: transform .2s var(--ease, ease); }
+.ptr-indicator[data-state="ready"] svg { transform: rotate(180deg); }
+.ptr-indicator[data-state="refreshing"] svg { animation: ptr-spin .8s linear infinite; }
+@keyframes ptr-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ptr-indicator[data-state="refreshing"] svg { animation-duration: 2s; } }

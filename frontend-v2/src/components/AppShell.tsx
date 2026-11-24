@@ -10,6 +10,7 @@ import { ROLE_NAMES, SessionContext, sessionCan, type AuthStatus, type Permissio
 import { PREFERENCES_EVENT, chooseSkin, readNav, readSkin, readTheme, saveAppearance, type NavPosition, type Skin, type ThemeMode } from "../lib/appearance";
 import { TopbarWeather, type WeatherSummary } from "./TopbarWeather";
 import { TablerIcon, type TablerName } from "./TablerIcon";
+import { PullToRefresh } from "./PullToRefresh";
 
 type NavItem = readonly [to: string, label: string, icon: TablerName, permission: Permission | null, group: string | null, short?: string];
 
@@ -129,6 +130,19 @@ function AppearanceChoices({ skin, theme, nav, onDone }: { skin: Skin; theme: Th
   </>;
 }
 
+/** Statuslinjen (iPhone/Android) får sidens baggrundsfarve fra det valgte tema, så der ikke står en hvid bjælke over appen. */
+export function syncThemeColor() {
+  const color = getComputedStyle(document.documentElement).getPropertyValue("--body").trim();
+  if (!color) return;
+  const metas = document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]');
+  if (metas.length) metas.forEach(meta => { meta.content = color; });
+  else {
+    const meta = document.createElement("meta");
+    meta.name = "theme-color"; meta.content = color;
+    document.head.appendChild(meta);
+  }
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -203,6 +217,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     root.dataset.skin = skin;
     root.dataset.nav = nav;
     try { localStorage.setItem("hch5-v2-theme", theme); } catch {}
+    syncThemeColor();
   }, [theme, effectiveTheme, skin, nav]);
 
   useEffect(() => {
@@ -421,6 +436,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </>}
         <div className="fd-foot">{footer}</div>
       </div>
+      <PullToRefresh/>
       <nav className="fd-tabbar" aria-label="Faner">
         {tabItems.map(([to, label, icon, , , short]) => <NavLink key={to} to={to} data-active={location.pathname === to && !sheet ? "" : undefined} onClick={() => setSheet(false)}><span><TablerIcon name={icon}/></span>{short ?? label}</NavLink>)}
         <button type="button" data-active={sheet ? "" : undefined} aria-expanded={sheet} onClick={() => setSheet(value => !value)}><span><TablerIcon name="dots"/>{updateCount && sheetItems.some(item => item[0] === "/updates") ? <b data-red>1</b> : null}</span>Mere</button>

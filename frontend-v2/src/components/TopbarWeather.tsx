@@ -38,7 +38,7 @@ export function TopbarWeather({ outdoorTemp, weather }: { outdoorTemp: number | 
   const condition = weather?.condition ? CONDITIONS[weather.condition] : undefined;
   return <div className="topbar-weather">
     <button type="button" className="topbar-weather-button" onClick={() => setOpen(value => !value)} aria-label="Udetemperatur fra anlæggets T1 og vejrdata" title={`Udeluft målt ved anlægget (T1): ${degrees(outdoorTemp)}${condition ? ` · ${condition} fra ${weather?.source}` : ""}`}>
-      {icon(weather?.condition)}<span>T1 {degrees(outdoorTemp)}{condition ? ` · ${condition}` : ""}</span>
+      {icon(weather?.condition)}<span><span className="topbar-weather-prefix">T1 </span>{degrees(outdoorTemp)}{condition ? <span className="topbar-weather-condition"> · {condition}</span> : null}</span>
     </button>
     {open && <div className="topbar-weather-picker" role="status">
       <strong>Udeluft ved anlægget: {degrees(outdoorTemp)}</strong>

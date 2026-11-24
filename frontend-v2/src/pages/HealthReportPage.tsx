@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { InfoList } from "../components/InfoList";
 import { requestJson } from "../lib/api";
+import { usePullRefresh } from "../lib/pullRefresh";
 
 type Period = { samples: number; gap_minutes: number; supply_minutes: number; target_mean: number | null; air_min: number | null;
   air_max: number | null; error_mean: number | null; error_sd: number | null; max_over: number | null; max_under: number | null;
@@ -28,6 +29,7 @@ export function HealthReportPage() {
     catch (e) { setError(e instanceof Error ? e.message : "Kunne ikke hente ugerapporten"); }
     finally { setBusy(false); }
   }, []);
+  usePullRefresh(load);
   useEffect(() => { void load(); }, [load]);
   const t = report?.total;
   const staleTotal = t ? Object.values(t.stale_minutes).reduce((a, b) => a + b, 0) : 0;

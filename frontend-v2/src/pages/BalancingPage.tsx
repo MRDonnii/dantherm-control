@@ -9,6 +9,7 @@ import { levelList, stepCount } from "../lib/fanSteps";
 import { useTopbarNotice } from "../lib/topbar-notice";
 import { BalancingReport, buildReport, type Report } from "../components/BalancingReport";
 import "../styles/balancing.css";
+import { usePullRefresh } from "../lib/pullRefresh";
 
 type Data = Record<string, unknown>;
 type Step = "rooms" | "design" | "measure" | "report";
@@ -59,6 +60,7 @@ export function BalancingPage() {
     setSaved(next); setProject(next); setReports(state.reports ?? []); setController(ctrl); setCsrf(auth.csrf ?? "");
     requestJson<Data>("/state.json", { timeoutMs: 3000 }).then(setUnitState).catch(() => {});
   }, []);
+  usePullRefresh(() => load().catch(() => undefined));
   useEffect(() => { void load().catch(error => setNotice(`Kunne ikke hente indreguleringen: ${error instanceof Error ? error.message : ""}`)); }, [load, setNotice]);
 
   const excess = Number((controller.balance as { target_excess_percent?: number } | undefined)?.target_excess_percent ?? controller.balance_extract_excess_percent ?? 5);

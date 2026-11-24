@@ -9,6 +9,7 @@ import {
   type CatalogArea, type Room, type RoomsView, type SensorKind,
 } from "../lib/rooms";
 import "../styles/panels.css"; import "../styles/management.css"; import "../styles/rooms.css";
+import { usePullRefresh } from "../lib/pullRefresh";
 
 type State = Record<string, unknown>;
 
@@ -119,6 +120,7 @@ export function RoomsPage() {
       setView(next); setRooms(next.rooms ?? []); setSaved(JSON.stringify(next.rooms ?? [])); setCsrf(auth.csrf ?? ""); setError("");
     } catch (e) { setError(e instanceof Error ? e.message : "Rummene kunne ikke hentes"); }
   }, []);
+  usePullRefresh(load);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     let stop = false;
