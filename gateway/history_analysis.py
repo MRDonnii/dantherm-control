@@ -203,8 +203,8 @@ class _Period:
             "air_max": round(max(self.air), 2) if self.air else None,
             "error_mean": _mean(errors),
             "error_sd": round(statistics.pstdev(errors), 2) if len(errors) >= 2 else None,
-            "max_over": round(max(errors), 2) if errors else None,
-            "max_under": round(-min(errors), 2) if errors else None,
+            "max_over": round(max(0.0, max(errors)), 2) if errors else None,
+            "max_under": round(max(0.0, -min(errors)), 2) if errors else None,
             "in_band_percent": round(100 * sum(abs(e) <= IN_BAND_K for e in errors) / len(errors), 1) if errors else None,
             "level_changes": self.level_changes,
             "level_changes_per_hour": round(self.level_changes / hours, 2) if hours >= 0.5 else None,
@@ -255,6 +255,18 @@ def weekly_health(rows: list[dict], *, events: list[dict], restarts: list[dict],
                     for period in periods:
                         period.fan_changes += 1
         previous = {**row, "_ts": ts}
+    # A gap still open now (no sample for a while) counts too, split over the days it spans.
+    last_ts = previous["_ts"] if previous is not None else None
+    open_gap_s = now - last_ts if last_ts is not None else 0.0
+    if open_gap_s > 3 * SAMPLE_GAP_S:
+        start = last_ts
+        while start < now:
+            end = min(now, start + 60.0)
+            total.gap_minutes += (end - start) / 60
+            per_day[_day(start)].gap_minutes += (end - start) / 60
+            start = end
+    else:
+        open_gap_s = 0.0
     command_alarms = [e for e in events if e.get("kind") == "alarm_raised" and e.get("code") == "controller_command_failed"
                       and (_number(e.get("time")) or 0) >= since]
     stale_alarms = [e for e in events if e.get("kind") == "alarm_raised" and e.get("code") == "local_sensor_stale"
@@ -265,6 +277,8 @@ def weekly_health(rows: list[dict], *, events: list[dict], restarts: list[dict],
     return {
         "generated_at": round(now), "since": round(since), "days": days,
         "total": total.result(),
+        "last_sample_age_minutes": round((now - last_ts) / 60, 1) if last_ts is not None else None,
+        "open_gap_minutes": round(open_gap_s / 60),
         "per_day": [{"date": day, **period.result()} for day, period in sorted(per_day.items())],
         "command_errors": {
             "alarms": len(command_alarms),

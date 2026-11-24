@@ -75,7 +75,8 @@ class ControlHistory:
             if not self.available and not self._retry_due(now):
                 return
             try:
-                if not self.ready:
+                # A retry recreates the table too: a deleted file comes back empty from SQLite.
+                if not self.ready or not self.available:
                     self._prepare()
                 with closing(sqlite3.connect(self.path, timeout=1)) as db, db:
                     db.execute('INSERT OR REPLACE INTO observations VALUES (?, ?)', (int(now), payload))

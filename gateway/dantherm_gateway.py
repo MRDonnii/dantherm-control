@@ -2678,12 +2678,16 @@ class Gateway:
         cleanup in the finally (controller stop, afterheat restore) may block
         on a lock held by the very thread that stalled.
         """
+        # Arm the hard exit first: a hung disk must not keep the process alive.
+        self.arm_hard_exit()
         LOG.error("Vagthund: %s", reason)
         controller = getattr(self, "controller", None)
         config = getattr(controller, "config", None)
         if config is not None:
-            record_watchdog_restart(Path(config.path).parent / WATCHDOG_RESTART_FILE, reason)
-        self.arm_hard_exit()
+            try:
+                record_watchdog_restart(Path(config.path).parent / WATCHDOG_RESTART_FILE, reason)
+            except Exception:  # noqa: BLE001 - the restart itself matters more than the log
+                LOG.exception("Vagthund: kunne ikke skrive genstartsloggen")
         return RuntimeError(reason)
 
     def arm_hard_exit(self, seconds: float | None = None) -> threading.Timer:

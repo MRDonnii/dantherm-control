@@ -135,6 +135,9 @@ def read_watchdog_restarts(path: str | Path) -> list[dict[str, object]]:
     return sorted(_read_restarts(Path(path)), key=lambda entry: float(entry["at"]))
 
 
+# A missing outdoor temperature (T1) raises the stale alarm this long after start even if never seen.
+OUTDOOR_EXPECTED_AFTER_SECONDS = 600.0
+
 def record_watchdog_restart(path: str | Path, reason: str, now: float | None = None) -> None:
     """Append one watchdog exit (wall-clock time and reason) to the restart file."""
     path = Path(path)
@@ -183,6 +186,8 @@ class Diagnostics:
         self.result: dict[str, object] = {}
         # Local sensors that have had a value since start: only those can go stale.
         self.seen_sensors: set[str] = set()
+        # T1 (outdoor) is always expected: missing from start it counts after a grace period.
+        self.first_update: float | None = None
         self.restart_path = self.path.parent / WATCHDOG_RESTART_FILE if self.path else None
         self.restart_mtime: float | None = None
         self.restart_times: list[float] = []
@@ -368,6 +373,10 @@ class Diagnostics:
         level_flapping = self._level_flapping(_num(s.get("level_changes_last_hour")),
                                               _num(s.get("level_change_quiet_seconds")), now)
         health = (s.get("data_health") or {}).get("sensors") or {}
+        if self.first_update is None:
+            self.first_update = now
+        if now - self.first_update >= OUTDOOR_EXPECTED_AFTER_SECONDS:
+            self.seen_sensors.add("outdoor")
         for key in ("outdoor", "co2"):
             if health.get(key, {}).get("value") is not None:
                 self.seen_sensors.add(key)
@@ -376,7 +385,7 @@ class Diagnostics:
             # Only while the Pi may write: a released master has nothing pending.
             "controller_command_failed": bool(s.get("pending_commands"))
                 and s.get("hardware_writes_allowed") is not False,
-            # A sensor this unit never had (e.g. no CO2 sensor) is not stale.
+            # A CO2 sensor this unit never had is not stale; T1 always counts after the start grace.
             "local_sensor_stale": any(key in self.seen_sensors and health.get(key, {}).get("fresh") is False
                                       for key in ("outdoor", "co2")),
             "frost_risk": frost_state == "risk",
