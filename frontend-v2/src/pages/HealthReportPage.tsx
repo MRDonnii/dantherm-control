@@ -2,6 +2,7 @@ import "../styles/panels.css"; import "../styles/management.css";
 import { useCallback, useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { InfoList } from "../components/InfoList";
+import { haRoomsStatus, type HaRoomsHealth } from "../lib/haRoomsHealth";
 import { requestJson } from "../lib/api";
 import { usePullRefresh } from "../lib/pullRefresh";
 
@@ -12,10 +13,12 @@ type Period = { samples: number; gap_minutes: number; supply_minutes: number; ta
 export type HealthReport = { generated_at: number; since: number; days: number; total: Period; per_day: (Period & { date: string })[];
   command_errors: { alarms: number; recent: { time: number; text: string }[]; pending_now: string[] };
   watchdog_restarts: { count: number; recent: { at: number; reason: string }[] };
-  stale: { sensors: Record<string, string>; alarms: number; now: string[] }; note: string };
+  stale: { sensors: Record<string, string>; alarms: number; now: string[]; ha_rooms?: HaRoomsHealth | null }; note: string };
 
 const n = (value: number | null | undefined, digits = 1, unit = "") => value === null || value === undefined ? "–"
   : `${value.toLocaleString("da-DK", { minimumFractionDigits: digits, maximumFractionDigits: digits })}${unit}`;
+// data_health keys in "now"; HA rooms count only measurements that are too old.
+const NOW_LABELS: Record<string, string> = { rh: "Fugt", co2: "CO₂", outdoor: "Ude", room: "Rum", supply: "Indblæsning", ha_rooms: "HA-rum" };
 const when = (ts: number) => new Date(ts * 1000).toLocaleString("da-DK", { weekday: "short", day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" });
 const day = (date: string) => new Date(`${date}T12:00:00`).toLocaleDateString("da-DK", { weekday: "short", day: "numeric", month: "numeric" });
 
@@ -69,7 +72,8 @@ export function HealthReportPage() {
         <article className="surface panel-card" aria-label="For gamle målinger"><div className="pro-card-head compact"><div><h2>For gamle målinger</h2><p>Minutter hvor en lokal måling var for gammel</p></div></div>
           <InfoList rows={[
             { label: "Alarmer for gamle målinger", value: String(report.stale.alarms), tone: report.stale.alarms ? "warn" : "ok" },
-            { label: "For gamle lige nu", value: report.stale.now.length ? report.stale.now.join(", ") : "Ingen", tone: report.stale.now.length ? "warn" : "ok" },
+            { label: "For gamle lige nu", value: report.stale.now.length ? report.stale.now.map(key => NOW_LABELS[key] ?? key).join(", ") : "Ingen", tone: report.stale.now.length ? "warn" : "ok" },
+            ...(report.stale.ha_rooms ? [{ label: "HA-rum lige nu", ...haRoomsStatus(report.stale.ha_rooms) }] : []),
             ...Object.entries(report.stale.sensors).map(([key, label]) => ({ label, value: `${(t.stale_minutes[key] ?? 0).toLocaleString("da-DK")} min`,
               tone: (t.stale_minutes[key] ? "warn" : "ok") as "warn" | "ok" })),
           ]}/>{staleTotal === 0 && <p className="hx-note">Ingen for gamle målinger registreret.</p>}</article>

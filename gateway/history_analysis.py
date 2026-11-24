@@ -37,6 +37,8 @@ HEALTH_FIELDS = ("heating_coil_after_temperature", "afterheat_target", "afterhea
                  "afterheat_level", "fan_supply_percent", "afterheat_context")
 HEALTH_DAYS = 7
 IN_BAND_K = 0.5
+# The combined HA-room status that the weekly report repeats.
+HA_ROOMS_KEYS = ("state", "fresh", "connection_online", "fresh_count", "stale_count", "unknown_age_count")
 # Sensors with a freshness marker in the history and their Danish names.
 STALE_SENSORS = {
     "supply_temp": "Indblæsning (T2AH)",
@@ -293,6 +295,9 @@ def weekly_health(rows: list[dict], *, events: list[dict], restarts: list[dict],
             "sensors": STALE_SENSORS,
             "alarms": len(stale_alarms),
             "now": sorted(key for key, item in sensors.items() if isinstance(item, dict) and item.get("fresh") is False),
+            # Connection and measurement age are separate; unknown age is not "too old".
+            "ha_rooms": {key: sensors["ha_rooms"].get(key) for key in HA_ROOMS_KEYS}
+            if isinstance(sensors.get("ha_rooms"), dict) and "state" in sensors["ha_rooms"] else None,
         },
         "note": ("Beregnet på gemte målinger én gang i minuttet; korte trinskift mellem to målinger tælles ikke. "
                  "Indblæsning sammenlignes med eftervarmens mål, mens eftervarmen er aktiv (ikke slukket eller køling). "

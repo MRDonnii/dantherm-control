@@ -15,6 +15,8 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from room_quality import quality_rooms
+
 
 class ControllerObservability:
     def __init__(self, runtime, *, path: str | Path | None = None, max_events: int = 200) -> None:
@@ -66,6 +68,64 @@ class ControllerObservability:
         except (TypeError, ValueError):
             return None
 
+    @staticmethod
+    def _ha_rooms_health(snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Combined HA-room status, built from the per-measurement quality.
+
+        The connection (``smart_inputs_online``: HA sent something recently)
+        and the age of the measurements in it are reported separately: HA may
+        resend a four-hour-old reading every minute. Status display only; the
+        regulation already filters per measurement in room_quality.
+        """
+        rooms = snapshot.get("smart_ha_rooms") or {}
+        rooms = rooms if isinstance(rooms, dict) else {}
+        online = bool(snapshot.get("smart_inputs_online"))
+        quality = snapshot.get("smart_room_quality")
+        if not isinstance(quality, dict):
+            quality = quality_rooms(rooms, 0.0, online=online)[1] if rooms else {}
+        counted = [name for name in quality
+                   if not (isinstance(rooms.get(name), dict) and rooms[name].get("enabled") is False)]
+        counts = {"fresh": 0, "stale": 0, "unknown_age": 0, "connection_stale": 0}
+        used = 0
+        for name in counted:
+            per_kind = quality.get(name)
+            for item in (per_kind.values() if isinstance(per_kind, dict) else ()):
+                if not isinstance(item, dict):
+                    continue
+                # "unavailable" = this room has no such sensor: optional, not a fault.
+                if item.get("state") in counts:
+                    counts[item["state"]] += 1
+                used += item.get("used") is True
+        measured = counts["fresh"] + counts["stale"] + counts["unknown_age"]
+        if not online:
+            state, fresh = "offline", False
+            measured += counts["connection_stale"]
+        elif not counted:
+            state, fresh = "no_rooms", None
+        elif not measured:
+            state, fresh = "no_measurements", None
+        elif counts["stale"]:
+            state = "mixed" if counts["fresh"] or counts["unknown_age"] else "stale"
+            fresh = False
+        elif counts["unknown_age"]:
+            state, fresh = "unknown", None
+        else:
+            state, fresh = "fresh", True
+        return {
+            "available": bool(rooms) if not online else measured > 0,
+            "fresh": fresh,
+            "state": state,
+            "connection_online": online,
+            "value": len(rooms),
+            "rooms": len(counted),
+            "measurements": measured,
+            "fresh_count": counts["fresh"],
+            "stale_count": counts["stale"],
+            "unknown_age_count": counts["unknown_age"],
+            "used_count": used,
+            "source": "home_assistant",
+        }
+
     def _data_health(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         gateway = self.runtime.gateway_state
         age = self._number(gateway.get("bus_last_frame_age"))
@@ -92,21 +152,7 @@ class ControllerObservability:
             }
             for key, value in local.items()
         }
-        smart_online = bool(snapshot.get("smart_inputs_online"))
-        if smart_online:
-            sensors["ha_rooms"] = {
-                "available": True,
-                "fresh": True,
-                "value": len(snapshot.get("smart_ha_rooms") or {}),
-                "source": "home_assistant",
-            }
-        else:
-            sensors["ha_rooms"] = {
-                "available": bool(snapshot.get("smart_ha_rooms")),
-                "fresh": False,
-                "value": len(snapshot.get("smart_ha_rooms") or {}),
-                "source": "home_assistant",
-            }
+        sensors["ha_rooms"] = self._ha_rooms_health(snapshot)
 
         required = [sensors["rh"], sensors["outdoor"], sensors["room"]]
         if not bus_fresh:

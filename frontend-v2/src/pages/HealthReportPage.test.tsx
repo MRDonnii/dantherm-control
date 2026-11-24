@@ -32,6 +32,17 @@ it("shows the week's swings, changes, errors, restarts and stale measurements", 
   expect(screen.getAllByText("45 min")).toHaveLength(2);
 });
 
+it("shows HA rooms with old measurements by name and with counts", async () => {
+  api.requestJson.mockResolvedValue({ generated_at: 1795540000, since: 1794935200, days: 7, total: period, per_day: [],
+    command_errors: { alarms: 0, recent: [], pending_now: [] }, watchdog_restarts: { count: 0, recent: [] },
+    stale: { sensors: { co2: "CO₂" }, alarms: 0, now: ["ha_rooms"],
+      ha_rooms: { state: "mixed", fresh: false, connection_online: true, fresh_count: 4, stale_count: 1, unknown_age_count: 0 } }, note: "" });
+  render(<HealthReportPage/>);
+  const stale = await screen.findByRole("article", { name: "For gamle målinger" });
+  expect(within(stale).getByText("HA-rum")).toBeTruthy();
+  expect(within(stale).getByText("4 friske · 1 for gammel")).toBeTruthy();
+});
+
 it("shows an error when the report cannot be loaded", async () => {
   api.requestJson.mockRejectedValue(new Error("Din brugerrolle har ikke adgang til denne funktion"));
   render(<HealthReportPage/>);

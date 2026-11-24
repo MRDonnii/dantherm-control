@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.13.0-beta.4 — Honest HA-room freshness status
+
+- **HA-room status:** `data_health.sensors.ha_rooms` no longer says fresh just because HA sent something recently. The combined status is built from `smart_room_quality` (per measurement) and keeps the connection separate: `connection_online` (= `smart_inputs_online`), `state` (`fresh`, `mixed`, `stale`, `unknown`, `offline`, `no_rooms`, `no_measurements`), `fresh_count`, `stale_count`, `unknown_age_count`, `used_count`, `measurements` and `rooms`. `fresh` is `true` only when every measurement is fresh, `false` for old measurements or no connection, and `null` for unknown age or no rooms/measurements. Missing optional sensors (a room without CO2) are not counted; rooms disabled in HA are left out. `available` and `value` keep their meaning for older clients.
+- **WebUI:** Diagnostik and Home Assistant show the counts in Danish (e.g. "5 friske · 1 for gammel · 2 ukendt alder"); the Home Assistant page's "Smart inputs" pill now says "Modtages"/"Mangler" (connection) instead of "Friske". The weekly report names "HA-rum" under "For gamle lige nu" and repeats the counts (`stale.ha_rooms`).
+- No change to the HA protocol, the per-measurement filtering (clients without age metadata still count) or the afterheat control; this is status display only.
+- Release notes: [1.13.0-beta.4](docs/releases/1.13.0-beta.4.md).
+
 ## 1.13.0-beta.3 — Mobile layout, safe areas and pull to refresh
 
 - **Mobile layout:** no page is wider than the screen at 360–430 px. The page grid uses `minmax(0, 1fr)`, so a wide table (afterheat scale, weekly report) scrolls inside its own frame instead of stretching the whole page; the History period tabs, KPI tiles and cards fit. The top bar keeps its buttons on screen: the page title is shortened with "…", the weather chip shows only the temperature on a phone (and drops "T1" below 380 px), the HA chip only its dot and name. The "Mere" tab label lines up with the other tabs.
