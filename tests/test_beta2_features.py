@@ -272,8 +272,11 @@ class WeeklyHealthTests(unittest.TestCase):
         rows = health_rows()[:20]
         for row in rows[10:]:
             row["ts"] += 1800
-        total = weekly_health(rows, events=[], restarts=[], controller={}, now=NOW)["total"]
-        self.assertEqual(total["gap_minutes"], 31)
+        report = weekly_health(rows, events=[], restarts=[], controller={}, now=NOW)
+        total = report["total"]
+        # 31 min between samples plus the gap still open from the last sample to now.
+        self.assertEqual(report["open_gap_minutes"], 191)
+        self.assertEqual(total["gap_minutes"], 31 + 191)
         self.assertEqual(total["level_changes"], 0)
         self.assertIsNone(weekly_health([], events=[], restarts=[], controller={}, now=NOW)["total"]["error_sd"])
 
