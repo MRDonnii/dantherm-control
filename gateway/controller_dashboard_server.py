@@ -21,6 +21,7 @@ from controller_core import ControllerError
 from dashboard_server import ASSET_TYPES, DashboardHttpServer, WEBUI_CSP
 from balancing_store import BalancingError, BalancingStore
 from controller_token import ControllerTokenStore
+from control_replay import replay_local_auto
 from api_keys import ApiKeyStore, SCOPE_LABELS
 from event_log import ALARM_KINDS, EventLog
 from webui_auth import ROLE_LABELS
@@ -607,6 +608,22 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                         return self._json(sniffer.marker(str(name)))
                     except Exception as e:
                         return self._json_error(500, str(e))
+                if self.path == "/api/controller/replay":
+                    if not self._need(session, "configure"):
+                        return
+                    data = self._read_json()
+                    if not isinstance(data, dict):
+                        return self._json_error(400, "Ugyldig prøve")
+                    name = data.get("range", "24h")
+                    if name not in ("1h", "6h", "24h"):
+                        return self._json_error(400, "Vælg højst 24 timer")
+                    try:
+                        with dashboard.controller_runtime.config.lock:
+                            import copy
+                            settings = copy.deepcopy(dashboard.controller_runtime.config.data)
+                        return self._json(replay_local_auto(settings, dashboard.history.query(name), data.get("settings", {})))
+                    except (ControllerError, TypeError, ValueError) as error:
+                        return self._json_error(400, str(error))
                 if self.path == "/api/controller/config":
                     data = self._read_json() or {}
                     denied = config_allowed(session.get("role", "user"), data)

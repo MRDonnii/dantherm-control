@@ -16,17 +16,22 @@ try:
 except ModuleNotFoundError:
     _auth_spec=importlib.util.spec_from_file_location("webui_auth",Path(__file__).with_name("webui_auth.py")); _auth_module=importlib.util.module_from_spec(_auth_spec); _auth_spec.loader.exec_module(_auth_module); AuthManager=_auth_module.AuthManager
 try:
-    from sensor_freshness import fresh_sensor_value, hide_stale_sensor_values
+    from sensor_freshness import fresh_sensor_value, hide_stale_sensor_values, local_sensor_value
 except ModuleNotFoundError:
-    _sensor_spec=importlib.util.spec_from_file_location("sensor_freshness",Path(__file__).with_name("sensor_freshness.py")); _sensor_module=importlib.util.module_from_spec(_sensor_spec); _sensor_spec.loader.exec_module(_sensor_module); fresh_sensor_value=_sensor_module.fresh_sensor_value; hide_stale_sensor_values=_sensor_module.hide_stale_sensor_values
+    _sensor_spec=importlib.util.spec_from_file_location("sensor_freshness",Path(__file__).with_name("sensor_freshness.py")); _sensor_module=importlib.util.module_from_spec(_sensor_spec); _sensor_spec.loader.exec_module(_sensor_module); fresh_sensor_value=_sensor_module.fresh_sensor_value; hide_stale_sensor_values=_sensor_module.hide_stale_sensor_values; local_sensor_value=_sensor_module.local_sensor_value
 LOGGER = logging.getLogger("passivelink-dashboard")
 ASSET_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2"}
 # The 1-Wire service caches for 10 s as well; refreshing more often gains nothing.
 AUXILIARY_REFRESH_SECONDS = 5
 PREHEATER_STALE_SECONDS = 60
 RANGES = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000}
-HISTORY_FIELDS = ("outdoor_temp", "supply_temp", "extract_temp", "exhaust_temp", "hrc2_t5_temperature", "heating_coil_after_temperature", "heating_coil_frost_temperature", "flow_temperature", "return_temperature", "co2", "fan_supply_rpm", "fan_extract_rpm", "fan_supply_percent", "fan_extract_percent", "heat_recovery_efficiency", "system_cpu_usage_percent", "pi_cpu_temperature", "system_memory_used_percent", "system_load_1m", "afterheat_setpoint", "afterheat_active", "afterheat_level", "afterheat_level_target", "afterheat_level_wanted", "afterheat_target")
+HISTORY_FIELDS = ("humidity", "outdoor_temp", "supply_temp", "extract_temp", "exhaust_temp", "hrc2_t5_temperature", "heating_coil_after_temperature", "heating_coil_frost_temperature", "flow_temperature", "return_temperature", "co2", "fan_supply_rpm", "fan_extract_rpm", "fan_supply_percent", "fan_extract_percent", "heat_recovery_efficiency", "system_cpu_usage_percent", "pi_cpu_temperature", "system_memory_used_percent", "system_load_1m", "afterheat_setpoint", "afterheat_active", "afterheat_level", "afterheat_level_target", "afterheat_level_wanted", "afterheat_target")
 HISTORY_SENSOR_MARKERS = {
+    "humidity": "humidity_sample_fresh",
+    "co2": "co2_sample_fresh",
+    "outdoor_temp": "outdoor_temp_sample_fresh",
+    "extract_temp": "extract_temp_sample_fresh",
+    "exhaust_temp": "exhaust_temp_sample_fresh",
     "supply_temp": "supply_temp_sample_fresh",
     "heating_coil_after_temperature": "heating_coil_after_temperature_sample_fresh",
     "heating_coil_frost_temperature": "heating_coil_frost_temperature_sample_fresh",
@@ -67,7 +72,7 @@ class HistoryStore:
         now = now or time.time()
         if now - self.last_sample < self.sample_seconds: return
         sample_freshness = {
-            field: int(fresh_sensor_value(state, field) is not None)
+            field: int(local_sensor_value(state, field) is not None)
             for field in HISTORY_SENSOR_MARKERS
         }
         state = hide_stale_sensor_values(state)
@@ -104,7 +109,10 @@ class HistoryStore:
         bucket = max(self.sample_seconds, -(-span // self.MAX_POINTS))
         def value(field: str) -> str:
             marker = HISTORY_SENSOR_MARKERS.get(field)
-            return f'CASE WHEN "{marker}" = 1 THEN "{field}" END' if marker else f'"{field}"'
+            if marker:
+                legacy = f'"{marker}" IS NULL OR ' if field in ("humidity", "co2", "outdoor_temp", "extract_temp", "exhaust_temp") else ""
+                return f'CASE WHEN {legacy}"{marker}" = 1 THEN "{field}" END'
+            return f'"{field}"'
         columns = [f'AVG({value(field)}) AS "{field}"' for field in HISTORY_FIELDS]
         for field in self.HISTORY_SPREAD_FIELDS:
             columns.append(f'MIN({value(field)}) AS "{field}_min"')

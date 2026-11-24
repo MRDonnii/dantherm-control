@@ -72,21 +72,23 @@ class ControllerObservability:
         if age is None:
             master_age = self.runtime.master.bus_age()
             age = float(master_age) if master_age is not None else None
-        bus_fresh = bool(gateway.get("bus_traffic") is True and age is not None and age <= 10.0)
+        bus_fresh = (self.runtime._bus_healthy() if hasattr(self.runtime, "_bus_healthy") else
+                     bool(gateway.get("bus_traffic") is True and age is not None and age <= 10.0))
 
+        gateway = self.runtime._local_state() if hasattr(self.runtime, "_local_state") else gateway
         local = {
             "rh": self.runtime._first(gateway, "humidity", "relative_humidity"),
             "co2": self.runtime._first(gateway, "co2"),
             "outdoor": self.runtime._first(gateway, "outdoor_temp", "outdoor_temperature"),
-            "room": self.runtime._first(gateway, "room_temp", "hrc2_t5_temperature", "room_temperature", "extract_temp"),
-            "supply": self.runtime._first(gateway, "heating_coil_after_temperature", "supply_temp"),
+            "room": (snapshot.get("measurements") or {}).get("room"),
+            "supply": snapshot.get("actual_supply_air_temperature"),
         }
         sensors = {
             key: {
                 "available": value is not None,
                 "fresh": bool(value is not None and bus_fresh),
                 "value": value,
-                "source": "hch5",
+                "source": (snapshot.get("afterheat_room_source_used") or "hch5") if key == "room" else "hch5",
             }
             for key, value in local.items()
         }

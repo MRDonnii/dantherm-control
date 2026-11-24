@@ -25,7 +25,7 @@ from afterheat_pilot import robust_temperature
 from diagnostics import Diagnostics
 from controller_core import AFTERHEAT_OUTDOOR_CUTOFF_C, ControllerEngine, ControllerError, ControllerState, HardwareAdapter
 from master_arbitration import MasterArbitrator, RtuFrameStream
-from sensor_freshness import fresh_sensor_value, sensor_sample_age
+from sensor_freshness import fresh_sensor_value, sensor_sample_age, hide_stale_sensor_values
 from weather_bridge import humidity_at_t1, validate_weather
 
 # Plausible T5 (HRC2 room sensor) range; anything else means no HRC2.
@@ -65,6 +65,10 @@ class ControllerRuntime:
         self.thread: threading.Thread | None = None
         self.apply_lock = threading.Lock()
         self.last_tick_at: float | None = None
+        self.last_successful_tick_monotonic: float | None = None
+        self.loop_error: str | None = None
+        self.loop_failures = 0
+        self._loop_error_logged_at = 0.0
         self.change_log_path = Path(os.getenv("DANTHERM_CHANGE_LOG", "/var/lib/dantherm-hch5-ha/change-log.jsonl"))
         self.change_log: list[dict[str, object]] = []
         try:
@@ -153,10 +157,13 @@ class ControllerRuntime:
         self.master.note_own_frame(frame)
 
     def _bus_healthy(self) -> bool:
-        if self.gateway_state.get("bus_traffic") is True:
-            return True
         age = self.master.bus_age()
-        return age is not None and age <= 10.0
+        # The arbitrator clock keeps advancing even if the serial loop stalls.
+        if age is not None:
+            return age <= 10.0
+        reported = self.gateway_state.get("bus_last_frame_age")
+        return (self.gateway_state.get("bus_traffic") is True
+                and isinstance(reported, (int, float)) and 0 <= reported <= 10.0)
 
     def _on_master_transition(self, old: str, new: str) -> None:
         self._last_master = new
@@ -165,6 +172,8 @@ class ControllerRuntime:
             self.engine._failure_values.clear()
             self.engine._failure_counts.clear()
             self.engine._retry_at.clear()
+            self.engine.command_errors.clear()
+            self.engine.last_error = None
             LOG.warning("Raspberry Pi became active master; desired state will be reapplied")
         elif old == MasterArbitrator.PI:
             self.engine._retry_at.clear()
@@ -180,8 +189,21 @@ class ControllerRuntime:
         self._evaluate_master()
         return self.master.writes_allowed()
 
+    def _local_state(self) -> dict[str, object]:
+        return hide_stale_sensor_values(self.gateway_state)
+
+    def loop_health(self) -> dict[str, object]:
+        age = (None if self.last_successful_tick_monotonic is None else
+               max(0.0, time.monotonic() - self.last_successful_tick_monotonic))
+        alive = self.thread is not None and self.thread.is_alive()
+        status = ("error" if self.loop_error else "starting" if age is None else
+                  "healthy" if alive and age <= max(30.0, self.tick_seconds * 5) else "stalled")
+        return {"state": status, "thread_alive": alive, "last_success_age_seconds":
+                round(age, 1) if age is not None else None, "error": self.loop_error,
+                "failures": self.loop_failures}
+
     def refresh_measurements(self) -> None:
-        state = self.gateway_state
+        state = self._local_state()
         room = self._first(
             {
                 "room_temp": fresh_sensor_value(state, "room_temp"),
@@ -204,9 +226,9 @@ class ControllerRuntime:
         # Free cooling and the afterheat use the same room temperature: by
         # default the HA room average, else the extract air (T3).
         self.engine.update_measurements(
-            rh=self._first(state, "humidity", "relative_humidity"),
-            co2=self._first(state, "co2"),
-            outdoor=self._first(state, "outdoor_temp", "outdoor_temperature"),
+            rh=self._safe_number(self._first(state, "humidity", "relative_humidity"), 0, 100),
+            co2=self._safe_number(self._first(state, "co2"), 250, 10000),
+            outdoor=self._safe_number(self._first(state, "outdoor_temp", "outdoor_temperature"), -50, 60),
             room=room_temperature,
         )
         comfort, comfort_count = self._comfort_rooms_temperature()
@@ -364,7 +386,7 @@ class ControllerRuntime:
         The corrections are known sensor errors added to the rooms and T3.
         """
         rooms = self._source_value(self.config.data.get("duct_extract_source"), "temperature")
-        t3 = self._safe_number(self._first(self.gateway_state, "extract_temp", "extract_temperature"), -30, 60)
+        t3 = self._safe_number(self._first(self._local_state(), "extract_temp", "extract_temperature"), -30, 60)
         if rooms is not None:
             rooms = round(rooms + float(self.config.data.get("duct_rooms_offset_k") or 0.0), 2)
         if t3 is not None:
@@ -387,7 +409,7 @@ class ControllerRuntime:
             return None
         age = self.gateway_state.get("bus_last_frame_age")
         fresh = self.gateway_state.get("bus_traffic") is True and isinstance(age, (int, float)) and not isinstance(age, bool) and 0 <= age <= 5
-        t1 = self._first(self.gateway_state, "outdoor_temp", "outdoor_temperature") if fresh else None
+        t1 = self._first(self._local_state(), "outdoor_temp", "outdoor_temperature") if fresh else None
         humidity, reason = humidity_at_t1(self.weather, t1)
         return {**self.weather, "humidity_at_t1": humidity, "humidity_reason": reason,
                 "remaining_seconds": max(0, int(self.weather_until - time.time()))}
@@ -677,15 +699,15 @@ class ControllerRuntime:
             "priority": "auto",
             "source": "unit",
         }
-        co2 = self._safe_number(self._first(self.gateway_state, "co2"), 250, 10000)
+        co2 = self._safe_number(self._first(self._local_state(), "co2"), 250, 10000)
         # The unit's own RH sensor reads far too low (about 13-15 % against 35-50 % in the
         # rooms): only a plausible value may fill in for a room without its own.
         rh = self._safe_number(
-            self._first(self.gateway_state, "humidity", "relative_humidity"), 20, 100
+            self._first(self._local_state(), "humidity", "relative_humidity"), 20, 100
         )
         temp = self._safe_number(
             self._first(
-                self.gateway_state,
+                self._local_state(),
                 "room_temp",
                 "hrc2_t5_temperature",
                 "room_temperature",
@@ -1232,7 +1254,7 @@ class ControllerRuntime:
     def _observe_balance(self, now: float | None = None) -> None:
         """Feed the heat-balance learner and keep what it finds."""
         now = time.time() if now is None else now
-        state = self.gateway_state
+        state = self._local_state()
         d = self.config.data
         supply_rpm = self._safe_number(self._first(state, "fan_supply_rpm", "supply_fan_rpm"), 0, 6000) or 0.0
         extract_rpm = self._safe_number(self._first(state, "fan_extract_rpm", "extract_fan_rpm"), 0, 6000) or 0.0
@@ -1283,7 +1305,7 @@ class ControllerRuntime:
     def _balance_live(self) -> dict[str, object]:
         """Learner state plus the heat balance right now (indicative, not steady)."""
         live = dict(self.balance_learner.status)
-        state = self.gateway_state
+        state = self._local_state()
         t1 = self._safe_number(self._first(state, "outdoor_temp", "outdoor_temperature"), -50, 60)
         t3 = self._safe_number(self._first(state, "extract_temp", "extract_temperature"), -30, 60)
         t4 = self._safe_number(self._first(state, "exhaust_temp", "exhaust_temperature"), -50, 60)
@@ -1322,6 +1344,7 @@ class ControllerRuntime:
         self._evaluate_master()
         result = self.engine.resolve()
         self._note_frost_lock()
+        result["controller_health"] = self.loop_health()
         result["enabled"] = True  # compatibility only; not configurable
         result.update(self.master.snapshot())
         result.update(self._smart_input_snapshot())
@@ -1338,7 +1361,7 @@ class ControllerRuntime:
         after_heater = fresh_sensor_value(self.gateway_state, "heating_coil_after_temperature")
         frost_temperature = fresh_sensor_value(self.gateway_state, "heating_coil_frost_temperature")
         outdoor = self._safe_number(
-            self._first(self.gateway_state, "outdoor_temp", "outdoor_temperature"), -50, 60
+            self._first(self._local_state(), "outdoor_temp", "outdoor_temperature"), -50, 60
         )
         travel_started = self.gateway_state.get("bypass_travel_started_monotonic")
         travel_seconds = (
@@ -1418,7 +1441,7 @@ class ControllerRuntime:
             "afterheat_room_source_used": self.afterheat_room_source_used,
             "weather": self.weather_snapshot(),
         })
-        extract = self._safe_number(self._first(self.gateway_state, "extract_temp", "extract_temperature"), -30, 60)
+        extract = self._safe_number(self._first(self._local_state(), "extract_temp", "extract_temperature"), -30, 60)
         # Standby and bonfire stop both fans: no air, so no air-side power.
         fans_stopped = result.get("standby_active") is True or result.get("bonfire_active") is True
         supply_m3h = 0.0 if fans_stopped else self._supply_airflow(result.get("effective_level"))
@@ -1461,9 +1484,9 @@ class ControllerRuntime:
 
     def _before_heater_estimate(self) -> float | None:
         """T2 estimate from T1, T3 and the recovery measured on the extract side."""
-        t1 = self._safe_number(self._first(self.gateway_state, "outdoor_temp", "outdoor_temperature"), -50, 60)
-        t3 = self._safe_number(self._first(self.gateway_state, "extract_temp", "extract_temperature"), -30, 60)
-        t4 = self._safe_number(self._first(self.gateway_state, "exhaust_temp", "exhaust_temperature"), -50, 60)
+        t1 = self._safe_number(self._first(self._local_state(), "outdoor_temp", "outdoor_temperature"), -50, 60)
+        t3 = self._safe_number(self._first(self._local_state(), "extract_temp", "extract_temperature"), -30, 60)
+        t4 = self._safe_number(self._first(self._local_state(), "exhaust_temp", "exhaust_temperature"), -50, 60)
         bypass = self._first(self.gateway_state, "bypass_active") is True
         recovery = None
         if t1 is not None and t3 is not None and t4 is not None and abs(t3 - t1) >= 0.5 and not bypass:
@@ -1600,18 +1623,31 @@ class ControllerRuntime:
     def _run(self) -> None:
         LOG.info("Local HCH controller runtime started (automatic master=%s)", self.master.master)
         while not self.stop_event.is_set():
-            self.tick()
-            if time.time() - self.diagnostics_at >= 10:
-                self.update_diagnostics()
+            try:
+                self.tick()
+                self.last_successful_tick_monotonic = time.monotonic()
+                self.loop_error = None
+                if time.time() - self.diagnostics_at >= 10:
+                    self.update_diagnostics()
+            except Exception as error:
+                message = f"{type(error).__name__}: {error}"
+                self.loop_failures += 1
+                if message != self.loop_error or time.monotonic() - self._loop_error_logged_at >= 900:
+                    LOG.exception("Controller cycle failed; will retry: %s", message)
+                    self._loop_error_logged_at = time.monotonic()
+                self.loop_error = message
             self.stop_event.wait(self.tick_seconds)
-        self.diagnostics.save()
+        try:
+            self.diagnostics.save()
+        except OSError:
+            LOG.exception("Unable to persist diagnostics on shutdown")
 
     def update_diagnostics(self, now: float | None = None) -> dict[str, object]:
         """Feed the diagnostics with the current snapshot and the raw unit temperatures."""
         self.diagnostics_at = time.time() if now is None else now
         try:
             feed = self.snapshot()
-            state = self.gateway_state
+            state = self._local_state()
             feed.update({
                 "outdoor_temperature": self._safe_number(self._first(state, "outdoor_temp", "outdoor_temperature"), -50, 60),
                 "extract_temperature": self._safe_number(self._first(state, "extract_temp", "extract_temperature"), -30, 60),

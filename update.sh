@@ -274,7 +274,7 @@ curl -fsS --max-time 3 "http://127.0.0.1:${web_port}/api/auth/status" \
 
 curl -fsS --max-time 3 -H "Authorization: Bearer ${check_key}" \
   "http://127.0.0.1:${web_port}/api/controller/state" \
-  | python3 -c 'import json,sys; data=json.load(sys.stdin); assert isinstance(data,dict); assert "active_master" in data'
+  | python3 -c 'import json,sys; data=json.load(sys.stdin); assert isinstance(data,dict); assert "active_master" in data; assert data.get("controller_health",{}).get("state") == "healthy", "Controller loop is not healthy"'
 # The keys survived the update, and Home Assistant still has a key that can
 # control the unit if it had one before (moved key, or the old token in
 # fallback mode).

@@ -50,3 +50,10 @@
 .settings-nav-link small { font-size: 12px; line-height: 1.35; }
 .settings-nav-link:hover { background: var(--surface-soft); }
 @media (max-width: 920px) { .settings-nav-link small { display: none; } }
+
+/* Persistent replay form: regular live status updates never replace its inputs. */
+[aria-label="Prøvekør Local Auto"] { margin-top: 18px; }
+[aria-label="Prøvekør Local Auto"] .diag-actions { align-items: end; flex-wrap: wrap; }
+[aria-label="Prøvekør Local Auto"] label { display: grid; gap: 6px; font-size: 13px; min-width: 140px; }
+[aria-label="Prøvekør Local Auto"] input,
+[aria-label="Prøvekør Local Auto"] select { width: 100%; box-sizing: border-box; padding: 10px; border-radius: 10px; color: var(--text); background: var(--surface); border: 1px solid var(--border); }

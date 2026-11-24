@@ -2,8 +2,23 @@
 from __future__ import annotations
 
 import time
+import math
 
 SENSOR_FRESHNESS_SECONDS = 45.0
+
+# Added in 1.13. Gateways opt in so older embedded producers keep working;
+# production always opts in and never accepts an unstamped local measurement.
+CONTROL_SENSOR_TIMESTAMPS = {
+    "outdoor_temp": ("outdoor_temperature_sample_monotonic",),
+    "outdoor_temperature": ("outdoor_temperature_sample_monotonic",),
+    "extract_temp": ("extract_temperature_sample_monotonic",),
+    "extract_temperature": ("extract_temperature_sample_monotonic",),
+    "exhaust_temp": ("exhaust_temperature_sample_monotonic",),
+    "exhaust_temperature": ("exhaust_temperature_sample_monotonic",),
+    "humidity": ("humidity_sample_monotonic",),
+    "relative_humidity": ("humidity_sample_monotonic",),
+    "co2": ("co2_sample_monotonic",),
+}
 
 SENSOR_SAMPLE_TIMESTAMPS = {
     "supply_temp": ("supply_temperature_sample_monotonic",),
@@ -20,11 +35,11 @@ def sensor_sample_age(
     state: dict[str, object], field: str, *, now: float | None = None
 ) -> float | None:
     now = time.monotonic() if now is None else now
-    for timestamp_key in SENSOR_SAMPLE_TIMESTAMPS.get(field, ()):
+    for timestamp_key in {**SENSOR_SAMPLE_TIMESTAMPS, **CONTROL_SENSOR_TIMESTAMPS}.get(field, ()):
         sampled_at = state.get(timestamp_key)
         if isinstance(sampled_at, (int, float)) and not isinstance(sampled_at, bool):
             age = now - float(sampled_at)
-            return age if age >= 0 else None
+            return age if math.isfinite(age) and age >= 0 else None
     return None
 
 
@@ -43,4 +58,15 @@ def hide_stale_sensor_values(
     for field in SENSOR_SAMPLE_TIMESTAMPS:
         if fresh_sensor_value(state, field, now=now) is None:
             result[field] = None
+    for field in CONTROL_SENSOR_TIMESTAMPS:
+        result[field] = local_sensor_value(state, field, now=now)
     return result
+
+
+def local_sensor_value(state: dict[str, object], field: str, *, now: float | None = None):
+    if field in CONTROL_SENSOR_TIMESTAMPS:
+        tracked = state.get("sensor_freshness_tracking") is True or any(
+            key in state for key in CONTROL_SENSOR_TIMESTAMPS[field])
+        if not tracked:
+            return state.get(field)  # compatibility with pre-1.13 embedded producers
+    return fresh_sensor_value(state, field, now=now)

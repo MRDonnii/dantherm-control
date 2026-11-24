@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type React from "react";
 import { Activity, Fan, Leaf, Recycle, SlidersHorizontal } from "lucide-react";
+import { AfterheatAnalysis } from "../components/AfterheatAnalysis";
 import { AlarmHistory } from "../components/AlarmHistory";
 import { HistoryChart } from "../components/HistoryChart";
 import { requestJson } from "../lib/api";
@@ -189,6 +190,8 @@ export function HistoryPage() {
           ? <StatTile label="Ventilåbning" value={format(opening.latest, 0)} unit=" %" detail={opening.mean === null ? "Ingen data" : `Gns. ${format(opening.mean, 0)} % i perioden`}/>
           : <StatTile label="Eftervarme" value={valve.mean === null ? "–" : format(valve.mean * 100, 0)} unit="%" detail={`af tiden med åben ventil · ${label}`}/>}
       </div>
+
+      <AfterheatAnalysis samples={samples}/>
 
       <div className="history-grid">
         <ChartCard wide title="Indblæsning og eftervarme" subtitle="Luften efter varmefladen mod dit mål, setpunktet sendt til HAC1, og ventilens åbning mod styringens beslutning" icon={<Activity size={20}/>}>

@@ -34,7 +34,7 @@ import yaml
 from controller_core import FROST_LOCK_OUTDOOR_WORD_CAP_C, HardwareAdapter
 from controller_dashboard_server import ControllerDashboardHttpServer
 from controller_runtime import ControllerRuntime
-from sensor_freshness import SENSOR_SAMPLE_TIMESTAMPS, fresh_sensor_value
+from sensor_freshness import SENSOR_SAMPLE_TIMESTAMPS, CONTROL_SENSOR_TIMESTAMPS, fresh_sensor_value
 
 LOG = logging.getLogger("dantherm_gateway")
 
@@ -650,7 +650,7 @@ class Gateway:
         self.device_id = config["device"].get("id", "dantherm_hch5")
         self.device_name = config["device"].get("name", "Dantherm HCH5")
         self.retain = bool(config["mqtt"].get("retain", True))
-        self.state: dict[str, object] = {}
+        self.state: dict[str, object] = {"sensor_freshness_tracking": True}
         serial_cfg = config.get("serial", {})
         # On by default; serial.spike_filter_enabled (or the older
         # t2ah_spike_filter_enabled) set to false turns it off.
@@ -1275,6 +1275,12 @@ class Gateway:
         return str(value)
 
     def publish(self, key: str, value: object, *, source: str | None = None):
+        # Stamp every received sample, including unchanged values. Status/ACK
+        # traffic must never refresh a different measurement's lifetime.
+        if key in CONTROL_SENSOR_TIMESTAMPS:
+            stamp = CONTROL_SENSOR_TIMESTAMPS[key][0]
+            self.state[stamp] = (time.monotonic() if isinstance(value, (int, float))
+                                 and not isinstance(value, bool) and math.isfinite(value) else None)
         if self.state.get(key) == value:
             return
         self.state[key] = value
@@ -2832,6 +2838,14 @@ class Gateway:
                 if self.control_enabled:
                     self.resume_fireplace(ser)
                 while self.running:
+                    # A dead regulator must not be masked by a working HTTP server.
+                    health = self.controller.loop_health()
+                    if self.controller.thread is not None and not health["thread_alive"]:
+                        raise RuntimeError("Controller thread stopped; restarting gateway")
+                    age = health["last_success_age_seconds"]
+                    if ((age is not None and age > 120) or
+                            (age is None and time.time() - self.controller.engine.started_at > 120)):
+                        raise RuntimeError("Controller has not completed a cycle for 120 s; restarting gateway")
                     if self.controller_reload_requested:
                         self.controller_reload_requested = False
                         with self.controller.config.lock:

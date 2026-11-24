@@ -40,6 +40,8 @@ LOG = logging.getLogger(__name__)
 
 # Seconds a condition must hold before its alarm is raised.
 ALARM_DELAYS = {
+    "controller_command_failed": 60,
+    "local_sensor_stale": 120,
     "frost_risk": 300,
     "recovery_low": 1800,
     "recovery_mismatch": 3600,
@@ -53,6 +55,8 @@ ALARM_DELAYS = {
     "level_flapping": 0,
 }
 ALARM_TEXT = {
+    "controller_command_failed": "En styrekommando er ikke gennemført; Pi forsøger igen med pause",
+    "local_sensor_stale": "Lokale sensormålinger mangler eller er for gamle; kontrollér forbindelsen",
     "frost_risk": "Frostrisiko i veksleren: afkastluften (T4) er nær 0 °C",
     "recovery_low": "Lav varmegenvinding: veksleren kan være snavset eller utæt",
     "recovery_mismatch": "Genvinding målt på indblæsning og udsugning er uenige: mulig utæthed eller følerfejl",
@@ -65,6 +69,8 @@ ALARM_TEXT = {
     "level_flapping": "Automatikken skifter trin for tit (over 12 gange i timen): en grænse eller en føler svinger",
 }
 ALARM_SEVERITY = {
+    "controller_command_failed": "critical",
+    "local_sensor_stale": "warning",
     "frost_risk": "warning",
     "recovery_low": "warning",
     "recovery_mismatch": "info",
@@ -301,7 +307,10 @@ class Diagnostics:
         )
         level_flapping = self._level_flapping(_num(s.get("level_changes_last_hour")),
                                               _num(s.get("level_change_quiet_seconds")), now)
+        health = (s.get("data_health") or {}).get("sensors") or {}
         conditions = {
+            "controller_command_failed": bool(s.get("pending_commands")),
+            "local_sensor_stale": any(health.get(key, {}).get("fresh") is False for key in ("outdoor", "co2")),
             "frost_risk": frost_state == "risk",
             "recovery_low": cold and supply_recovery is not None and supply_recovery < 60,
             "recovery_mismatch": cold and supply_recovery is not None and extract_recovery is not None

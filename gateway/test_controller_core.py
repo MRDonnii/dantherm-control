@@ -1,6 +1,7 @@
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from controller_core import ControllerEngine, ControllerError, ControllerState, HardwareAdapter
@@ -277,7 +278,7 @@ class ControllerTests(unittest.TestCase):
         engine.apply()
         self.assertEqual(calls, [20, None, 20])
 
-    def test_failed_write_has_bounded_retries(self):
+    def test_failed_write_has_backoff_and_eventually_recovers(self):
         calls = []
         state, _ = self.make()
         def fail(extract, supply):
@@ -287,13 +288,18 @@ class ControllerTests(unittest.TestCase):
             write_fan_pair=fail, set_fireplace=lambda enabled: None,
             set_afterheat_setpoint=lambda value: None,
         ))
-        engine.retry_base_seconds = 0
         state.configure({"mode": "manual", "manual_level": 3})
-        for _ in range(10):
-            try: engine.apply()
-            except OSError: pass
-        self.assertEqual(len(calls), 3)
-        self.assertEqual(engine.write_failures, 3)
+        for now in (1000, 1005, 1015, 1035):
+            with patch("controller_core.time.time", return_value=now):
+                for _ in range(10):
+                    try: engine.apply()
+                    except OSError: pass
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(engine.write_failures, 4)
+        engine.hardware.write_fan_pair = lambda *pair: calls.append(pair)
+        with patch("controller_core.time.time", return_value=1075): engine.apply()
+        self.assertEqual(len(calls), 5)
+        self.assertIsNone(engine.last_error)
 
     def test_persistent_configuration(self):
         state, _ = self.make()

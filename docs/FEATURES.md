@@ -83,3 +83,12 @@ Features that depend on Home Assistant, a power meter or extra sensors are marke
 ## RS485 safety boundary
 
 The Pi transmits control frames only when it is the active master and the bus is healthy. An HCP4 writing on the bus takes priority; unknown or unhealthy state blocks Pi writes. Read-only observation and Home Assistant entity data can continue when control writes are blocked. Hardware changes and control behaviour still require commissioning on the actual installation; see [installation](installation.da.md) and [safety model](../README.md#safety-model).
+
+
+## Controller recovery and offline analysis (1.13)
+
+The production gateway timestamps each local sensor sample independently, even if its value is unchanged. Values expire after 45 seconds; unrelated RS485 traffic does not refresh them. Older embedded producers without the new tracking marker retain compatibility, while the production gateway always enables tracking. Diagnostics uses the same validity checks as control. A working HTTP server does not count as a working regulator: successful cycles have a separate monotonic heartbeat. A dead thread or 120 seconds without a completed cycle causes systemd to restart the gateway. Missed commands remain pending and are retried with bounded pauses instead of being abandoned after three attempts.
+
+History's afterheat analysis uses the requested **target**, not the whole-degree HAC1 command. It weights valid intervals by the recorded active share, excludes gaps over five minutes and OFF periods, and requires ten continuous minutes within ±0.5 C to classify settling after an observed target change. Averaged history can hide short swings and valve changes; these statistics are observations, not a precision commissioning instrument.
+
+Diagnostics' **Prøvekør Local Auto** is available to technicians and administrators and uses the actual Local Auto decision logic with two isolated in-memory configurations. It compares current/proposed CO2 and RH thresholds over 1, 6 or 24 hours, starting at normal level and excluding gaps over five minutes. It neither changes live settings nor calls hardware. Past room observations, outdoor humidity, schedules and winter/dry-air overlays are not reconstructed, and it does not predict how the house or coil would physically respond. Earlier history lacks RH; the UI explicitly reports a CO2-only comparison then. New RH history accumulates after installation.

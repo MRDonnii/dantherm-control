@@ -2,6 +2,7 @@ import sys
 import json
 import tempfile
 import unittest
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
@@ -195,7 +196,7 @@ class RoomSetupConfigTests(unittest.TestCase):
 
     def test_unit_sensor_fills_its_room_instead_of_a_separate_room(self):
         runtime = self.make_runtime()
-        runtime.gateway_state.update({"humidity": 44.0, "room_temp": 22.5})
+        runtime.gateway_state.update({"humidity": 44.0, "room_temp": 22.5, "hrc2_t5_temperature_sample_monotonic": time.monotonic()})
         self.send(runtime, {"Stue": {"temperature": 21.0}})
         self.assertIn("HCH5 / lokale sensorer", runtime._rooms_with_unit_sensors())
         runtime.config.configure({"room_setup": [room("Stue"), room("Spisestue", unit_sensor=True)]})

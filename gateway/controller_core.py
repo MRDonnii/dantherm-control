@@ -1843,6 +1843,9 @@ class ControllerState:
             return result
 
 
+_MISSING_MEASUREMENT = object()
+
+
 class ControllerEngine:
     """Decision engine, automation overlays, write deduplication and HA fallback."""
 
@@ -1910,15 +1913,19 @@ class ControllerEngine:
         self._failure_values: dict[str, object] = {}
         self._failure_counts: dict[str, int] = {}
         self._retry_at: dict[str, float] = {}
+        self.command_errors: dict[str, str] = {}
 
-    def update_measurements(self, *, rh=None, co2=None, outdoor=None, room=None) -> None:
+    def update_measurements(self, *, rh=_MISSING_MEASUREMENT, co2=_MISSING_MEASUREMENT,
+                            outdoor=_MISSING_MEASUREMENT, room=_MISSING_MEASUREMENT) -> None:
         with self.lock:
             for key, value in (("rh", rh), ("co2", co2), ("outdoor", outdoor), ("room", room)):
-                if value is not None:
-                    try:
-                        self.measurements[key] = float(value)
-                    except (TypeError, ValueError):
-                        pass
+                if value is _MISSING_MEASUREMENT:
+                    continue
+                try:
+                    number = float(value) if not isinstance(value, bool) else float("nan")
+                    self.measurements[key] = number if math.isfinite(number) else None
+                except (TypeError, ValueError):
+                    self.measurements[key] = None
 
     def set_external(self, values: dict[str, float | None]) -> None:
         with self.lock:
@@ -2832,7 +2839,10 @@ class ControllerEngine:
                 "last_write_at": self.last_write_at,
                 "last_error": self.last_error,
                 "write_failures": self.write_failures,
-                "retry_limit": self.retry_limit,
+                "retry_limit": self.retry_limit,  # compatibility: fast retry count
+                "pending_commands": {key: {"error": error, "attempts": self._failure_counts.get(key, 0),
+                                           "next_retry_at": self._retry_at.get(key)}
+                                     for key, error in list(self.command_errors.items())},
                 "next_retry_at": min(self._retry_at.values(), default=None),
                 "controller_uptime_seconds": round(now - self.started_at, 1),
                 "afterheat_effective_setpoint": afterheat_setpoint,
@@ -2893,28 +2903,36 @@ class ControllerEngine:
             now - self.last_applied_at.get(key, 0.0) < (refresh_seconds or 0.0)
         )
         if unchanged and (refresh_seconds is None or refreshed_recently):
+            # A failed newer request may have been cancelled back to the
+            # already acknowledged value. It is no longer a pending fault.
+            if self._failure_values.get(key) != value:
+                self.command_errors.pop(key, None)
+                self._retry_at.pop(key, None)
+                self._failure_counts.pop(key, None)
+                self.last_error = next(iter(self.command_errors.values()), None)
             return
         if self._failure_values.get(key) != value:
             self._failure_values[key] = value
             self._failure_counts[key] = 0
             self._retry_at[key] = 0.0
-        gave_up = self._failure_counts.get(key, 0) >= self.retry_limit and not keep_retrying
-        if gave_up or now < self._retry_at.get(key, 0.0):
+        if now < self._retry_at.get(key, 0.0):
             return
         if fn is None:
             error = RuntimeError(f"Hardware binding mangler: {key}")
             self.last_error = str(error)
+            self.command_errors[key] = self.last_error
             self.write_failures += 1
             self._failure_counts[key] = self._failure_counts.get(key, 0) + 1
-            self._retry_at[key] = now + self.retry_base_seconds * 2 ** (self._failure_counts[key] - 1)
+            self._retry_at[key] = now + min(300.0, self.retry_base_seconds * 2 ** min(6, self._failure_counts[key] - 1))
             raise error
         try:
             fn(*args)
         except Exception as error:
             self.last_error = f"{key}: {error}"
+            self.command_errors[key] = self.last_error
             self.write_failures += 1
             self._failure_counts[key] = self._failure_counts.get(key, 0) + 1
-            delay = self.retry_base_seconds * 2 ** (self._failure_counts[key] - 1)
+            delay = min(300.0, self.retry_base_seconds * 2 ** min(6, self._failure_counts[key] - 1))
             if keep_retrying:
                 delay = min(delay, FROST_LOCK_RETRY_MAX_SECONDS)
             self._retry_at[key] = now + delay
@@ -2923,7 +2941,8 @@ class ControllerEngine:
             self.last_applied[key] = value
             self.last_applied_at[key] = time.time()
             self.last_write_at = self.last_applied_at[key]
-            self.last_error = None
+            self.command_errors.pop(key, None)
+            self.last_error = next(iter(self.command_errors.values()), None)
             self._failure_counts[key] = 0
             self._retry_at.pop(key, None)
 
