@@ -1,6 +1,6 @@
 # Målingernes alder og prøvekørsel
 
-Fra Pi 1.13.0-rc.3 og HA-integrationen 0.9.0-beta.13 følger alderen på den seneste rapport fra sensoren med hver temperatur-, fugt-, CO₂- og PM2.5-værdi. En ny videresendelse fra HA gør ikke en gammel måling frisk. Alderen tælles videre med Pi'ens monotone ur mellem beskederne.
+Fra den offentlige Pi-beta 1.13.0-beta.1 (samme funktioner som den interne RC3) og HA-integrationen 0.9.0-beta.13 følger alderen på den seneste rapport fra sensoren med hver temperatur-, fugt-, CO₂- og PM2.5-værdi. En ny videresendelse fra HA gør ikke en gammel måling frisk. Alderen tælles videre med Pi'ens monotone ur mellem beskederne.
 
 En enkelt måling udløber efter tre timer. Det er en forsigtig grænse, som også passer til batterisensorer, der kun rapporterer ved ændringer, og følger den eksisterende temperaturgrænse. Den enkelte værdi udelades fra reguleringen; rummets øvrige friske værdier kan stadig bruges. HA-forbindelsens eksisterende korte lease gælder samtidig. Uden HA falder Smart Auto tilbage til Local Auto.
 

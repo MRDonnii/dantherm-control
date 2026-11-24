@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.13.0-beta.1 — First public beta
+
+- Publish the validated RC1–RC3 changes on the existing beta channel. The updater and installers recognize `beta.N` tags; runtime code and compiled frontend are unchanged from RC3.
+- Complete cumulative release notes, update requirements, validation and known issues: [1.13.0-beta.1](docs/releases/1.13.0-beta.1.md).
+
 ## 1.13.0-rc.3 — Room measurement ages and Smart Auto demand replay
 
 Complete notes, including the RC1/RC2 changes since 1.12.3: [1.13.0-rc.3 release notes](docs/releases/1.13.0-rc.3.md).
