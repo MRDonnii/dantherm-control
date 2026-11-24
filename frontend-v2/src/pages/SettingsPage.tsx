@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { NAV_KEY, SKIN_KEY, SKIN_PRESETS, readNav, readSkin, type NavPosition, type Skin } from "../lib/appearance";
 import { Activity, DoorOpen, Droplets, Fan, Flame, Gauge, House, Mail, Monitor, Moon, RotateCcw, Save, Scale, ShieldCheck, ShowerHead, Snowflake, Thermometer, Timer, Users, Wind } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -15,7 +15,7 @@ import { AccountPanel } from "../components/AccountPanel";
 import { MailPanel } from "../components/MailPanel";
 import { UsersPanel } from "../components/UsersPanel";
 import "../styles/panels.css";import "../styles/management.css";
-import { usePullRefresh } from "../lib/pullRefresh";
+import { changedKeys, usePullRefresh } from "../lib/pullRefresh";
 
 type Data = Record<string, unknown>;
 type Auth = { csrf?: string | null; enabled?: boolean; username?: string | null };
@@ -254,11 +254,17 @@ export function SettingsPage() {
   // Six steps: gears typed in the step table, saved as level profiles.
   const [sixEdits, setSixEdits] = useState<Record<string, { extract?: number; supply?: number }>>({});
 
-  const refresh = useCallback(async () => {
+  const controllerRef = useRef<Data>(controller);
+  controllerRef.current = controller;
+  // keepDraft: the fields changed but not saved keep their value; everything else is refreshed.
+  const refresh = useCallback(async (keepDraft = false) => {
     const [c, a] = await Promise.all([requestJson<Data>("/api/controller/state?compact=1"), requestJson<Auth>("/api/auth/status")]);
-    setController(c); setForm(c); setAuth(a); setCsrf(a.csrf ?? "");
+    const base = controllerRef.current;
+    setForm(current => keepDraft ? { ...c, ...changedKeys(current, base, CONTROLLER_KEYS) } : c);
+    setController(c); setAuth(a); setCsrf(a.csrf ?? "");
   }, []);
-  usePullRefresh(refresh);
+  const dirty = Object.keys(changedKeys(form, controller, CONTROLLER_KEYS)).length > 0 || Object.keys(sixEdits).length > 0;
+  usePullRefresh(({ keepDraft }) => refresh(keepDraft), { dirty });
   useEffect(() => { void refresh(); }, [refresh]);
 
   const set = (key: string, value: unknown) => setForm(v => ({ ...v, [key]: value }));

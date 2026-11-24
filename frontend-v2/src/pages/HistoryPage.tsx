@@ -11,7 +11,7 @@ import "../styles/history.css";
 import { usePullRefresh } from "../lib/pullRefresh";
 
 type Sample = Record<string, number | null>;
-type HistoryResponse = { range: string; samples: Sample[] };
+type HistoryResponse = { range: string; samples: Sample[]; recording?: { state?: string } };
 type ChangeEvent = { timestamp: number; source: string; changes: Record<string, [unknown, unknown]> };
 
 // Readable names for the settings that are changed most often.
@@ -115,6 +115,7 @@ export function HistoryPage() {
   const [loading, setLoading] = useState(true);
   const [hover, setHover] = useState<number | null>(null);
   const [changes, setChanges] = useState<ChangeEvent[]>([]);
+  const [paused, setPaused] = useState(false);
 
   const refresh = useCallback(async (activeRange: string) => {
     try {
@@ -122,6 +123,7 @@ export function HistoryPage() {
       const now = Math.floor(Date.now() / 1000);
       const seconds = RANGES.find(item => item.value === activeRange)?.seconds ?? 86400;
       setSamples(Array.isArray(result.samples) ? clean(result.samples) : []);
+      setPaused(result.recording?.state === "retrying");
       setWindow({ from: now - seconds, to: now });
       setUpdated(now);
       const state = await requestJson<{ change_log?: ChangeEvent[] }>("/api/controller/state", { timeoutMs: 3500 }).catch(() => null);
@@ -170,9 +172,10 @@ export function HistoryPage() {
           <p>Peg eller tryk på en graf for at se alle værdier på samme tidspunkt.</p>
         </div>
         <div className="overview-status-pills">
-          <div><span className={`status-led ${online ? "" : "warn"}`}/><small>Historik</small><strong>{online ? "Live" : "Afventer"}</strong></div>
+          <div><span className={`status-led ${online && !paused ? "" : "warn"}`}/><small>Historik</small><strong>{!online ? "Afventer" : paused ? "Pause" : "Live"}</strong></div>
         </div>
       </header>
+      {paused && <p className="hx-note" role="status">Historikken optager ikke lige nu (fejl ved skrivning) – nyere data mangler. Den prøver igen af sig selv.</p>}
 
       <div className="hx-toolbar">
         <div className="pro-segment history-range-segment" role="group" aria-label="Periode">

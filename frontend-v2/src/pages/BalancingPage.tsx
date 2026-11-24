@@ -50,17 +50,18 @@ export function BalancingPage() {
   const [openReport, setOpenReport] = useState<Report | null>(null);
   const [previousMode, setPreviousMode] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  // keepDraft: the unsaved project stays; reports, controller and session are refreshed.
+  const load = useCallback(async (keepDraft = false) => {
     const [state, ctrl, auth] = await Promise.all([
       requestJson<{ project: Project; reports: ReportSummary[] }>("/api/balancing"),
       requestJson<Data>("/api/controller/state?compact=1", { timeoutMs: 4000 }),
       requestJson<{ csrf?: string | null }>("/api/auth/status"),
     ]);
     const next = { ...state.project, meta: { ...emptyMeta(), ...state.project.meta } };
-    setSaved(next); setProject(next); setReports(state.reports ?? []); setController(ctrl); setCsrf(auth.csrf ?? "");
+    if (!keepDraft) { setSaved(next); setProject(next); }
+    setReports(state.reports ?? []); setController(ctrl); setCsrf(auth.csrf ?? "");
     requestJson<Data>("/state.json", { timeoutMs: 3000 }).then(setUnitState).catch(() => {});
   }, []);
-  usePullRefresh(() => load().catch(() => undefined));
   useEffect(() => { void load().catch(error => setNotice(`Kunne ikke hente indreguleringen: ${error instanceof Error ? error.message : ""}`)); }, [load, setNotice]);
 
   const excess = Number((controller.balance as { target_excess_percent?: number } | undefined)?.target_excess_percent ?? controller.balance_extract_excess_percent ?? 5);
@@ -73,6 +74,7 @@ export function BalancingPage() {
   const profiles = (controller.profiles ?? {}) as Record<string, { supply: number; extract: number }>;
   const profile = level ? profiles[String(level)] ?? null : null;
   const dirty = JSON.stringify(project) !== JSON.stringify(saved);
+  usePullRefresh(({ keepDraft }) => load(keepDraft).catch(() => undefined), { dirty });
   const defaultHeight = project.rooms.at(-1)?.height ?? 2.5;
 
   const setRoom = (id: string, patch: Partial<Room>) => setProject(p => ({ ...p, rooms: p.rooms.map(r => r.id === id ? { ...r, ...patch } : r) }));

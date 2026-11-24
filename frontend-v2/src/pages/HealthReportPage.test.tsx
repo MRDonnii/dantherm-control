@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { HealthReportPage } from "./HealthReportPage";
 import { recordingText } from "./DiagnosticsPage";
@@ -54,4 +54,39 @@ it("describes the room recording, including a pause after a failure", () => {
   expect(recordingText({ available: false, state: "retrying", failures: 2, next_retry_at: 1795540000 })).toMatch(/^Pause efter fejl · prøver igen kl\. .+ \(2 fejl i træk\)$/);
   expect(recordingText({ available: true, state: "recording", recovered_at: 1795540000 })).toMatch(/^Optager · genoptaget kl\./);
   expect(recordingText({})).toBe("Afventer");
+});
+
+const report = (extra: Record<string, unknown> = {}) => ({ generated_at: 1795540000, since: 1794935200, days: 7, total: period, per_day: [],
+  command_errors: { alarms: 0, recent: [], pending_now: [] }, watchdog_restarts: { count: 0, recent: [] },
+  stale: { sensors: { co2: "CO₂" }, alarms: 0, now: [] }, note: "", ...extra });
+
+it("says the data is missing instead of showing 0 gaps when recording is paused", async () => {
+  api.requestJson.mockResolvedValue(report({ total: { ...period, samples: 0, gap_minutes: 0 },
+    data_basis: { state: "paused", ok: false, gaps_known: false, text: "Historikken optager ikke – tallene mangler data", recording: "retrying", next_retry_at: 1795540000, error: "disk I/O error" } }));
+  render(<HealthReportPage/>);
+  expect((await screen.findByRole("alert")).textContent).toContain("Historikken optager ikke – tallene mangler data");
+  const changes = screen.getByRole("article", { name: "Trinskift" });
+  expect(within(changes).getByText("Mangler data")).toBeTruthy();
+  expect(within(changes).queryByText("0 min")).toBeNull();
+});
+
+it("filters the precision by operating mode through the API", async () => {
+  api.requestJson.mockResolvedValue(report({ context: "all", data_basis: { state: "ok", ok: true, gaps_known: true, text: "" } }));
+  render(<HealthReportPage/>);
+  await screen.findByRole("article", { name: "Indblæsning mod målet" });
+  expect(screen.queryByRole("alert")).toBeNull();
+  const select = screen.getByLabelText("Vurder driftstilstand") as HTMLSelectElement;
+  expect(select.value).toBe("all");
+  expect([...select.options].map(option => option.textContent)).toContain("Frostbeskyttelse");
+  expect([...select.options].map(option => option.value)).not.toContain("4");
+  fireEvent.change(select, { target: { value: "1" } });
+  await waitFor(() => expect(api.requestJson).toHaveBeenLastCalledWith("/api/health/weekly?context=1", { timeoutMs: 20000 }));
+});
+
+it("shows a selected HA sensor without data as missing", async () => {
+  api.requestJson.mockResolvedValue(report({ stale: { sensors: { co2: "CO₂" }, alarms: 0, now: [],
+    ha_rooms: { state: "mixed", fresh: false, connection_online: true, fresh_count: 4, stale_count: 0, unknown_age_count: 0, missing_count: 1 } } }));
+  render(<HealthReportPage/>);
+  const stale = await screen.findByRole("article", { name: "For gamle målinger" });
+  expect(within(stale).getByText("4 friske · 1 mangler")).toBeTruthy();
 });

@@ -111,16 +111,17 @@ export function RoomsPage() {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
 
-  const load = useCallback(async () => {
+  // keepDraft: unsaved room edits stay; only the catalog and the session are fetched again.
+  const load = useCallback(async (keepDraft = false) => {
     try {
       const [next, auth] = await Promise.all([
         requestJson<RoomsView>("/api/controller/rooms"),
         requestJson<{ csrf?: string | null }>("/api/auth/status"),
       ]);
-      setView(next); setRooms(next.rooms ?? []); setSaved(JSON.stringify(next.rooms ?? [])); setCsrf(auth.csrf ?? ""); setError("");
+      setView(next); setCsrf(auth.csrf ?? ""); setError("");
+      if (!keepDraft) { setRooms(next.rooms ?? []); setSaved(JSON.stringify(next.rooms ?? [])); }
     } catch (e) { setError(e instanceof Error ? e.message : "Rummene kunne ikke hentes"); }
   }, []);
-  usePullRefresh(load);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     let stop = false;
@@ -134,6 +135,7 @@ export function RoomsPage() {
 
   const catalog = view?.catalog ?? [];
   const dirty = JSON.stringify(rooms) !== saved;
+  usePullRefresh(({ keepDraft }) => load(keepDraft), { dirty });
   const problems = useMemo(() => roomProblems(rooms), [rooms]);
   const maxLevel = Number(state.max_level) || 6;
   const bathroom = { rh: Number(state.bathroom_rh_setpoint) || 65, hysteresis: Number(state.bathroom_rh_hysteresis) || 5, level: Number(state.bathroom_max_level) || maxLevel, maxLevel };

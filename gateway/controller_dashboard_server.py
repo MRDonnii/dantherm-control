@@ -24,7 +24,7 @@ from controller_token import ControllerTokenStore
 from control_replay import (REPLAY_BUSY_TEXT, REPLAY_LOCK, learned_steps, replay_afterheat, replay_local_auto,
                             replay_smart_auto)
 from diagnostics import WATCHDOG_RESTART_FILE, read_watchdog_restarts
-from history_analysis import HEALTH_DAYS, HEALTH_FIELDS, SCALE_FIELDS, afterheat_scale, weekly_health
+from history_analysis import HEALTH_CONTEXTS, HEALTH_DAYS, HEALTH_FIELDS, SCALE_FIELDS, afterheat_scale, weekly_health
 from control_history import ControlHistory
 from api_keys import ApiKeyStore, SCOPE_LABELS
 from event_log import ALARM_KINDS, EventLog
@@ -159,7 +159,7 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
         except Exception as error:
             LOG.warning("Control replay recording skipped: %s", error)
 
-    def weekly_health(self, now: float | None = None) -> dict:
+    def weekly_health(self, now: float | None = None, context: str = "all") -> dict:
         """The read-only weekly health report (history, alarm log, watchdog restarts)."""
         now = time.time() if now is None else now
         runtime = self.controller_runtime
@@ -172,7 +172,8 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
             controller = {}
         return weekly_health(self.history.rows(HEALTH_DAYS * 86400, HEALTH_FIELDS, markers=True, now=now),
                              events=self.events.list(kinds=ALARM_KINDS, limit=500), restarts=restarts,
-                             controller=controller, now=now)
+                             controller=controller, now=now, context=context,
+                             history=self.history.status())
 
     def afterheat_replay(self, settings: dict, seconds: int, patch: dict) -> dict:
         """Replay the Pi afterheat control on stored minutes; pure simulation (see control_replay)."""
@@ -403,7 +404,8 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                         self._json(dashboard.controller_runtime.rooms_view())
                 elif parsed.path == "/api/controller/state":
                     self._json(self._controller_state({**dashboard.controller_runtime.snapshot(), **dashboard.ha_link(),
-                        "smart_replay_history": dashboard.control_history.status()}, parsed))
+                        "smart_replay_history": dashboard.control_history.status(),
+                        "history_recording": dashboard.history.status()}, parsed))
                 elif parsed.path in ("/state.json", "/api"):
                     self._json({**dashboard.snapshot(), **dashboard.ha_link(),
                                 "weather": dashboard.controller_runtime.weather_snapshot()})
@@ -418,13 +420,17 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                     self._json(afterheat_scale(dashboard.history.rows(hours * 3600, SCALE_FIELDS), hours))
                 elif parsed.path == "/api/health/weekly":
                     if self._require("diagnostics") is not None:
-                        self._json(dashboard.weekly_health())
+                        context = parse_qs(parsed.query).get("context", ["all"])[0]
+                        if context not in HEALTH_CONTEXTS:
+                            return self._json_error(400, "Ugyldig driftstilstand")
+                        self._json(dashboard.weekly_health(context=context))
                 elif parsed.path == "/api/diagnostics/report":
                     if self._require("diagnostics") is not None:
                         self._diagnostic_report()
                 elif parsed.path == "/history.json":
                     name = parse_qs(parsed.query).get("range", ["24h"])[0]
-                    self._json({"range": name, "samples": dashboard.history.query(name)})
+                    self._json({"range": name, "samples": dashboard.history.query(name),
+                                "recording": dashboard.history.status()})
                 elif parsed.path.startswith("/assets/"):
                     name = Path(parsed.path).name
                     target = dashboard.web_root / name

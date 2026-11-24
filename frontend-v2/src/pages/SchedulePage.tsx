@@ -32,6 +32,11 @@ function clock(epoch: number) {
 }
 function periodName(period: Period) { return period.label || `${period.start}–${period.end}`; }
 
+/** The holiday form as the controller has it saved. */
+function vacationForm(next: Data) {
+  return { enabled: next.vacation_enabled === true, from: toLocalInput(next.vacation_from), until: toLocalInput(next.vacation_until), level: num(next.vacation_level, 1) };
+}
+
 export function SchedulePage() {
   const { setNotice } = useTopbarNotice();
   const [controller, setController] = useState<Data>({});
@@ -48,26 +53,29 @@ export function SchedulePage() {
   // Holiday form
   const [vacation, setVacation] = useState({ enabled: false, from: "", until: "", level: 1 });
 
-  const apply = useCallback((next: Data) => {
+  // keepDraft: the week plan, its switch and the holiday form stay as edited; the rest is refreshed.
+  const apply = useCallback((next: Data, keepDraft = false) => {
     setController(next);
+    if (keepDraft) return;
     const week = cloneWeek(next.schedule_periods as WeekPeriods | undefined);
     setSaved(week); setDraft(week);
     setEnabled(next.schedule_enabled === true);
-    setVacation({ enabled: next.vacation_enabled === true, from: toLocalInput(next.vacation_from), until: toLocalInput(next.vacation_until), level: num(next.vacation_level, 1) });
+    setVacation(vacationForm(next));
   }, []);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (keepDraft = false) => {
     const [state, auth] = await Promise.all([
       requestJson<Data>("/api/controller/state?compact=1", { timeoutMs: 4000 }),
       requestJson<{ csrf?: string | null }>("/api/auth/status", { timeoutMs: 3500 }),
     ]);
-    apply(state); setCsrf(auth.csrf ?? "");
+    apply(state, keepDraft); setCsrf(auth.csrf ?? "");
   }, [apply]);
-  usePullRefresh(() => refresh().catch(() => setNotice("Kunne ikke hente ugeplanen.")));
   useEffect(() => { void refresh().catch(() => setNotice("Kunne ikke hente ugeplanen.")); }, [refresh, setNotice]);
   useEffect(() => { const timer = window.setInterval(() => setNow(new Date()), 30000); return () => window.clearInterval(timer); }, []);
 
   const dirty = !sameWeek(draft, saved) || enabled !== (controller.schedule_enabled === true);
+  const vacationDirty = JSON.stringify(vacation) !== JSON.stringify(vacationForm(controller));
+  usePullRefresh(({ keepDraft }) => refresh(keepDraft).catch(() => setNotice("Kunne ikke hente ugeplanen.")), { dirty: dirty || vacationDirty });
   const rows = useMemo(() => segments(draft), [draft]);
   const today = (now.getDay() + 6) % 7;
   const nowMinutes = now.getHours() * 60 + now.getMinutes();

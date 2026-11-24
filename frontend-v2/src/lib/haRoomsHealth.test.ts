@@ -28,3 +28,13 @@ it("still reads an older gateway that only sends fresh", () => {
   expect(haRoomsStatus({ fresh: false })).toEqual({ value: "Mangler eller for gammel", tone: "warn" });
   expect(haRoomsStatus(undefined)).toEqual({ value: "Mangler eller for gammel", tone: "warn" });
 });
+
+it("shows a selected HA sensor without data as missing and never as fresh", () => {
+  expect(haRoomsStatus({ state: "mixed", fresh: false, connection_online: true, fresh_count: 4, stale_count: 0, unknown_age_count: 0, missing_count: 1 }))
+    .toEqual({ value: "4 friske · 1 mangler", tone: "warn" });
+  expect(haRoomsStatus({ state: "missing", fresh: false, connection_online: true, fresh_count: 0, stale_count: 0, unknown_age_count: 0, missing_count: 2 }))
+    .toEqual({ value: "2 mangler", tone: "warn" });
+  // No sensor selected stays neutral, and an older gateway without the count is unchanged.
+  expect(haRoomsStatus({ state: "no_measurements", fresh: null, missing_count: 0 })).toEqual({ value: "Ingen målinger", tone: "neutral" });
+  expect(haRoomsStatus({ state: "fresh", fresh: true, fresh_count: 2, stale_count: 0, unknown_age_count: 0 })).toEqual({ value: "2 friske", tone: "ok" });
+});

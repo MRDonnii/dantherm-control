@@ -2,8 +2,9 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { ArrowDown, RefreshCw } from "lucide-react";
 import { PULL_THRESHOLD, pageScrollTop, pullDistance, runPullRefresh, touchHandledElsewhere } from "../lib/pullRefresh";
 
-type PullState = "idle" | "pulling" | "ready" | "refreshing";
-const LABEL: Record<PullState, string> = { idle: "", pulling: "Træk for at opdatere", ready: "Slip for at opdatere", refreshing: "Opdaterer…" };
+type PullState = "idle" | "pulling" | "ready" | "refreshing" | "kept";
+const LABEL: Record<PullState, string> = { idle: "", pulling: "Træk for at opdatere", ready: "Slip for at opdatere", refreshing: "Opdaterer…",
+  kept: "Ugemte ændringer er bevaret" };
 
 /** Træk ned for at opdatere på telefonen, også som hjemmeskærm-app hvor iOS ikke selv har det. Kun berøring. */
 export function PullToRefresh({ reload }: { reload?: () => void }) {
@@ -47,8 +48,15 @@ export function PullToRefresh({ reload }: { reload?: () => void }) {
       setState("refreshing");
       setPull(PULL_THRESHOLD * 0.8);
       const started = Date.now();
-      void runPullRefresh(reload).finally(() => {
-        window.setTimeout(() => { busy.current = false; setState("idle"); setPull(0); }, Math.max(0, 500 - (Date.now() - started)));
+      let result: Awaited<ReturnType<typeof runPullRefresh>> = "data";
+      void runPullRefresh(reload).then(value => { result = value; }).finally(() => {
+        const done = () => { busy.current = false; setState("idle"); setPull(0); };
+        window.setTimeout(() => {
+          if (result !== "kept") { done(); return; }
+          // Say so when a page kept its unsaved changes instead of reloading them.
+          setState("kept");
+          window.setTimeout(done, 1800);
+        }, Math.max(0, 500 - (Date.now() - started)));
       });
     };
     const onCancel = () => { if (pulling) { setState("idle"); setPull(0); } reset(); };
@@ -67,7 +75,7 @@ export function PullToRefresh({ reload }: { reload?: () => void }) {
   if (state === "idle") return null;
   const style = { "--ptr-pull": `${pull}px`, "--ptr-opacity": String(Math.min(1, pull / 40)) } as CSSProperties;
   return <div className="ptr-indicator" data-state={state} role="status" aria-live="polite" style={style}>
-    {state === "refreshing" ? <RefreshCw size={16}/> : <ArrowDown size={16}/>}
+    {state === "refreshing" || state === "kept" ? <RefreshCw size={16}/> : <ArrowDown size={16}/>}
     <span>{LABEL[state]}</span>
   </div>;
 }

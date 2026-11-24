@@ -38,7 +38,18 @@ HEALTH_FIELDS = ("heating_coil_after_temperature", "afterheat_target", "afterhea
 HEALTH_DAYS = 7
 IN_BAND_K = 0.5
 # The combined HA-room status that the weekly report repeats.
-HA_ROOMS_KEYS = ("state", "fresh", "connection_online", "fresh_count", "stale_count", "unknown_age_count")
+HA_ROOMS_KEYS = ("state", "fresh", "connection_online", "fresh_count", "stale_count", "unknown_age_count",
+                 "missing_count", "missing_rooms_count")
+# Operating-mode filter of the afterheat precision (operating_context.afterheat_context values,
+# as the History page's "Vurder driftstilstand"); "unknown" = older or mixed data.
+HEALTH_CONTEXTS = ("all", *(str(value) for value in range(9)), "unknown")
+# What the report says when its data basis is missing or recording is paused.
+DATA_BASIS_TEXT = {
+    "ok": "",
+    "paused": "Historikken optager ikke – tallene mangler data",
+    "unreadable": "Historikken kunne ikke læses – tallene mangler data",
+    "missing": "Ingen gemte målinger i perioden – tallene mangler data",
+}
 # Sensors with a freshness marker in the history and their Danish names.
 STALE_SENSORS = {
     "supply_temp": "Indblæsning (T2AH)",
@@ -180,9 +191,30 @@ def _hour(ts: float) -> str:
     return time.strftime("%Y-%m-%d %H", time.localtime(ts))
 
 
+def _next_midnight(ts: float) -> float:
+    day = time.localtime(ts)
+    return time.mktime((day.tm_year, day.tm_mon, day.tm_mday + 1, 0, 0, 0, 0, 0, -1))
+
+
+def _add_gap(total: "_Period", per_day: dict, start: float, end: float) -> None:
+    """A gap from ``start`` to ``end`` counts in full in the total and is split over the days it spans."""
+    total.gap_minutes += (end - start) / 60
+    while start < end:
+        stop = min(end, max(_next_midnight(start), start + 1))
+        per_day[_day(start)].gap_minutes += (stop - start) / 60
+        start = stop
+
+
+def row_context(row: dict) -> str:
+    """The recorded operating mode of one sample as a HEALTH_CONTEXTS key."""
+    value = _number(row.get("afterheat_context"))
+    return str(int(value)) if value is not None and value.is_integer() and 0 <= value <= 8 else "unknown"
+
+
 class _Period:
     def __init__(self) -> None:
         self.samples = 0
+        self.context_samples = 0
         self.gap_minutes = 0.0
         self.errors: list[float] = []
         self.air: list[float] = []
@@ -198,6 +230,7 @@ class _Period:
         hours = self.covered_s / 3600
         return {
             "samples": self.samples,
+            "context_minutes": self.context_samples,
             "gap_minutes": round(self.gap_minutes),
             "supply_minutes": len(errors),
             "target_mean": _mean(self.targets),
@@ -217,8 +250,13 @@ class _Period:
 
 
 def weekly_health(rows: list[dict], *, events: list[dict], restarts: list[dict], controller: dict,
-                  now: float | None = None, days: int = HEALTH_DAYS) -> dict:
+                  now: float | None = None, days: int = HEALTH_DAYS, context: str = "all",
+                  history: dict | None = None) -> dict:
+    """``context`` filters the afterheat precision (spread, min/max, in band, over/undershoot,
+    level changes) by operating mode; samples, gaps, fan changes, stale minutes and alarms
+    are never filtered. ``history`` is HistoryStore.status() for the data basis."""
     now = time.time() if now is None else now
+    context = context if context in HEALTH_CONTEXTS else "all"
     since = now - days * 86400
     total, per_day = _Period(), defaultdict(_Period)
     previous = None
@@ -227,14 +265,17 @@ def weekly_health(rows: list[dict], *, events: list[dict], restarts: list[dict],
         if ts is None or ts < since:
             continue
         periods = (total, per_day[_day(ts)])
+        selected = context == "all" or row_context(row) == context
         for period in periods:
             period.samples += 1
+            period.context_samples += selected
             for key in STALE_SENSORS:
                 if row.get(f"{key}_sample_fresh") == 0:
                     period.stale[key] += 1
         air, target = _number(row.get("heating_coil_after_temperature")), _number(row.get("afterheat_target"))
         active = _number(row.get("afterheat_active"))
-        if air is not None and target is not None and active is not None and active > 0 and row.get("afterheat_context") not in (4, 5):
+        if (selected and air is not None and target is not None and active is not None and active > 0
+                and row.get("afterheat_context") not in (4, 5)):
             for period in periods:
                 period.errors.append(air - target)
                 period.air.append(air)
@@ -242,12 +283,12 @@ def weekly_health(rows: list[dict], *, events: list[dict], restarts: list[dict],
         if previous is not None:
             gap = ts - previous["_ts"]
             if gap > 3 * SAMPLE_GAP_S:
-                for period in periods:
-                    period.gap_minutes += gap / 60
+                _add_gap(total, per_day, previous["_ts"], ts)
             elif 0 < gap <= SAMPLE_GAP_S:
                 level, before = _number(row.get("afterheat_level")), _number(previous.get("afterheat_level"))
                 fan, fan_before = _number(row.get("fan_supply_percent")), _number(previous.get("fan_supply_percent"))
-                if level is not None and before is not None:
+                both_selected = selected and (context == "all" or row_context(previous) == context)
+                if level is not None and before is not None and both_selected:
                     for period in periods:
                         period.covered_s += gap
                         if round(level) != round(before):
@@ -261,14 +302,18 @@ def weekly_health(rows: list[dict], *, events: list[dict], restarts: list[dict],
     last_ts = previous["_ts"] if previous is not None else None
     open_gap_s = now - last_ts if last_ts is not None else 0.0
     if open_gap_s > 3 * SAMPLE_GAP_S:
-        start = last_ts
-        while start < now:
-            end = min(now, start + 60.0)
-            total.gap_minutes += (end - start) / 60
-            per_day[_day(start)].gap_minutes += (end - start) / 60
-            start = end
+        _add_gap(total, per_day, last_ts, now)
     else:
         open_gap_s = 0.0
+    recording = history if isinstance(history, dict) else {}
+    if recording.get("read_error"):
+        basis = "unreadable"
+    elif recording.get("available") is False:
+        basis = "paused"
+    elif not total.samples:
+        basis = "missing"
+    else:
+        basis = "ok"
     command_alarms = [e for e in events if e.get("kind") == "alarm_raised" and e.get("code") == "controller_command_failed"
                       and (_number(e.get("time")) or 0) >= since]
     stale_alarms = [e for e in events if e.get("kind") == "alarm_raised" and e.get("code") == "local_sensor_stale"
@@ -278,23 +323,37 @@ def weekly_health(rows: list[dict], *, events: list[dict], restarts: list[dict],
     sensors = ((controller.get("data_health") or {}).get("sensors") or {}) if isinstance(controller.get("data_health"), dict) else {}
     return {
         "generated_at": round(now), "since": round(since), "days": days,
+        "context": context,
+        # Without stored samples (or with recording paused) the numbers below are not a week:
+        # 0 gaps then means "unknown", not "no gaps".
+        "data_basis": {
+            "state": basis, "ok": basis == "ok", "text": DATA_BASIS_TEXT[basis],
+            "gaps_known": total.samples > 0 and basis in ("ok", "paused"),
+            "recording": recording.get("state"), "next_retry_at": recording.get("next_retry_at"),
+            "error": recording.get("error") or recording.get("read_error"),
+        },
         "total": total.result(),
         "last_sample_age_minutes": round((now - last_ts) / 60, 1) if last_ts is not None else None,
         "open_gap_minutes": round(open_gap_s / 60),
         "per_day": [{"date": day, **period.result()} for day, period in sorted(per_day.items())],
         "command_errors": {
             "alarms": len(command_alarms),
-            "recent": [{"time": e.get("time"), "text": e.get("text")} for e in command_alarms[-10:]],
+            # The ten newest, newest first (whatever order the event log hands them in).
+            "recent": [{"time": e.get("time"), "text": e.get("text")}
+                       for e in sorted(command_alarms, key=lambda e: _number(e.get("time")) or 0, reverse=True)[:10]],
             "pending_now": sorted(pending),
         },
         "watchdog_restarts": {
             "count": len(week_restarts),
-            "recent": [{"at": r.get("at"), "reason": r.get("reason")} for r in week_restarts[-10:]],
+            "recent": [{"at": r.get("at"), "reason": r.get("reason")}
+                       for r in sorted(week_restarts, key=lambda r: _number(r.get("at")) or 0, reverse=True)[:10]],
         },
         "stale": {
             "sensors": STALE_SENSORS,
             "alarms": len(stale_alarms),
-            "now": sorted(key for key, item in sensors.items() if isinstance(item, dict) and item.get("fresh") is False),
+            # "Too old now"; HA rooms whose only problem is a missing sensor are shown in ha_rooms instead.
+            "now": sorted(key for key, item in sensors.items() if isinstance(item, dict) and item.get("fresh") is False
+                          and not (key == "ha_rooms" and item.get("state") == "missing")),
             # Connection and measurement age are separate; unknown age is not "too old".
             "ha_rooms": {key: sensors["ha_rooms"].get(key) for key in HA_ROOMS_KEYS}
             if isinstance(sensors.get("ha_rooms"), dict) and "state" in sensors["ha_rooms"] else None,

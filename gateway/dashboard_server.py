@@ -47,30 +47,59 @@ def classify_boot_mode(cmdline: str) -> str:
         return "Lokal disk/SD"
     return "Andet"
 
+# After a failed history write the next attempt waits this long, doubling up to the maximum
+# (as control_history.ControlHistory), so a disk that works again is picked up by itself.
+HISTORY_RETRY_FIRST_SECONDS = 60
+HISTORY_RETRY_MAX_SECONDS = 30 * 60
+
 class HistoryStore:
-    """Bounded sample history. Optional: any failure disables it without
-    ever taking down the controller, RS485, WebUI or auth."""
+    """Bounded sample history. Optional: a failure never takes down the controller,
+    RS485, WebUI or auth. A failed write pauses recording; it is retried with growing
+    pauses and resumes by itself (the table is recreated if the file was deleted)."""
     def __init__(self, path: str | Path, retention_days: int = 30, sample_seconds: int = 60):
         self.path, self.retention_seconds = Path(path), max(1, retention_days) * 86400
         self.sample_seconds, self.lock, self.last_sample = max(10, sample_seconds), threading.Lock(), 0.0
         self.available, self.error = False, None
+        self.ready = False  # the table has been created at least once
+        self.failures, self.failed_at, self.retry_at, self.recovered_at = 0, None, None, None
+        self.last_recorded_at: float | None = None
+        self.read_error: str | None = None
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self._connect() as db:
-                columns = ",".join(f'"{field}" REAL' for field in HISTORY_FIELDS)
-                db.execute(f"CREATE TABLE IF NOT EXISTS samples (ts INTEGER PRIMARY KEY,{columns})")
-                existing = {row[1] for row in db.execute("PRAGMA table_info(samples)")}
-                for field in (*HISTORY_FIELDS, *HISTORY_SENSOR_MARKERS.values()):
-                    if field not in existing: db.execute(f'ALTER TABLE samples ADD COLUMN "{field}" REAL')
+            self._prepare()
             self.available = True
         except (OSError, sqlite3.Error) as error:
-            self.error = str(error)
-            LOGGER.warning("History disabled: %s", error)
+            self._fail(error, time.time())
+    def _prepare(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as db:
+            columns = ",".join(f'"{field}" REAL' for field in HISTORY_FIELDS)
+            db.execute(f"CREATE TABLE IF NOT EXISTS samples (ts INTEGER PRIMARY KEY,{columns})")
+            existing = {row[1] for row in db.execute("PRAGMA table_info(samples)")}
+            for field in (*HISTORY_FIELDS, *HISTORY_SENSOR_MARKERS.values()):
+                if field not in existing: db.execute(f'ALTER TABLE samples ADD COLUMN "{field}" REAL')
+        self.ready = True
+    def _fail(self, error: Exception, now: float) -> None:
+        """Pause recording until the next retry; only the first failure in a row is logged."""
+        self.failures += 1
+        self.available, self.error, self.failed_at = False, str(error), now
+        self.retry_at = now + min(HISTORY_RETRY_MAX_SECONDS, HISTORY_RETRY_FIRST_SECONDS * 2 ** min(self.failures - 1, 16))
+        if self.failures == 1: LOGGER.warning("History recording paused, retrying automatically: %s", error)
+        else: LOGGER.debug("History recording still failing (%d): %s", self.failures, error)
+    def _retry_due(self, now: float) -> bool:
+        # A clock set back never postpones the retry.
+        return self.retry_at is None or now >= self.retry_at or (self.failed_at is not None and now < self.failed_at)
+    def status(self) -> dict[str, object]:
+        """Recording status for diagnostics and the weekly report (same shape as ControlHistory)."""
+        return {"available": self.available, "state": "recording" if self.available else "retrying",
+                "error": self.error, "failures": self.failures, "last_failure_at": self.failed_at,
+                "next_retry_at": None if self.available else self.retry_at, "recovered_at": self.recovered_at,
+                "last_recorded_at": self.last_recorded_at, "read_error": self.read_error,
+                "sample_seconds": self.sample_seconds, "retention_days": self.retention_seconds // 86400}
     def _connect(self): return sqlite3.connect(self.path, timeout=3)
     def record(self, state: dict[str, object], now: float | None = None) -> None:
-        if not self.available: return
         now = now or time.time()
-        if now - self.last_sample < self.sample_seconds: return
+        if not self.available and not self._retry_due(now): return
+        if 0 <= now - self.last_sample < self.sample_seconds: return
         sample_freshness = {
             field: int(local_sensor_value(state, field) is not None)
             for field in HISTORY_SENSOR_MARKERS
@@ -85,14 +114,21 @@ class HistoryStore:
         all_fields = (*HISTORY_FIELDS, *HISTORY_SENSOR_MARKERS.values())
         values.extend(sample_freshness[field] for field in HISTORY_SENSOR_MARKERS)
         timestamp = int(now); placeholders = ",".join("?" for _ in range(len(all_fields) + 1)); columns = ",".join(["ts", *(f'"{field}"' for field in all_fields)])
-        try:
-            with self.lock, self._connect() as db:
-                db.execute(f"INSERT OR REPLACE INTO samples ({columns}) VALUES ({placeholders})", [timestamp, *values])
-                db.execute("DELETE FROM samples WHERE ts < ?", (timestamp - self.retention_seconds,))
-            self.last_sample = now
-        except (OSError, sqlite3.Error) as error:
-            self.available, self.error = False, str(error)
-            LOGGER.warning("History write failed, disabling: %s", error)
+        with self.lock:
+            if not self.available and not self._retry_due(now): return
+            try:
+                # A retry, or a file deleted underneath us, recreates the table first.
+                if not self.ready or not self.available or not self.path.exists(): self._prepare()
+                with self._connect() as db:
+                    db.execute(f"INSERT OR REPLACE INTO samples ({columns}) VALUES ({placeholders})", [timestamp, *values])
+                    db.execute("DELETE FROM samples WHERE ts < ?", (timestamp - self.retention_seconds,))
+                self.last_sample = self.last_recorded_at = now
+                if not self.available:
+                    LOGGER.warning("History recording resumed after %d failed attempt(s)", self.failures)
+                    self.recovered_at = now
+                self.available, self.error, self.failures, self.retry_at = True, None, 0, None
+            except (OSError, sqlite3.Error) as error:
+                self._fail(error, now)
     @staticmethod
     def _fresh_column(field: str) -> str:
         """SQL for a field; a sample recorded as stale reads as NULL."""
@@ -105,10 +141,11 @@ class HistoryStore:
     def rows(self, seconds: int, fields: tuple[str, ...], *, markers: bool = False, now: float | None = None) -> list[dict[str, object]]:
         """Raw one-minute samples (oldest first) of the last ``seconds`` for analyses.
 
-        Read-only: unlike a failed write, a failed read never disables the history.
+        Read-only: a failed read never pauses the recording; ``read_error`` tells.
+        Stored rows stay readable while recording is paused.
         With ``markers`` the freshness markers come along as recorded (1, 0 or None).
         """
-        if not self.available: return []
+        if not self.ready: return []
         known = (*HISTORY_FIELDS, *HISTORY_SENSOR_MARKERS.values())
         fields = tuple(field for field in fields if field in HISTORY_FIELDS)
         extra = tuple(HISTORY_SENSOR_MARKERS.values()) if markers else ()
@@ -121,8 +158,10 @@ class HistoryStore:
                 db.row_factory = sqlite3.Row
                 rows = db.execute(f"SELECT {columns} FROM samples WHERE ts >= ? AND ts <= ? ORDER BY ts", (since, until)).fetchall()
         except (OSError, sqlite3.Error) as error:
-            LOGGER.warning("History analysis read failed: %s", error)
+            if self.read_error is None: LOGGER.warning("History analysis read failed: %s", error)
+            self.read_error = str(error)
             return []
+        self.read_error = None
         return [dict(row) for row in rows]
     # Fields whose spread inside a bucket is worth showing (min/max band).
     HISTORY_SPREAD_FIELDS = ("heating_coil_after_temperature",)
@@ -134,7 +173,7 @@ class HistoryStore:
         mean, gives afterheat_active as the share of time the valve was open,
         and HISTORY_SPREAD_FIELDS also get their min/max per bucket.
         """
-        if not self.available: return []
+        if not self.ready: return []
         span = RANGES.get(range_name, RANGES["24h"])
         since = int(time.time()) - span
         bucket = max(self.sample_seconds, -(-span // self.MAX_POINTS))
@@ -153,9 +192,11 @@ class HistoryStore:
                 db.row_factory = sqlite3.Row
                 rows = db.execute(sql, (since, bucket)).fetchall()
         except (OSError, sqlite3.Error) as error:
-            self.available, self.error = False, str(error)
-            LOGGER.warning("History read failed, disabling: %s", error)
+            # A failed read never pauses the recording (the next write tells if the disk is gone).
+            if self.read_error is None: LOGGER.warning("History read failed: %s", error)
+            self.read_error = str(error)
             return []
+        self.read_error = None
         samples = []
         for row in rows:
             sample = {key: row[key] for key in row.keys()}
@@ -351,7 +392,7 @@ class DashboardHttpServer:
                 elif parsed.path in ("/state.json", "/api"): self._json(dashboard.snapshot())
                 elif parsed.path == "/api/diagnostics/report": self._diagnostic_report()
                 elif parsed.path == "/history.json":
-                    name = parse_qs(parsed.query).get("range", ["24h"])[0]; self._json({"range": name, "samples": dashboard.history.query(name), "available": dashboard.history.available, "error": dashboard.history.error})
+                    name = parse_qs(parsed.query).get("range", ["24h"])[0]; self._json({"range": name, "samples": dashboard.history.query(name), "available": dashboard.history.available, "error": dashboard.history.error, "recording": dashboard.history.status()})
                 elif parsed.path.startswith("/assets/"):
                     target = dashboard.web_root / Path(parsed.path).name; content_type = ASSET_TYPES.get(target.suffix); self._file(target, content_type) if content_type else self.send_error(404)
                 else: self.send_error(404)

@@ -91,6 +91,11 @@ class ControllerRuntime:
         self._last_master = self.master.master
 
         self.smart_rooms: dict[str, dict[str, object]] = {}
+        # Selected HA sensors without data in the latest room message (status only, never control):
+        # per room the kinds HA reported as missing ("missing_sensors", integration 0.9.0-beta.15+)
+        # plus set-up rooms with selected sensors that the message left out entirely.
+        self.smart_missing_sensors: dict[str, list[str]] = {}
+        self.smart_missing_rooms: list[str] = []
         # Home Assistant's areas and their sensors (POST /api/controller/ha-catalog),
         # for the sensor pickers on the WebUI page "Rum". Kept in memory; HA resends it.
         self.ha_catalog: list[dict[str, object]] = []
@@ -347,6 +352,41 @@ class ControllerRuntime:
             "actual_afterheat_level": level,
             "actual_afterheat_valve_percent": int(max(0, min(100, round(float(level) * 10)))),
         }
+
+    MAX_MISSING_SENSORS = 8
+
+    @classmethod
+    def _missing_sensor_kinds(cls, raw: object) -> list[str]:
+        """The optional ``missing_sensors`` list of a room, validated: known kinds only,
+        no duplicates, at most MAX_MISSING_SENSORS items read. Anything else means "none"."""
+        if not isinstance(raw, (list, tuple)):
+            return []
+        kinds: list[str] = []
+        for item in list(raw)[:cls.MAX_MISSING_SENSORS]:
+            if not isinstance(item, str) or len(item) > 16:
+                continue
+            kind = "pm25" if item == "pm2_5" else item
+            if kind in room_setup.SENSOR_KINDS and kind not in kinds:
+                kinds.append(kind)
+        return [kind for kind in room_setup.SENSOR_KINDS if kind in kinds]
+
+    @staticmethod
+    def _missing_setup_rooms(setup: dict[str, dict[str, object]], sanitized: dict[str, dict[str, object]],
+                             missing: dict[str, list[str]]) -> tuple[dict[str, list[str]], list[str]]:
+        """Add set-up rooms with selected sensors that the HA message left out (HA sends no
+        room whose selected sensors all lack data). Off and excluded rooms never count;
+        a room without selected sensors is neutral."""
+        result, absent = dict(missing), []
+        for room in setup.values():
+            if room.get("type") == "excluded" or room.get("enabled") is False:
+                continue
+            sensors = room.get("sensors") if isinstance(room.get("sensors"), dict) else {}
+            selected = [kind for kind in room_setup.SENSOR_KINDS if sensors.get(kind)]
+            name = str(room.get("name"))
+            if selected and name not in sanitized:
+                result[name] = selected
+                absent.append(name)
+        return result, sorted(absent)
 
     def _room_setup(self) -> dict[str, dict[str, object]]:
         """The rooms set up on the WebUI page "Rum", keyed by folded name."""
@@ -824,6 +864,7 @@ class ControllerRuntime:
         now = time.time()
         setup = self._room_setup()
         sanitized: dict[str, dict[str, object]] = {}
+        missing: dict[str, list[str]] = {}
         for raw_name, raw_values in rooms.items():
             if not isinstance(raw_values, dict):
                 raise ControllerError(f"Rum {raw_name!s} skal være et objekt")
@@ -900,6 +941,10 @@ class ControllerRuntime:
                 values["co2"] = round(co2, 0)
             if pm25 is not None:
                 values["pm25"] = round(pm25, 1)
+            reported = self._missing_sensor_kinds(raw_values.get("missing_sensors"))
+            reported = [kind for kind in reported if kind not in values]
+            if reported and enabled:
+                missing[name] = reported
             if not any(key in values for key in ("temperature", "humidity", "co2", "pm25")):
                 if mapped is not None or "presence" in raw_values:
                     # A set-up room whose sensors are down right now, or a room an older
@@ -917,6 +962,7 @@ class ControllerRuntime:
             sanitized[name] = values
 
         self.smart_rooms = sanitized
+        self.smart_missing_sensors, self.smart_missing_rooms = self._missing_setup_rooms(setup, sanitized, missing)
         self.smart_inputs_received_at = now
         self.smart_inputs_received_monotonic = time.monotonic()
         self.smart_inputs_valid_for = valid_for
@@ -1217,6 +1263,8 @@ class ControllerRuntime:
             "smart_inputs_valid_for_seconds": self.smart_inputs_valid_for,
             "smart_rooms": rooms,
             "smart_ha_rooms": self.smart_rooms,
+            "smart_missing_sensors": self.smart_missing_sensors,
+            "smart_missing_rooms": self.smart_missing_rooms,
             "smart_room_quality": self._room_quality()[1],
             "smart_demand": self.smart_demand if fresh else "stale",
             "smart_requested_level": self.smart_requested_level if fresh else None,

@@ -1,14 +1,18 @@
 import { useEffect, useRef } from "react";
 
 /** "Træk ned for at opdatere": sider melder her, hvordan de henter deres data igen.
- *  Har den viste side ingen, genindlæses hele siden (location.reload). */
-type Handler = { current: () => unknown };
+ *  Har den viste side ingen, genindlæses hele siden (location.reload).
+ *  En side med ugemte ændringer melder `dirty`; så kaldes dens funktion med `keepDraft: true`
+ *  og henter kun det, der ikke er kladden. Ugemte ændringer går aldrig tabt ved et træk. */
+export type PullRefreshContext = { keepDraft: boolean };
+type Entry = { refresh: (context: PullRefreshContext) => unknown; dirty: boolean };
+type Handler = { current: Entry };
 const handlers = new Set<Handler>();
 
 /** Kaldes af en side eller et kort med den funktion, der henter deres data igen. Den nyeste udgave bruges altid. */
-export function usePullRefresh(refresh: () => unknown) {
-  const ref = useRef(refresh);
-  ref.current = refresh;
+export function usePullRefresh(refresh: (context: PullRefreshContext) => unknown, options: { dirty?: boolean } = {}) {
+  const ref = useRef<Entry>({ refresh, dirty: options.dirty === true });
+  ref.current = { refresh, dirty: options.dirty === true };
   useEffect(() => {
     const handler: Handler = ref;
     handlers.add(handler);
@@ -16,10 +20,18 @@ export function usePullRefresh(refresh: () => unknown) {
   }, []);
 }
 
-export async function runPullRefresh(reload: () => void = () => window.location.reload()): Promise<"data" | "reload"> {
+/** "kept" = data hentet, men mindst én side beholdt sine ugemte ændringer. */
+export async function runPullRefresh(reload: () => void = () => window.location.reload()): Promise<"data" | "kept" | "reload"> {
   if (!handlers.size) { reload(); return "reload"; }
-  await Promise.allSettled([...handlers].map(handler => Promise.resolve().then(() => handler.current())));
-  return "data";
+  const entries = [...handlers].map(handler => handler.current);
+  await Promise.allSettled(entries.map(entry => Promise.resolve().then(() => entry.refresh({ keepDraft: entry.dirty }))));
+  return entries.some(entry => entry.dirty) ? "kept" : "data";
+}
+
+/** The keys whose draft value differs from the saved one (compared as JSON). */
+export function changedKeys<T extends Record<string, unknown>>(draft: T, saved: T, keys: readonly string[]): Partial<T> {
+  return Object.fromEntries(keys.filter(key => draft[key] !== undefined && JSON.stringify(draft[key]) !== JSON.stringify(saved[key]))
+    .map(key => [key, draft[key]])) as Partial<T>;
 }
 
 /** Berøringer, som et andet element selv bruger: felter, skydere, grafer, dialoger, menuer og alt der kan rulle. */

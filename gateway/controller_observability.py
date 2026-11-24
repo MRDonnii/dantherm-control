@@ -96,16 +96,33 @@ class ControllerObservability:
                 if item.get("state") in counts:
                     counts[item["state"]] += 1
                 used += item.get("used") is True
+        # Selected in HA (or in the room setup) but without data in the latest message: the
+        # optional per-room "missing_sensors" (integration 0.9.0-beta.15+) and set-up rooms the
+        # message left out. Older integrations send neither, which reads as none missing. Only
+        # counted while the connection is up; offline already says it all.
+        reported = snapshot.get("smart_missing_sensors")
+        reported = reported if isinstance(reported, dict) and online else {}
+        missing_rooms = snapshot.get("smart_missing_rooms")
+        missing_rooms = [name for name in missing_rooms if name in reported] if isinstance(missing_rooms, list) else []
+        missing_by_room = {str(name): kinds for name, kinds in reported.items()
+                           if isinstance(kinds, list) and kinds
+                           and not (isinstance(rooms.get(name), dict) and rooms[name].get("enabled") is False)}
+        missing = sum(len(kinds) for kinds in missing_by_room.values())
         measured = counts["fresh"] + counts["stale"] + counts["unknown_age"]
+        # A selected-but-missing sensor is never fresh: alone it is "missing", together with
+        # fresh, unknown-age or too old measurements it is "mixed".
         if not online:
             state, fresh = "offline", False
             measured += counts["connection_stale"]
-        elif not counted:
+        elif not counted and not missing:
             state, fresh = "no_rooms", None
-        elif not measured:
+        elif not measured and not missing:
             state, fresh = "no_measurements", None
-        elif counts["stale"]:
-            state = "mixed" if counts["fresh"] or counts["unknown_age"] else "stale"
+        elif counts["stale"] or missing:
+            if counts["fresh"] or counts["unknown_age"] or (counts["stale"] and missing):
+                state = "mixed"
+            else:
+                state = "missing" if missing else "stale"
             fresh = False
         elif counts["unknown_age"]:
             state, fresh = "unknown", None
@@ -117,11 +134,14 @@ class ControllerObservability:
             "state": state,
             "connection_online": online,
             "value": len(rooms),
-            "rooms": len(counted),
+            "rooms": len(set(counted) | set(missing_by_room)),
             "measurements": measured,
             "fresh_count": counts["fresh"],
             "stale_count": counts["stale"],
             "unknown_age_count": counts["unknown_age"],
+            "missing_count": missing,
+            "missing_rooms_count": len(missing_rooms),
+            "missing": missing_by_room,
             "used_count": used,
             "source": "home_assistant",
         }
