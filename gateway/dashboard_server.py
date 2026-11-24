@@ -25,7 +25,7 @@ ASSET_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; chars
 AUXILIARY_REFRESH_SECONDS = 5
 PREHEATER_STALE_SECONDS = 60
 RANGES = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000}
-HISTORY_FIELDS = ("humidity", "outdoor_temp", "supply_temp", "extract_temp", "exhaust_temp", "hrc2_t5_temperature", "heating_coil_after_temperature", "heating_coil_frost_temperature", "flow_temperature", "return_temperature", "co2", "fan_supply_rpm", "fan_extract_rpm", "fan_supply_percent", "fan_extract_percent", "heat_recovery_efficiency", "system_cpu_usage_percent", "pi_cpu_temperature", "system_memory_used_percent", "system_load_1m", "afterheat_setpoint", "afterheat_active", "afterheat_level", "afterheat_level_target", "afterheat_level_wanted", "afterheat_target")
+HISTORY_FIELDS = ("humidity", "outdoor_temp", "supply_temp", "extract_temp", "exhaust_temp", "hrc2_t5_temperature", "heating_coil_after_temperature", "heating_coil_frost_temperature", "flow_temperature", "return_temperature", "co2", "fan_supply_rpm", "fan_extract_rpm", "fan_supply_percent", "fan_extract_percent", "heat_recovery_efficiency", "system_cpu_usage_percent", "pi_cpu_temperature", "system_memory_used_percent", "system_load_1m", "afterheat_setpoint", "afterheat_active", "afterheat_level", "afterheat_level_target", "afterheat_level_wanted", "afterheat_target", "afterheat_context")
 HISTORY_SENSOR_MARKERS = {
     "humidity": "humidity_sample_fresh",
     "co2": "co2_sample_fresh",
@@ -113,7 +113,10 @@ class HistoryStore:
                 legacy = f'"{marker}" IS NULL OR ' if field in ("humidity", "co2", "outdoor_temp", "extract_temp", "exhaust_temp") else ""
                 return f'CASE WHEN {legacy}"{marker}" = 1 THEN "{field}" END'
             return f'"{field}"'
-        columns = [f'AVG({value(field)}) AS "{field}"' for field in HISTORY_FIELDS]
+        columns = [
+            (f'CASE WHEN MIN("{field}") = MAX("{field}") AND COUNT("{field}") = COUNT(*) '
+             f'THEN MIN("{field}") END AS "{field}"') if field == "afterheat_context" else
+            f'AVG({value(field)}) AS "{field}"' for field in HISTORY_FIELDS]
         for field in self.HISTORY_SPREAD_FIELDS:
             columns.append(f'MIN({value(field)}) AS "{field}_min"')
             columns.append(f'MAX({value(field)}) AS "{field}_max"')
@@ -213,10 +216,16 @@ class DashboardHttpServer:
                 self._refresh_auxiliary()
                 if self.history_stop.wait(AUXILIARY_REFRESH_SECONDS): return
         def record_history():
-            while not self.history_stop.is_set(): self.history.record(self.snapshot()); self.history_stop.wait(self.history.sample_seconds)
+            while not self.history_stop.is_set():
+                self.history.record(self.snapshot())
+                self.record_additional_history()
+                self.history_stop.wait(self.history.sample_seconds)
         self.history_stop.clear()
         self.refresh_thread = threading.Thread(target=refresh_auxiliary, name="dashboard-refresh", daemon=True); self.refresh_thread.start()
         self.history_thread = threading.Thread(target=record_history, name="dashboard-history", daemon=True); self.history_thread.start()
+    def record_additional_history(self) -> None:
+        """Optional companion history, recorded only by dashboard-history."""
+
     @staticmethod
     def _read(path: str) -> str | None:
         try: return Path(path).read_text(encoding="utf-8").rstrip("\x00\n ") or None

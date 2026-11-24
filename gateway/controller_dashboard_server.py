@@ -21,7 +21,8 @@ from controller_core import ControllerError
 from dashboard_server import ASSET_TYPES, DashboardHttpServer, WEBUI_CSP
 from balancing_store import BalancingError, BalancingStore
 from controller_token import ControllerTokenStore
-from control_replay import replay_local_auto
+from control_replay import replay_local_auto, replay_smart_auto
+from control_history import ControlHistory
 from api_keys import ApiKeyStore, SCOPE_LABELS
 from event_log import ALARM_KINDS, EventLog
 from webui_auth import ROLE_LABELS
@@ -64,6 +65,7 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
     def __init__(self, *args, controller_runtime, **kwargs):
         super().__init__(*args, **kwargs)
         self.controller_runtime = controller_runtime
+        self.control_history = ControlHistory(self.history.path.with_name("controller-inputs.sqlite3"))
         self.tokens = ControllerTokenStore(
             os.getenv("DANTHERM_CONTROLLER_TOKEN_FILE", str(self.auth.path.with_name("controller-token.json"))),
             os.getenv("DANTHERM_CONTROLLER_TOKEN"),
@@ -129,6 +131,14 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
             "ha_link_rejected_at": round(rejected, 1) if rejected else None,
             "ha_link_rejected_ip": self.ha_rejected_ip,
         }
+
+    def record_additional_history(self) -> None:
+        # The regulator is never held up by disk I/O for optional diagnostics.
+        try:
+            if hasattr(self.controller_runtime, "control_observations"):
+                self.control_history.record(self.controller_runtime.control_observations())
+        except Exception as error:
+            LOG.warning("Control replay recording skipped: %s", error)
 
     def reset_base_url(self) -> str:
         configured = self.mail.load().get("base_url")
@@ -348,7 +358,8 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                     if self._require("configure") is not None:
                         self._json(dashboard.controller_runtime.rooms_view())
                 elif parsed.path == "/api/controller/state":
-                    self._json(self._controller_state({**dashboard.controller_runtime.snapshot(), **dashboard.ha_link()}, parsed))
+                    self._json(self._controller_state({**dashboard.controller_runtime.snapshot(), **dashboard.ha_link(),
+                        "smart_replay_history": dashboard.control_history.status()}, parsed))
                 elif parsed.path in ("/state.json", "/api"):
                     self._json({**dashboard.snapshot(), **dashboard.ha_link(),
                                 "weather": dashboard.controller_runtime.weather_snapshot()})
@@ -621,6 +632,12 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                         with dashboard.controller_runtime.config.lock:
                             import copy
                             settings = copy.deepcopy(dashboard.controller_runtime.config.data)
+                        mode = data.get("mode", "local_auto")
+                        if mode == "smart_auto":
+                            samples = dashboard.control_history.query({"1h": 3600, "6h": 21600, "24h": 86400}[name])
+                            return self._json(replay_smart_auto(settings, samples, data.get("settings", {})))
+                        if mode != "local_auto":
+                            return self._json_error(400, "Ugyldig prøvetilstand")
                         return self._json(replay_local_auto(settings, dashboard.history.query(name), data.get("settings", {})))
                     except (ControllerError, TypeError, ValueError) as error:
                         return self._json_error(400, str(error))

@@ -27,6 +27,8 @@ from controller_core import AFTERHEAT_OUTDOOR_CUTOFF_C, ControllerEngine, Contro
 from master_arbitration import MasterArbitrator, RtuFrameStream
 from sensor_freshness import fresh_sensor_value, sensor_sample_age, hide_stale_sensor_values
 from weather_bridge import humidity_at_t1, validate_weather
+from room_quality import quality_rooms, age_observations
+from operating_context import afterheat_context
 
 # Plausible T5 (HRC2 room sensor) range; anything else means no HRC2.
 ROOM_T5_RANGE = (5.0, 40.0)
@@ -64,6 +66,8 @@ class ControllerRuntime:
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.apply_lock = threading.Lock()
+        self._history_fan_pair = None
+        self._history_fan_changed_at: float | None = None
         self.last_tick_at: float | None = None
         self.last_successful_tick_monotonic: float | None = None
         self.loop_error: str | None = None
@@ -90,6 +94,7 @@ class ControllerRuntime:
         self.ha_catalog: list[dict[str, object]] = []
         self.ha_catalog_received_at: float | None = None
         self.smart_inputs_received_at: float | None = None
+        self.smart_inputs_received_monotonic: float | None = None
         self.smart_inputs_valid_for = 180
         self._room_rh_history: dict[str, deque[tuple[float, float]]] = defaultdict(deque)
         # Bathroom drying episodes: peak RH and the RH at which the episode ends.
@@ -302,6 +307,17 @@ class ControllerRuntime:
     def _publish_history_values(self, snapshot: dict[str, object]) -> None:
         for key in self.HISTORY_KEYS:
             self.gateway_state[key] = snapshot.get(key)
+        # Memory-only annotation. No extra polling, file I/O or actuator call.
+        now = time.monotonic()
+        pair = (self.gateway_state.get("fan_extract_percent"), self.gateway_state.get("fan_supply_percent"))
+        if pair != self._history_fan_pair:
+            self._history_fan_pair = pair
+            self._history_fan_changed_at = now
+        self.gateway_state["afterheat_context"] = afterheat_context(
+            snapshot, pi_master=self.master.master == MasterArbitrator.PI,
+            uptime=time.time() - self.engine.started_at,
+            fan_changed=self._history_fan_changed_at is not None and now - self._history_fan_changed_at < 180)
+
 
     # HAC1 register 101 is only trusted while the master polls refresh it.
     AFTERHEAT_LEVEL_MAX_AGE_SECONDS = 30.0
@@ -358,8 +374,39 @@ class ControllerRuntime:
             result[name] = values
         return result
 
+    def _room_now(self) -> float:
+        # Only an isolated replay instance sets this. Live clocks are unchanged.
+        value = getattr(self, "replay_time", None)
+        return float(value) if value is not None else time.time()
+
+    def _room_elapsed(self) -> float:
+        if getattr(self, "replay_time", None) is not None:
+            return max(0.0, self._room_now() - (self.smart_inputs_received_at or self._room_now()))
+        if self.smart_inputs_received_monotonic is not None:
+            return max(0.0, time.monotonic() - self.smart_inputs_received_monotonic)
+        return max(0.0, self._room_now() - (self.smart_inputs_received_at or self._room_now()))
+
+    def _room_quality(self):
+        return quality_rooms(self.smart_rooms, self._room_elapsed(), online=self._smart_inputs_fresh())
+
     def _fresh_ha_rooms(self) -> dict[str, dict[str, object]]:
-        return self._with_room_overrides(self.smart_rooms) if self._smart_inputs_fresh() else {}
+        if not self._smart_inputs_fresh():
+            return {}
+        return self._with_room_overrides(self._room_quality()[0])
+
+    def control_observations(self) -> dict[str, object]:
+        """A read-only memory copy; the dashboard recorder handles disk I/O."""
+        local = self._local_state()
+        with self.engine.lock:
+            external = dict(self.engine.external)
+        return {"rooms": age_observations(self.smart_rooms, self._room_elapsed()),
+                "ha_online": self._smart_inputs_fresh(),
+                "local": {key: local.get(key) for key in (
+                    "humidity", "co2", "outdoor_temp", "extract_temp", "exhaust_temp", "hrc2_t5_temperature")},
+                "external": external,
+                "observed_level": self.config.data.get("effective_level"),
+                "observed_source": self.config.data.get("effective_source")}
+
 
     def _source_room_names(self) -> set[str]:
         """HA rooms used as stove/outdoor sensors, never as indoor air quality."""
@@ -680,7 +727,7 @@ class ControllerRuntime:
     def _smart_inputs_fresh(self, now: float | None = None) -> bool:
         if self.smart_inputs_received_at is None:
             return False
-        now = time.time() if now is None else now
+        now = self._room_now() if now is None else now
         return now - self.smart_inputs_received_at <= self.smart_inputs_valid_for
 
     def _expire_smart_lease(self, now: float | None = None) -> None:
@@ -692,7 +739,7 @@ class ControllerRuntime:
 
     def _rooms_with_unit_sensors(self) -> dict[str, dict[str, object]]:
         """Combine HA rooms with the unit's own local indoor sensors."""
-        combined = self._with_room_overrides(self.smart_rooms)
+        combined = self._fresh_ha_rooms()
         local: dict[str, object] = {
             "enabled": True,
             "control": True,
@@ -817,6 +864,12 @@ class ControllerRuntime:
                     raise ControllerError(f"max_level for {name} skal være 1..{self.config.max_level()}")
                 # 5 and 6 from the six-step controller mean the maximum.
                 values["max_level"] = min(self.config.max_level(), max_level)
+            if raw_values.get("measurement_age_version") == 1:
+                values["measurement_age_version"] = 1
+            for kind in ("temperature", "humidity", "co2", "pm25"):
+                age = self._safe_number(raw_values.get(f"{kind}_age_s"), 0, 10**8)
+                if age is not None:
+                    values[f"{kind}_age_s"] = age
             temp = self._measurement(raw_values, "temperature", -30, 60)
             rh = self._measurement(raw_values, "humidity", 0, 100)
             co2 = self._measurement(raw_values, "co2", 250, 10000)
@@ -831,7 +884,9 @@ class ControllerRuntime:
             if rh is not None:
                 values["humidity"] = round(rh, 2)
                 history = self._room_rh_history[name]
-                history.append((now, rh))
+                clean, _quality = quality_rooms({name: {**values, "humidity": rh}})
+                if clean[name].get("humidity") is not None:
+                    history.append((now, rh))
                 while history and now - history[0][0] > 1800:
                     history.popleft()
             if co2 is not None:
@@ -856,6 +911,7 @@ class ControllerRuntime:
 
         self.smart_rooms = sanitized
         self.smart_inputs_received_at = now
+        self.smart_inputs_received_monotonic = time.monotonic()
         self.smart_inputs_valid_for = valid_for
         decision = self._derive_smart_decision(now)
         self._enforce_air_quality_max(decision)
@@ -952,7 +1008,7 @@ class ControllerRuntime:
     def _derive_smart_decision(
         self, now: float | None = None
     ) -> tuple[int, str, str, str | None, str | None]:
-        now = time.time() if now is None else now
+        now = self._room_now() if now is None else now
         d = self.config.data
         excluded = self._source_room_names()
         rooms = {n: v for n, v in self._rooms_with_unit_sensors().items() if n not in excluded}
@@ -1015,6 +1071,8 @@ class ControllerRuntime:
             if not values.get("enabled", True) or not values.get("control", True):
                 continue
             if self._is_bathroom(name, values):
+                continue
+            if not isinstance(values.get("humidity"), (int, float)):
                 continue
             fresh = [(ts, value) for ts, value in history if now - ts <= 600]
             if len(fresh) >= 2:
@@ -1152,6 +1210,7 @@ class ControllerRuntime:
             "smart_inputs_valid_for_seconds": self.smart_inputs_valid_for,
             "smart_rooms": rooms,
             "smart_ha_rooms": self.smart_rooms,
+            "smart_room_quality": self._room_quality()[1],
             "smart_demand": self.smart_demand if fresh else "stale",
             "smart_requested_level": self.smart_requested_level if fresh else None,
             "smart_target_level": self.engine.current_auto_level if fresh else None,

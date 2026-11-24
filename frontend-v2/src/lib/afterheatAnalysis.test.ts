@@ -17,4 +17,13 @@ describe("Observed afterheat performance", () => {
     expect(afterheatAnalysis(samples).settlingMinutes).toBe(1);
     expect(afterheatAnalysis(samples.slice(0,8)).settlingMinutes).toBeNull();
   });
+  it("separates operating contexts without bridging omitted samples or old data", () => {
+    const samples=[{...row(1000,22),afterheat_context:0},{...row(1060,22),afterheat_context:0},
+      {...row(1120,30),afterheat_context:1},{...row(1180,22),afterheat_context:0},
+      {...row(1240,22),afterheat_context:0},row(1300,25),row(1360,25)];
+    const normal=afterheatAnalysis(samples,"0");
+    expect(normal.minutes).toBe(2);expect(normal.overshoot).toBe(0);
+    expect(afterheatAnalysis(samples,"unknown").minutes).toBe(1);
+    expect(afterheatAnalysis(samples,"1").minutes).toBe(0);
+  });
 });

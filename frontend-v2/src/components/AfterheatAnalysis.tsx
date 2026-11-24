@@ -1,13 +1,19 @@
 import "../styles/panels.css";
-import { useMemo } from "react";
-import { afterheatAnalysis, type HeatSample } from "../lib/afterheatAnalysis";
+import { useMemo, useState } from "react";
+import { afterheatAnalysis, AFTERHEAT_CONTEXTS, type HeatSample } from "../lib/afterheatAnalysis";
 import { InfoList } from "./InfoList";
 const value = (n: number | null, unit: string) => n === null ? "Ikke nok data" : `${n.toLocaleString("da-DK", { maximumFractionDigits: 1 })}${unit}`;
 export function AfterheatAnalysis({ samples }: { samples: HeatSample[] }) {
-  const a = useMemo(() => afterheatAnalysis(samples), [samples]);
+  const [context, setContext] = useState("all");
+  const a = useMemo(() => afterheatAnalysis(samples, context), [samples, context]);
   return <article className="surface panel-card" aria-label="Eftervarmeanalyse">
     <div className="pro-card-head compact"><div><h2>Hvor roligt holder eftervarmen målet?</h2>
       <p>Analyse af {value(a.minutes, " min")} med gyldige temperaturer og mål.</p></div></div>
+    <label className="heat-context-select">Vurder driftstilstand
+      <select value={context} onChange={e => setContext(e.target.value)}>
+        {Object.entries(AFTERHEAT_CONTEXTS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+      </select>
+    </label>
     <InfoList rows={[
       { label: "Tid inden for ±0,5 °C", value: value(a.inBandPercent, " %") },
       { label: "Gennemsnitlig afvigelse", value: value(a.meanError, " °C") },
@@ -16,6 +22,6 @@ export function AfterheatAnalysis({ samples }: { samples: HeatSample[] }) {
       { label: "Observerede ventilskift", value: a.minutes ? String(a.observedValveChanges) : "Ikke nok data" },
       { label: "Stabil efter målændring", value: value(a.settlingMinutes, " min") },
     ]}/>
-    <p className="hx-note">Stabil betyder mindst 10 minutter inden for ±0,5 °C. Huller over 5 minutter og slukket eftervarme udelades. Gemte gennemsnit kan skjule korte udsving og ventilskift; analysen er vejledende.</p>
+    <p className="hx-note">Stabil betyder mindst 10 minutter inden for ±0,5 °C. Huller over 5 minutter og slukket eftervarme udelades. Frost, opstart og ændret ventilatortrin kan vurderes hver for sig. Ældre data og blandede intervaller har ukendt driftstilstand. Gemte gennemsnit kan skjule korte udsving og ventilskift; analysen er vejledende.</p>
   </article>;
 }

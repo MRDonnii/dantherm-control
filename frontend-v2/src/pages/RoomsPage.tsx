@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DoorOpen, Plus, RotateCcw, Save, Trash2, Wand2 } from "lucide-react";
+import { RoomSensorQuality, roomQuality, qualityLabel } from "../components/RoomSensorQuality";
 import { postJson, requestJson } from "../lib/api";
 import {
   KIND_LABELS, KIND_UNITS, MAX_ROOMS, PRIORITIES, PRIORITY_LABELS, ROOM_TYPES, SENSOR_KINDS, TYPE_HELP, TYPE_LABELS,
@@ -22,10 +23,11 @@ const numberOrUndefined = (text: string) => (text.trim() === "" ? undefined : Nu
 /** Values the Pi uses for the room right now, as small chips. */
 function LiveChips({ state, room }: { state: State; room: Room }) {
   const live = liveValues(state, room.name);
+  const quality = roomQuality(state, room.name);
   const chips = SENSOR_KINDS.map(kind => [kind, fmt(live?.[kind], kind)] as const).filter(([, text]) => text);
-  if (!chips.length) return <span className="room-live room-live-empty">{room.type === "excluded" ? "Ignoreres" : "Ingen data lige nu"}</span>;
-  return <span className="room-live">{chips.map(([kind, text]) => <span key={kind} className="room-chip" data-kind={kind} title={KIND_LABELS[kind]}>{text}</span>)}
-    {live?.unit_sensor && <span className="room-chip room-chip-unit" title="Udfyldt med anlæggets egen føler">Anlæg</span>}</span>;
+  if (!chips.length) return <><span className="room-live room-live-empty">{room.type === "excluded" ? "Ignoreres" : "Ingen data lige nu"}</span><RoomSensorQuality state={state} name={room.name}/></>;
+  return <><span className="room-live">{chips.map(([kind, text]) => <span key={kind} className="room-chip" data-kind={kind} title={quality[kind] ? `${KIND_LABELS[kind]} · ${qualityLabel(quality[kind])}` : KIND_LABELS[kind]}>{text}</span>)}
+    {live?.unit_sensor && <span className="room-chip room-chip-unit" title="Udfyldt med anlæggets egen føler">Anlæg</span>}</span><RoomSensorQuality state={state} name={room.name}/></>;
 }
 
 function SensorPicker({ kind, room, catalog, onChange }: { kind: SensorKind; room: Room; catalog: CatalogArea[]; onChange: (value: string | null) => void }) {

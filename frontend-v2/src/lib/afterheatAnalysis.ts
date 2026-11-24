@@ -1,6 +1,15 @@
 /** Observed performance; gaps and off periods never count as stable operation. */
 export type HeatSample = Record<string, number | null>;
-export function afterheatAnalysis(samples: HeatSample[]) {
+export const AFTERHEAT_CONTEXTS: Record<string, string> = {
+  all: "Alle driftstilstande", "0": "Normal drift", "1": "Frostbeskyttelse", "2": "Opstart",
+  "3": "Boost", "4": "Eftervarme slukket", "5": "Køling", "6": "Ændret ventilatortrin",
+  "7": "Midlertidigt forsøg", "8": "HCP4 / afventer master", unknown: "Ældre eller blandede data",
+};
+export function heatContext(sample: HeatSample): string {
+  const value = sample.afterheat_context;
+  return typeof value === "number" && Number.isInteger(value) && String(value) in AFTERHEAT_CONTEXTS ? String(value) : "unknown";
+}
+export function afterheatAnalysis(samples: HeatSample[], context = "all") {
   let covered = 0, inBand = 0, absoluteError = 0, overshoot = 0, undershoot = 0, changes = 0;
   let previous: HeatSample | null = null, stableSince: number | null = null, changedAt: number | null = null;
   const settling: number[] = [];
@@ -9,7 +18,7 @@ export function afterheatAnalysis(samples: HeatSample[]) {
     && Number.isFinite(s.heating_coil_after_temperature) && typeof s.afterheat_active === "number"
     && Number.isFinite(s.afterheat_active) && s.afterheat_active > 0;
   for (const sample of [...samples].sort((a, b) => Number(a.ts) - Number(b.ts))) {
-    if (!valid(sample)) { previous = null; stableSince = changedAt = null; continue; }
+    if (!valid(sample) || (context !== "all" && heatContext(sample) !== context)) { previous = null; stableSince = changedAt = null; continue; }
     const ts = Number(sample.ts), target = Number(sample.afterheat_target), air = Number(sample.heating_coil_after_temperature);
     const dt = previous ? ts - Number(previous.ts) : 0;
     if (!previous || dt <= 0 || dt > 300) { previous = sample; stableSince = changedAt = null; continue; }

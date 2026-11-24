@@ -19,11 +19,11 @@ class ReplayHttpTests(unittest.TestCase):
             server.start()
             try:
                 url=f'http://127.0.0.1:{server.server.server_address[1]}/api/controller/replay'
-                def request(sid=None, csrf=None):
+                def request(sid=None, csrf=None, body=None):
                     headers={'Content-Type':'application/json'}
                     if sid: headers['Cookie']='dantherm_session='+sid
                     if csrf: headers['X-CSRF-Token']=csrf
-                    return urllib.request.urlopen(urllib.request.Request(url,data=b'{"settings":{"co2_setpoint":1200}}',headers=headers),timeout=5)
+                    return urllib.request.urlopen(urllib.request.Request(url,data=json.dumps(body or {"settings":{"co2_setpoint":1200}}).encode(),headers=headers),timeout=5)
                 with self.assertRaises(urllib.error.HTTPError) as e: request()
                 self.assertEqual(e.exception.code,401)
                 sid,csrf=server.auth.session('owner')
@@ -35,5 +35,14 @@ class ReplayHttpTests(unittest.TestCase):
                 before=runtime.config.path.read_bytes()
                 with request(sid,csrf) as response: result=json.load(response)
                 self.assertEqual(result['scope'],'local_auto')
+                with patch.object(server.control_history,'query',return_value=[]) as query:
+                    with request(sid,csrf,{'mode':'smart_auto','range':'1h','settings':{'room_priorities':{'Stue':'high'}}}) as response:
+                        result=json.load(response)
+                    query.assert_called_once_with(3600)
+                self.assertEqual(result['scope'],'smart_auto_demand')
+                self.assertEqual(result['points'],[])
+                with self.assertRaises(urllib.error.HTTPError) as e:
+                    request(sid,csrf,{'mode':'invalid'})
+                self.assertEqual(e.exception.code,400)
                 self.assertEqual(runtime.config.path.read_bytes(),before)
             finally: server.stop()

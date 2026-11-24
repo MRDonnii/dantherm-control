@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.13.0-rc.3 — Room measurement ages and Smart Auto demand replay
+
+- Check the age of each HA temperature, humidity, CO2 and PM2.5 measurement independently of HA's transport heartbeat. Measurements older than three hours are excluded; newer age-aware clients also exclude unknown ages. Older clients remain compatible and show an explicit unknown-age badge. Requires HA integration 0.9.0-beta.13 for all four ages.
+- Show rejected/unknown measurements on the Rooms page. A stale RH reading cannot leave a rise-based ventilation boost active through its previous history.
+- Record raw room observations once a minute on the dashboard history thread in an optional, bounded three-day database. Recording failure cannot stop the regulator. Replay up to 24 hours of Smart Auto demand with proposed thresholds and room priorities, bathroom drying, PM2.5 and hold times. Neither live settings nor hardware are changed.
+- Label afterheat history as normal operation, frost protection, startup, boost, cooling, recent fan changes, temporary override or external master. Filter the existing performance analysis by those labels; mixed/old buckets stay unknown rather than inventing an averaged state.
+- The existing HAC1 manipulation, afterheat pilot, setpoint/timing rules, master arbitration and frost protection are unchanged. No direct 0–10 V output is added. Replay does not predict thermal response or reconstruct schedules/night/winter/dry-air overlays. See [measurement quality and replay](docs/control-quality.da.md).
 
 ## 1.13.0-rc.2 — Controller recovery, measurement quality and analysis
 
