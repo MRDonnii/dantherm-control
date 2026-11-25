@@ -18,6 +18,7 @@ import yaml
 
 from controller_observability import install_controller_observability
 from dantherm_gateway import Gateway as BaseGateway
+from journal_logging import configure_logging
 from master_arbitration import MasterArbitrator
 from sensor_freshness import CONTROL_SENSOR_TIMESTAMPS, SENSOR_FRESHNESS_SECONDS, sensor_sample_age
 
@@ -176,10 +177,7 @@ def main():
     parser.add_argument("-c", "--config", default="config.yaml")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper()),
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
+    configure_logging(args.log_level)
     config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
     gateway = Gateway(config)
     signal.signal(signal.SIGTERM, lambda *_: setattr(gateway, "running", False))

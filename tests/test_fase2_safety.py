@@ -86,3 +86,21 @@ def test_last_will_runs_in_the_controller_entry_point():
     gateway.restore_on_exit(None)
     # Legacy fan restore stays disabled in the controller entry point.
     assert calls == [("afterheat", 22), ("fireplace", False)]
+
+
+def test_journal_lines_carry_the_syslog_priority():
+    """safety-7: warnings/errors must reach journald with their own priority."""
+    import logging
+
+    from journal_logging import JournalPriorityFormatter, stderr_is_journal
+
+    formatter = JournalPriorityFormatter("%(levelname)s %(message)s")
+
+    def line(level, msg):
+        return formatter.format(logging.LogRecord("x", level, __file__, 1, msg, None, None))
+
+    assert line(logging.WARNING, "w") == "<4>WARNING w"
+    assert line(logging.ERROR, "a\nb") == "<3>ERROR a\n<3>b"
+    assert line(logging.INFO, "i").startswith("<6>")
+    assert line(logging.DEBUG, "d").startswith("<7>")
+    assert stderr_is_journal() in (True, False)

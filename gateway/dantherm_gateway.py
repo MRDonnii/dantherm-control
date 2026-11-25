@@ -401,7 +401,7 @@ class ReadOnlyTcpMirror:
                             continue
                         self.clients.add(client)
                     self.selector.register(client, selectors.EVENT_READ)
-                    LOG.info("TCP-læser tilsluttet fra %s", address[0])
+                    LOG.debug("TCP-læser tilsluttet fra %s", address[0])
                     continue
 
                 client = key.fileobj
@@ -3016,7 +3016,9 @@ def main():
     parser.add_argument("-c", "--config", default="config.yaml")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
-    logging.basicConfig(level=getattr(logging, args.log_level.upper()), format="%(asctime)s %(levelname)s %(message)s")
+    from journal_logging import configure_logging
+
+    configure_logging(args.log_level)
     config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
     gateway = Gateway(config)
     signal.signal(signal.SIGTERM, lambda *_: setattr(gateway, "running", False))

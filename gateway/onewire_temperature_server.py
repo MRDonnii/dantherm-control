@@ -383,7 +383,9 @@ def main() -> None:
     parser.add_argument("--controller-url", default=CONTROLLER_URL,
                         help="HCH5 Control flow/return choice; empty to ignore")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    from journal_logging import configure_logging
+
+    configure_logging(logging.INFO)
     reader = CachedReader(SensorReader(args.config, args.controller_url or None))
     reader.start()
     server = ThreadingHTTPServer((args.bind, args.port), handler_factory(reader))
