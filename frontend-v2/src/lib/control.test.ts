@@ -12,7 +12,7 @@ describe("describeControl", () => {
 
   it("says fine dust and the calm-fan holds in plain words", () => {
     expect(describeControl({ active_master: "pi", effective_source: "ha_smart", effective_level: 5, effective_reason: "PM2.5 Køkken 108 µg/m³ (auto); Upshift delay" }).reason)
-      .toBe("Fint støv 108 µg/m³ i Køkken; venter før optrapning");
+      .toBe("Støv 108 µg/m³ i Køkken; venter før optrapning");
     expect(describeControl({ active_master: "pi", effective_source: "ha_smart", effective_level: 4, effective_reason: "Luften er fin · normal ventilation" }).reason)
       .toBe("Luften er fin · normal ventilation");
   });

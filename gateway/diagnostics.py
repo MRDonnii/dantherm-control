@@ -466,7 +466,7 @@ class Diagnostics:
         return now - held[1] >= FROZEN_SECONDS
 
     def _extra_checks(self, s: dict, now: float, t1, t3, t4, bypass: bool, extract_recovery, cold: bool) -> dict:
-        """The alarms added in 1.13.0-beta.14: coil frost, water, rooms, fans, frozen sensors, the Pi itself."""
+        """The alarms added in 1.13.0-beta.13: coil frost, water, rooms, fans, frozen sensors, the Pi itself."""
         conditions: dict[str, bool] = {}
         detail: dict[str, str] = {}
         # Coil frost sensor (fresh value only, supplied by the runtime).

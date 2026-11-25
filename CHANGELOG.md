@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.13.0-beta.13 — Driftssikkerhed, alarmer, brugerflade og udbygninger
+
+- **Driftssikkerhed (fase 2):** eftervarme og pejs sættes tilbage hver gang tjenesten stopper, også i styringstilstand og ved vagthundens genstart (HCP4 som master vinder stadig). Ny vagthund på RS485-løkken (90 s), gamle styrekommandoer udføres ikke for sent, og blæsere og bypass skrives igen, hvis anlægget mister dem. Loggen har rigtige alvorsgrader, frostlåsens tider følger ikke uret, HA's nøgle kan ikke ændre sikkerhedsindstillinger, login og WebUI er bedre beskyttet, og opdateringer ruller rigtigt tilbage, venter mens det fryser og tjekker SHA256SUMS. Ny indstilling (slået fra): trin 6 slutter efter 4 timer.
+- **Alarmer og data (fase 3):** "Korrektion T2" går fra 0,4 til 1,5 (kun løft, kWh og diagnostik, aldrig eftervarmens styring). Nye alarmer for frost i vandfladen, kold vandflade, manglende rummålere, tilbagefald og hyppige trinskift i eftervarmen, ventilatorer og trin der ikke følger, stillestående målere og Pi'ens disk, spænding og ur. Alarmer svinger ikke frem og tilbage, og mails gentages ikke. Nye historikkolonner, urimelige temperaturer gemmes ikke, og ugerapporten får blokken "Komfort".
+- **Brugerfladen (fase 5):** almindelige sætninger i "Hvad bestemmer blæseren", "Hvorfor skiftede blæseren?" i Historik, "Luften i rummene" under Rum, ingen sommertidsfejl i graferne, færre opslag hos GitHub, og "Ingen kontakt til anlægget" når forbindelsen er tabt.
+- **Udbygninger (fase 6), slået fra som standard:** koldere indblæsning under ferie, ingen eftervarme under frikøling, og tør luft skruer kun op ét trin ad gangen. Anlæggets egen frostsikring gemmes i historikken (`unit_frost_protection`). Ændret af Claude AI.
+- Se [release notes](docs/releases/1.13.0-beta.13.md).
+
 ## 1.13.0-beta.12 — Luftstyringen gør det rigtige
 
 - **PM2.5:** stemmer kun over grænsen (ren luft holder ikke længere trin 4), kan altid hæve mindst ét trin over normaltrinnet, og der skrues ikke op, når udeluften har mere fint støv end rummet.

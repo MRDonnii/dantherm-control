@@ -477,7 +477,7 @@ class ControllerState:
         "duct_rooms_offset_k": 0.0,
         "duct_t3_offset_k": 0.0,
         "t2_offset_k": 0.0,
-        # The T2 error was measured once (1.13.0-beta.14): see ControllerConfig.load.
+        # The T2 error was measured once (1.13.0-beta.13): see ControllerConfig.load.
         "t2_offset_calibrated": False,
         "humidity_margin_gm3": 0.5,
         "dry_protection_enabled": False,
