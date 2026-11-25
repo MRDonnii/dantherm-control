@@ -87,8 +87,8 @@ export function UpdatesPage() {
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
-  const action = useCallback(async (actionName: string, target?: string) => {
-    return postJson<UpdateInfo>("/api/admin/action", { action: actionName, target }, csrf);
+  const action = useCallback(async (actionName: string, target?: string, extra?: Record<string, unknown>) => {
+    return postJson<UpdateInfo>("/api/admin/action", { action: actionName, target, ...extra }, csrf);
   }, [csrf]);
 
   const refresh = useCallback(async (selected?: Channel) => {
@@ -128,7 +128,7 @@ export function UpdatesPage() {
     }
   }
 
-  async function installUpdate() {
+  async function installUpdate(force = false) {
     if (busy) return;
     setBusy(true);
     setMessage("Opdateringen er startet. Controlleren fortsætter, mens den nye build valideres…");
@@ -137,9 +137,16 @@ export function UpdatesPage() {
       update: { ...current?.update, running: true, progress: 2, phase: "starting", detail: "Forbereder sikker opdatering…", last_error: null },
     }));
     try {
-      await action("install_update", channel);
+      await action("install_update", channel, force ? { force: true } : undefined);
     } catch (error) {
       setBusy(false);
+      setInfo(current => ({ ...current, update: { ...current?.update, running: false, progress: 0 } }));
+      if (error instanceof ApiError && error.status === 423 && !force) {
+        // It freezes: the update waits for thaw unless the user chooses it anyway.
+        setMessage(error.message);
+        if (window.confirm(`${error.message}\n\nVil du opdatere alligevel?`)) void installUpdate(true);
+        return;
+      }
       setMessage(error instanceof ApiError ? error.message : "Kunne ikke starte opdateringen");
       return;
     }
@@ -157,6 +164,12 @@ export function UpdatesPage() {
           window.clearInterval(timer);
           setBusy(false);
           setMessage(local.update.detail ?? "Ingen nyere build. Intet installeret.");
+          return;
+        }
+        if (!local.update?.running && local.update?.phase === "deferred") {
+          window.clearInterval(timer);
+          setBusy(false);
+          setMessage(local.update.detail ?? "Opdateringen venter, til det er tøet.");
           return;
         }
         if (local.update?.last_error) {
@@ -180,7 +193,8 @@ export function UpdatesPage() {
       } catch {
         // Gateway/admin kan genstarte kortvarigt. Fortsæt polling.
       }
-      if (Date.now() - started > 180_000) {
+      // The new build is watched for 5 minutes before it is accepted.
+      if (Date.now() - started > 900_000) {
         window.clearInterval(timer);
         setBusy(false);
         setMessage("Opdateringen tager længere tid end forventet. Tryk Kontroller igen om lidt.");

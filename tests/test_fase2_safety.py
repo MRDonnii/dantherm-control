@@ -389,3 +389,88 @@ def test_six_step_top_level_can_end_by_itself(tmp_path):
     assert state.data["max_level_until"] is not None
     state._expire_max_level(_time.time() + 5 * 3600)
     assert state.data["manual_level"] == 5 and state.data["max_level_until"] is None
+
+
+def _admin_module(monkeypatch):
+    import importlib.util
+    import os
+
+    monkeypatch.setenv("DANTHERM_REBOOT_TOKEN", "test-token")
+    spec = importlib.util.spec_from_file_location("fase2_admin_test", ROOT / "gateway/dantherm_pi_admin_api.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_hanging_update_gets_sigterm_so_it_can_roll_back(tmp_path, monkeypatch):
+    """runtime-6: subprocess.run(timeout) sent SIGKILL and skipped the rollback."""
+    import pytest
+
+    admin = _admin_module(monkeypatch)
+    monkeypatch.setattr(admin, "UPDATE_TIMEOUT_SECONDS", 1)
+    marker = tmp_path / "rolled-back"
+    script = tmp_path / "update.sh"
+    script.write_text(f"trap 'echo done > {marker}; exit 143' TERM\nwhile true; do sleep 0.1; done\n")
+    with open(tmp_path / "log", "w") as log, pytest.raises(RuntimeError):
+        admin._run_updater(["bash", str(script)], cwd=tmp_path, env={}, log=log)
+    assert marker.read_text().strip() == "done"
+
+
+def test_update_claim_and_frost_deferral(tmp_path, monkeypatch):
+    """runtime-6 (double start) and gap-11 (no update while it freezes unless chosen)."""
+    import json
+
+    admin = _admin_module(monkeypatch)
+    admin.UPDATE_STATE["running"] = False
+    assert admin.claim_update() and not admin.claim_update()
+    admin.release_update_claim()
+    state = tmp_path / "controller.json"
+    monkeypatch.setattr(admin, "CONTROLLER_STATE_FILE", state)
+    assert admin.frost_lock_latched() is False
+    state.write_text(json.dumps({"frost_lock_latched": True}))
+    assert admin.frost_lock_latched() is True
+    script = (ROOT / "update.sh").read_text()
+    assert "HCH5_UPDATE_FORCE" in script and "exit 3" in script and "trap on_term TERM" in script
+    assert 'cp -a "${statefile}" "${backup}/state/runtime/"' in script  # runtime-7
+    assert "Soak: OK" in script and "hch5-control-update-*" in script  # gap-11, runtime-8
+
+
+def test_download_is_checked_against_the_release_checksums(tmp_path, monkeypatch):
+    """runtime-9: every file of the downloaded tree must match SHA256SUMS."""
+    import hashlib
+
+    import pytest
+
+    admin = _admin_module(monkeypatch)
+    (tmp_path / "gateway").mkdir()
+    (tmp_path / "update.sh").write_text("echo ok\n")
+    (tmp_path / "gateway" / "a.py").write_text("x = 1\n")
+    sums = {name: hashlib.sha256((tmp_path / name).read_bytes()).hexdigest() for name in ("update.sh", "gateway/a.py")}
+    assert admin.verify_source_tree(tmp_path, sums) == 2
+    (tmp_path / "gateway" / "a.py").write_text("x = 2\n")
+    with pytest.raises(RuntimeError):
+        admin.verify_source_tree(tmp_path, sums)
+
+
+def test_update_sh_exit_3_is_shown_as_deferred_for_frost(tmp_path, monkeypatch):
+    """gap-11: update.sh's frost deferral (exit 3) is not a failed update."""
+    import io
+    import tarfile
+
+    admin = _admin_module(monkeypatch)
+    archive = tmp_path / "release.tar.gz"
+    data = b"exit 3\n"
+    with tarfile.open(archive, "w:gz") as tar:
+        info = tarfile.TarInfo("dantherm-control-9.0.0/update.sh")
+        info.size, info.mode = len(data), 0o755
+        tar.addfile(info, io.BytesIO(data))
+    for name, value in (("UPDATE_STATE_FILE", tmp_path / "s.json"), ("UPDATE_LOG_FILE", tmp_path / "l.log"),
+                        ("UPDATE_CHANNEL_FILE", tmp_path / "c")):
+        monkeypatch.setattr(admin, name, value)
+    monkeypatch.setattr(admin, "current_version", lambda: "1.0.0")
+    monkeypatch.setattr(admin, "_schedule_admin_restart", lambda: None)
+    monkeypatch.setattr(admin, "_release_checksums", lambda ref: None)
+    monkeypatch.setattr(admin, "update_info", lambda *a, **k: {"ref": "v9.0.0", "available_version": "9.0.0"})
+    monkeypatch.setattr(admin, "_download_tarball", lambda ref, dest: dest.write_bytes(archive.read_bytes()))
+    admin._install_update("beta")
+    assert admin.UPDATE_STATE["phase"] == "deferred" and admin.UPDATE_STATE["running"] is False

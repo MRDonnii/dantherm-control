@@ -55,6 +55,8 @@ class UpdateStatusTests(unittest.TestCase):
             mock.patch.object(admin, "UPDATE_CHANNEL_FILE", self.dir / "update-channel"),
             mock.patch.object(admin, "current_version", side_effect=lambda: self.version),
             mock.patch.object(admin, "_schedule_admin_restart"),
+            mock.patch.object(admin, "_release_checksums", return_value=None),
+            mock.patch.object(admin, "CONTROLLER_STATE_FILE", self.dir / "controller.json"),
         ]
         for patch in self.patches:
             patch.start()
