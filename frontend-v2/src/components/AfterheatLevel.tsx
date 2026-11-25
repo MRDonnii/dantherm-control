@@ -25,7 +25,7 @@ export function AfterheatLevelBar({ level, target, wanted, max, valvePercent = n
   const segments = Array.from({ length: max }, (_, index) => index + 1);
   const marker = wanted ?? target;
   return <div className="afterheat-level-bar" role="meter" aria-label="HAC1-trin" aria-valuemin={0} aria-valuemax={max}
-    aria-valuenow={level ?? undefined} aria-valuetext={level === null ? "Ukendt" : `Trin ${level} af ${max}${valvePercent !== null ? `, ventilåbning ${formatPercent(valvePercent)}` : ""}${target !== null ? `, mål ${target}` : ""}`}>
+    aria-valuenow={level ?? undefined} aria-valuetext={level === null ? "Ukendt" : `Trin ${level} af ${max}${target !== null ? `, mål ${target}` : ""}`}>
     {segments.map(step => <i key={step} className={[
       level !== null && step <= level ? "is-lit" : "",
       target !== null && step === target && target !== level ? "is-target" : "",
@@ -45,7 +45,7 @@ export function AfterheatLevelPanel({ control }: { control: AfterheatControl }) 
   const ActionIcon = control.nextAction === "up" ? ArrowUp : control.nextAction === "down" ? ArrowDown : Minus;
   return <section className={`afterheat-level tone-${control.active ?? "unknown"}`} aria-label="Eftervarmens trin">
     <div className="afterheat-level-head">
-      <strong>{levelText(control)}<span className="afterheat-level-valve"> · {valveText(control.valvePercent)}</span></strong>
+      <strong>{levelText(control)}</strong>
       <span className="afterheat-level-who">{controlLabel(control)}</span>
     </div>
     <AfterheatLevelBar level={control.level} target={pi ? control.levelTarget : null} wanted={pi ? control.levelWanted : null} max={control.levelMax} valvePercent={control.valvePercent}/>

@@ -38,3 +38,23 @@ describe("sample helpers", () => {
     expect(typicalGap(times)).toBe(60);
   });
 });
+
+describe("timeTicks across the end of summer time", () => {
+  it("keeps every day tick on local midnight and gives each day once", () => {
+    const env = (globalThis as unknown as { process: { env: Record<string, string | undefined> } }).process.env;
+    const before = env.TZ;
+    env.TZ = "Europe/Copenhagen";
+    try {
+      const from = new Date(2027, 9, 25, 12).getTime() / 1000;
+      const to = new Date(2027, 10, 5, 12).getTime() / 1000;
+      const ticks = timeTicks(from, to, 900);
+      const days = ticks.map(tick => new Date(tick * 1000).getDate());
+      for (const tick of ticks) expect(new Date(tick * 1000).getHours()).toBe(0);
+      expect(new Set(days).size).toBe(days.length);
+      // Six-hour ticks stay on 00/06/12/18 after the change too.
+      for (const tick of timeTicks(new Date(2027, 9, 30, 0).getTime() / 1000, new Date(2027, 10, 1, 12).getTime() / 1000, 900)) expect(new Date(tick * 1000).getMinutes()).toBe(0);
+    } finally {
+      if (before === undefined) delete env.TZ; else env.TZ = before;
+    }
+  });
+});

@@ -38,6 +38,8 @@ export interface AfterheatThermostatProps {
   airAfter: number | null;
   /** What HAC1 reports back, e.g. "20 °C" or "OFF". */
   registered: string;
+  /** With Pi control: "Trin 3 af 10". The setpoint inside HAC1 then moves every minute on purpose and says nothing. */
+  stepText?: string | null;
   /** The last value switched off from, restored by the power button. */
   lastOn?: number;
   /** The saved setpoint; a different value is an unconfirmed draft. */
@@ -53,7 +55,7 @@ export interface AfterheatThermostatProps {
 
 export const FROST_POWER_NOTE = "Frostsikring: eftervarmen kan ikke slukkes i frostvejr";
 
-export function AfterheatThermostat({ value, onChange, heating, lockout, cutoff, outdoor, airBefore, airAfter, registered, lastOn = 20, current, onConfirm, onCancel, busy = false, frostLock = false, floor = MIN }: AfterheatThermostatProps) {
+export function AfterheatThermostat({ value, onChange, heating, lockout, cutoff, outdoor, airBefore, airAfter, registered, stepText = null, lastOn = 20, current, onConfirm, onCancel, busy = false, frostLock = false, floor = MIN }: AfterheatThermostatProps) {
   const pending = value !== current;
   // While the frost lock is on the scale stops at the floor and never reaches OFF.
   const lowest = frostLock ? Math.min(MAX, Math.max(MIN, frostFloorStep(floor))) : MIN;
@@ -139,7 +141,9 @@ export function AfterheatThermostat({ value, onChange, heating, lockout, cutoff,
         <div><small>Før flade</small><strong>{fmt(airBefore)}</strong></div>
         <div><small>Efter flade</small><strong>{fmt(airAfter)}</strong></div>
         <div><small>Løft</small><strong>{airBefore === null || airAfter === null ? "—" : fmt(airAfter - airBefore)}</strong></div>
-        <div><small>I HAC1</small><strong>{registered}</strong></div>
+        {stepText === null
+          ? <div><small>I HAC1</small><strong>{registered}</strong></div>
+          : <div title="Pi'en flytter selv HAC1's temperatur lidt op og ned for at få anlægget til at skifte trin. Tallet i HAC1 er derfor ikke dit valg, og det skifter hele tiden."><small>Trin nu</small><strong>{stepText}</strong></div>}
       </div>
       {frostLock && <p className="thermostat-note frost">{FROST_POWER_NOTE} (mindst {floor.toLocaleString("da-DK", { maximumFractionDigits: 1 })}{" "}°C).</p>}
       {lockout && !off && <p className="thermostat-note">Sommerstop: udetemperaturen er {fmt(outdoor)}. HAC1 varmer først under {cutoff}{" "}°C ude.</p>}

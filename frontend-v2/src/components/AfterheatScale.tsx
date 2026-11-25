@@ -37,7 +37,7 @@ export function AfterheatScale() {
   const rows = shown ? shown.levels.filter(level => level.minutes > 0) : [];
   return <article className="surface panel-card" aria-label="Eftervarmens trinstørrelse">
     <div className="pro-card-head compact"><div><h2>Hvad giver ét trin på eftervarmen?</h2>
-      <p>Løft over varmefladen og returvand pr. HAC1-trin (0–10 = 0–100 % ventil), målt i historikken ved hver blæserhastighed.</p></div></div>
+      <p>Løft over varmefladen og returvand pr. HAC1-trin (0–10), målt i historikken ved hver blæserhastighed.</p></div></div>
     <div className="diag-actions">
       <label>Periode<select value={hours} onChange={e => setHours(Number(e.target.value))}>
         {PERIODS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
@@ -49,9 +49,9 @@ export function AfterheatScale() {
     {error && <p role="alert">{error}</p>}
     {result && !rows.length && <p>Ingen trin har været holdt længe nok i perioden. Vælg en længere periode.</p>}
     {rows.length > 0 && <div className="settings-table-wrap"><table className="settings-table" aria-label="Trinstørrelse pr. trin">
-      <thead><tr><th>Trin</th><th>Ventil</th><th>Minutter</th><th>Luft efter fladen</th><th>Løft</th><th>Trinstørrelse</th><th>Returvand</th><th>Fremløb</th></tr></thead>
+      <thead><tr><th>Trin</th><th>Minutter</th><th>Luft efter fladen</th><th>Løft</th><th>Trinstørrelse</th><th>Returvand</th><th>Fremløb</th></tr></thead>
       <tbody>{rows.map(level => <tr key={level.level}>
-        <td>{level.level}</td><td>{level.valve_percent} %</td><td>{level.minutes}</td>
+        <td>{level.level}</td><td>{level.minutes}</td>
         <td>{k(level.air, 1, " °C")}</td><td>{k(level.lift, 1, " K")}</td>
         <td>{level.step_k === null ? "–" : `${level.step_k > 0 ? "+" : ""}${k(level.step_k, 1, " K/trin")}`}</td>
         <td>{k(level.return_temperature, 1, " °C")}</td><td>{k(level.flow_temperature, 1, " °C")}</td>

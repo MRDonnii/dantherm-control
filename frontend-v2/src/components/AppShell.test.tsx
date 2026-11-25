@@ -21,7 +21,7 @@ function ChangeButton() {
   return <button onClick={() => setNotice("Manuel valgt.")}>Gem ændring</button>;
 }
 
-afterEach(() => { cleanup(); api.checks.mockClear(); });
+afterEach(() => { cleanup(); api.checks.mockClear(); localStorage.clear(); });
 
 describe("AppShell update tab and control feedback", () => {
   it("keeps update navigation hidden when the beta channel is current", async () => {
@@ -43,6 +43,17 @@ describe("AppShell update tab and control feedback", () => {
     expect(tab.getAttribute("href")).toBe("/updates");
     expect(tab.textContent).toContain("1.2.0-beta.37");
     expect(document.querySelector(".sidebar-nav a[href='/updates']")).not.toBeNull();
+  });
+
+  it("shares one update answer between tabs instead of asking GitHub from each", async () => {
+    api.available = true;
+    render(<MemoryRouter><AppShell><ChangeButton/></AppShell></MemoryRouter>);
+    await screen.findByRole("link", { name: /Opdatering klar/ });
+    cleanup();
+    // A second tab (a fresh mount) within ten minutes reuses the saved answer.
+    render(<MemoryRouter><AppShell><ChangeButton/></AppShell></MemoryRouter>);
+    await screen.findByRole("link", { name: /Opdatering klar/ });
+    expect(api.checks).toHaveBeenCalledTimes(1);
   });
 });
 

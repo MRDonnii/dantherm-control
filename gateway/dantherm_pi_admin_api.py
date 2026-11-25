@@ -754,6 +754,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return self.reply(401, {"error": "unauthorized"})
         payload: dict = {}
+        cached_only = False
         if self.path == "/reboot":
             action, target = "reboot", None
         elif self.path == "/action":
@@ -763,6 +764,7 @@ class Handler(BaseHTTPRequestHandler):
                 action = data.get("action")
                 target = data.get("target")
                 payload = data if isinstance(data, dict) else {}
+                cached_only = data.get("cached") is True
             except (ValueError, TypeError, AttributeError, json.JSONDecodeError):
                 return self.reply(400, {"error": "invalid_json"})
         else:
@@ -848,7 +850,7 @@ class Handler(BaseHTTPRequestHandler):
         if action == "check_update":
             channel = str(target) if target in {"stable", "beta"} else current_update_channel()
             try:
-                return self.reply(200, update_info(channel, force_refresh=True))
+                return self.reply(200, update_info(channel, force_refresh=not cached_only))
             except (OSError, ValueError, KeyError, urllib.error.URLError, json.JSONDecodeError) as error:
                 return self.reply(503, {"error": f"update_check_failed: {error}"})
         if action == "install_update":

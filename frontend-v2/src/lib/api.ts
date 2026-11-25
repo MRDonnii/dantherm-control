@@ -1,3 +1,4 @@
+import { friendlyError } from "./errorText";
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -60,7 +61,7 @@ export async function requestJson<T>(endpoint: string, options: RequestOptions =
         const message = payload && typeof payload === "object" && "error" in payload
           ? String((payload as { error?: unknown }).error || `HTTP ${response.status}`)
           : `HTTP ${response.status}`;
-        throw new ApiError(message, response.status, endpoint);
+        throw new ApiError(friendlyError(message), response.status, endpoint);
       }
       return payload as T;
     } catch (error) {
@@ -73,7 +74,7 @@ export async function requestJson<T>(endpoint: string, options: RequestOptions =
 
   if (lastError instanceof ApiError) throw lastError;
   if (lastError instanceof DOMException && lastError.name === "AbortError") {
-    throw new ApiError("Timeout", undefined, endpoint);
+    throw new ApiError(friendlyError("Timeout"), undefined, endpoint);
   }
   throw new ApiError(lastError instanceof Error ? lastError.message : "Ukendt netværksfejl", undefined, endpoint);
 }

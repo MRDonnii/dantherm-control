@@ -76,7 +76,7 @@ function oneOf<T extends string>(value: unknown, options: readonly T[]): T | nul
   return typeof value === "string" && (options as readonly string[]).includes(value) ? value as T : null;
 }
 
-/** HAC1 register 101 drives the valve with 0-10 V: each of the ten levels opens it 10 %. */
+/** HAC1 register 101 is the step 0..10; as a 0..100 scale it is step x 10 (a scale, not an opening). */
 export const VALVE_PERCENT_PER_LEVEL = 10;
 
 /**
@@ -90,9 +90,13 @@ export function readValvePercent(controller: Record<string, unknown>): number | 
   return level === null ? null : Math.min(100, Math.max(0, Math.round(level * VALVE_PERCENT_PER_LEVEL)));
 }
 
-/** "Ventilåbning 30 %", or "Ventilåbning —" when HAC1's level is unknown. */
+/**
+ * "Trin 3 af 10", or "Trin — af 10" when HAC1's level is unknown. The step is the level HAC1 runs
+ * (the percent here is level x 10 only as a scale); how far the valve really opens is not
+ * known: it is quick-opening, so step 1 already gives much more than 10 % of the heat.
+ */
 export function valveText(percent: number | null): string {
-  return `Ventilåbning ${formatPercent(percent)}`;
+  return `Trin ${percent === null ? "—" : Math.round(percent / VALVE_PERCENT_PER_LEVEL).toLocaleString("da-DK")} af ${AFTERHEAT_LEVEL_MAX}`;
 }
 
 export function formatPercent(percent: number | null): string {

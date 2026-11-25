@@ -262,19 +262,36 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
+    // The answer is shared between all open tabs through localStorage, and the Pi
+    // answers from its own cache (cached: true), so many tabs do not mean many
+    // GitHub fetches. The saved channel decides beta or stable (no target sent).
+    const KEY = "hch5-update-check";
+    const FRESH_MS = 10 * 60 * 1000;
+    const readShared = (): { at: number; text: string | null } | null => {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(KEY) ?? "null");
+        return parsed && typeof parsed.at === "number" ? { at: parsed.at, text: typeof parsed.text === "string" ? parsed.text : null } : null;
+      } catch { return null; }
+    };
     const check = async () => {
+      const shared = readShared();
+      if (shared && Date.now() - shared.at < FRESH_MS) { setAvailableUpdate(shared.text); return; }
       try {
         const auth = await requestJson<{ csrf?: string | null }>("/api/auth/status", { timeoutMs: 3500 });
         if (!auth.csrf) return;
-        const result = await postJson<UpdateInfo>("/api/admin/action", { action: "check_update", target: "beta" }, auth.csrf);
-        if (!cancelled) setAvailableUpdate(result.update?.running ? "Installerer opdatering" : result.update_available ? result.available_version ?? "Opdatering klar" : null);
+        const result = await postJson<UpdateInfo>("/api/admin/action", { action: "check_update", cached: true }, auth.csrf);
+        const label = result.update?.running ? "Installerer opdatering" : result.update_available ? result.available_version ?? "Opdatering klar" : null;
+        try { localStorage.setItem(KEY, JSON.stringify({ at: result.update?.running ? Date.now() - FRESH_MS + 60000 : Date.now(), text: label })); } catch { /* private window: just check again later */ }
+        if (!cancelled) setAvailableUpdate(label);
       } catch {
         // A temporarily unavailable update service must not affect control.
       }
     };
+    const onVisible = () => { if (document.visibilityState === "visible") void check(); };
     void check();
-    const timer = window.setInterval(() => void check(), 60000);
-    return () => { cancelled = true; window.clearInterval(timer); };
+    const timer = window.setInterval(() => void check(), 15 * 60 * 1000);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { cancelled = true; window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
   }, []);
 
   useEffect(() => {

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { Activity, Fan, Leaf, Recycle, SlidersHorizontal } from "lucide-react";
 import { AfterheatAnalysis } from "../components/AfterheatAnalysis";
 import { AfterheatScale } from "../components/AfterheatScale";
 import { AlarmHistory } from "../components/AlarmHistory";
+import { DecisionTimeline } from "../components/DecisionTimeline";
 import { HistoryChart } from "../components/HistoryChart";
 import { requestJson } from "../lib/api";
 import { AFTERHEAT_CHART, afterheatLayers, clean, withAfterheatLines } from "../lib/historyData";
@@ -116,23 +117,32 @@ export function HistoryPage() {
   const [hover, setHover] = useState<number | null>(null);
   const [changes, setChanges] = useState<ChangeEvent[]>([]);
   const [paused, setPaused] = useState(false);
+  const [decisions, setDecisions] = useState<unknown>([]);
+  const [band, setBand] = useState(0.5);
+  // Only the newest request may update the page: a slow answer for an older range is dropped.
+  const requestId = useRef(0);
 
   const refresh = useCallback(async (activeRange: string) => {
+    const id = ++requestId.current;
     try {
       const result = await requestJson<HistoryResponse>(`/history.json?range=${activeRange}`, { timeoutMs: 8000 });
+      if (id !== requestId.current) return;
       const now = Math.floor(Date.now() / 1000);
       const seconds = RANGES.find(item => item.value === activeRange)?.seconds ?? 86400;
       setSamples(Array.isArray(result.samples) ? clean(result.samples) : []);
       setPaused(result.recording?.state === "retrying");
       setWindow({ from: now - seconds, to: now });
       setUpdated(now);
-      const state = await requestJson<{ change_log?: ChangeEvent[] }>("/api/controller/state", { timeoutMs: 3500 }).catch(() => null);
+      const state = await requestJson<{ change_log?: ChangeEvent[]; decision_log?: unknown[]; afterheat_pi_band?: number }>("/api/controller/state", { timeoutMs: 3500 }).catch(() => null);
+      if (id !== requestId.current) return;
       if (state && Array.isArray(state.change_log)) setChanges(state.change_log);
+      if (state && typeof state.afterheat_pi_band === "number" && state.afterheat_pi_band >= 0.1 && state.afterheat_pi_band <= 1.5) setBand(state.afterheat_pi_band);
+      if (state && Array.isArray(state.decision_log)) setDecisions(state.decision_log);
       setOnline(true);
     } catch {
-      setOnline(false);
+      if (id === requestId.current) setOnline(false);
     } finally {
-      setLoading(false);
+      if (id === requestId.current) setLoading(false);
     }
   }, []);
 
@@ -140,6 +150,8 @@ export function HistoryPage() {
   useEffect(() => {
     setLoading(true);
     setHover(null);
+    setSamples([]);
+    setWindow(undefined);
     void refresh(range);
     const timer = window.setInterval(() => void refresh(range), 60000);
     return () => window.clearInterval(timer);
@@ -157,7 +169,7 @@ export function HistoryPage() {
   const span = (item: ReturnType<typeof summary>, decimals: number, unit: string) =>
     item.low === null ? "Ingen data" : `${format(item.low, decimals)}–${format(item.high, decimals)}${unit} i perioden`;
   const shared = { samples, range: window_, hoverTs: hover, onHover: setHover, loading };
-  // Gateway 1.9.0 logs HAC1's level (valve opening = level × 10 %) and the user's
+  // Gateway 1.9.0 logs HAC1's level (step 0-10) and the user's
   // target; older history has neither, and its whole-degree setpoint was the target then.
   const afterheatSamples = useMemo(() => withAfterheatLines(samples), [samples]);
   const layers = afterheatLayers(afterheatSamples);
@@ -193,11 +205,11 @@ export function HistoryPage() {
         <StatTile label="CO₂" value={format(co2.latest, 0)} unit=" ppm" detail={span(co2, 0, " ppm")}/>
         <StatTile label="Genvinding" value={format(recovery.latest, 0)} unit="%" detail={recovery.mean === null ? "Ingen data" : `Gns. ${format(recovery.mean, 0)}% i perioden`}/>
         {layers.hasValve
-          ? <StatTile label="Ventilåbning" value={format(opening.latest, 0)} unit=" %" detail={opening.mean === null ? "Ingen data" : `Gns. ${format(opening.mean, 0)} % i perioden`}/>
+          ? <StatTile label="Eftervarmens trin" value={opening.latest === null ? "–" : format(opening.latest / 10, 0)} unit=" af 10" detail={opening.mean === null ? "Ingen data" : `Gns. ${format(opening.mean / 10, 1)} i perioden`}/>
           : <StatTile label="Eftervarme" value={valve.mean === null ? "–" : format(valve.mean * 100, 0)} unit="%" detail={`af tiden med åben ventil · ${label}`}/>}
       </div>
 
-      <AfterheatAnalysis samples={samples}/>
+      <AfterheatAnalysis samples={samples} band={band}/>
       <AfterheatScale/>
 
       <div className="history-grid">
@@ -205,10 +217,10 @@ export function HistoryPage() {
           <HistoryChart
             {...shared} samples={afterheatSamples} title="Indblæsning og eftervarme" unit="°C" height={layers.hasValve ? 310 : 270} minSpan={4}
             series={[
-              { key: AFTER, label: "Indblæsning · T2AH", slot: 1 },
-              { key: "extract_temp", label: "Udsugning · T3", slot: 2 },
+              { key: AFTER, label: "Luft efter varmefladen", slot: 1 },
+              { key: "extract_temp", label: "Udsugning", slot: 2 },
             ]}
-            band={{ seriesKey: AFTER, minKey: `${AFTER}_min`, maxKey: `${AFTER}_max`, label: "Udsving T2AH" }}
+            band={{ seriesKey: AFTER, minKey: `${AFTER}_min`, maxKey: `${AFTER}_max`, label: "Udsving" }}
             reference={AFTERHEAT_CHART.goal}
             command={layers.showSent ? AFTERHEAT_CHART.sent : undefined}
             valve={layers.hasValve ? AFTERHEAT_CHART.valve : undefined}
@@ -232,8 +244,8 @@ export function HistoryPage() {
           <HistoryChart
             {...shared} title="Ude og afkast" unit="°C" minSpan={4}
             series={[
-              { key: "outdoor_temp", label: "Udeluft · T1", slot: 1 },
-              { key: "exhaust_temp", label: "Afkast · T4", slot: 2 },
+              { key: "outdoor_temp", label: "Udeluft", slot: 1 },
+              { key: "exhaust_temp", label: "Afkast", slot: 2 },
             ]}
           />
         </ChartCard>
@@ -260,12 +272,14 @@ export function HistoryPage() {
           />
         </ChartCard>
 
-        <ChartCard title="Varmegenvinding" subtitle="Udsugningssiden, beregnet fra T1, T3 og T4" icon={<Recycle size={20}/>}>
+        <ChartCard title="Varmegenvinding" subtitle="Udsugningssiden, regnet ud fra temperaturerne ude, udsugning og afkast" icon={<Recycle size={20}/>}>
           <HistoryChart
             {...shared} title="Varmegenvinding" unit="%" decimals={0} minSpan={10}
             series={[{ key: "heat_recovery_efficiency", label: "Genvinding", slot: 1 }]}
           />
         </ChartCard>
+
+        <DecisionTimeline log={decisions}/>
 
         <AlarmHistory/>
 

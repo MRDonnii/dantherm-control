@@ -7,7 +7,7 @@ import { ArrowRight, CloudFog, Flame, Gauge, House, Leaf, Power, Snowflake, Wind
 import { Hch5UnitDiagram } from "../components/Hch5UnitDiagram";
 import { AfterheatThermostat } from "../components/AfterheatThermostat";
 import { AfterheatLevelPanel } from "../components/AfterheatLevel";
-import { formatPercent, readAfterheatControl, readValvePercent } from "../lib/afterheatControl";
+import { readAfterheatControl, readValvePercent, valveText } from "../lib/afterheatControl";
 import { describeControl } from "../lib/control";
 import { automationLines } from "../lib/automation";
 import { FROST_COOL_HINT, FROST_COOL_MESSAGE, FROST_OFF_MESSAGE, frostFloorMessage, frostLockRefuses, readFrostLock } from "../lib/frostLock";
@@ -69,7 +69,7 @@ function cost(energyKwh: number | null, price: number | null) {
   return energyKwh === null || price === null ? "—" : `${(energyKwh * price).toLocaleString("da-DK", { maximumFractionDigits: 2 })} kr`;
 }
 function modeLabel(value: unknown) {
-  return ({ local_auto: "Local Auto", smart_auto: "Smart Auto", manual: "Manuel" } as Record<string, string>)[String(value)] ?? text(value);
+  return ({ local_auto: "Automatik i anlægget", smart_auto: "Automatik med rummene", manual: "Manuel" } as Record<string, string>)[String(value)] ?? text(value);
 }
 function masterLabel(value: unknown) {
   if (value === "pi") return "Raspberry Pi";
@@ -84,6 +84,14 @@ function coolingLabel(value: unknown) {
     room_satisfied: "Rumtemperatur nået", sensor_missing: "Mangler sensor", manual_mode: "Manuel mode", vacation: "Ferie",
   };
   return labels[String(value)] ?? text(value).replaceAll("_", " ");
+}
+/** A temperature difference in plain words: "+0,4 grader" (not a temperature, so no °C). */
+function degrees(value: number | null) {
+  if (value === null) return "—";
+  return `${value > 0 ? "+" : value < 0 ? "−" : ""}${Math.abs(value).toLocaleString("da-DK", { maximumFractionDigits: 1 })} grader`;
+}
+function offsetText(value: number) {
+  return `${Math.abs(value).toLocaleString("da-DK", { maximumFractionDigits: 1 })} grader ${value > 0 ? "op" : "ned"}`;
 }
 function remaining(value: unknown) {
   const seconds = number(value);
@@ -125,14 +133,18 @@ export function OverviewPage() {
   const [standbyDialog, setStandbyDialog] = useState(false);
   const [coolDialog, setCoolDialog] = useState(false);
 
+  // Bumped when a command starts and when it ends. A poll that began before
+  // that must not overwrite the answer of the command (it would undo a press).
+  const commandEpoch = useRef(0);
   const refresh = useSinglePoll(useCallback(async () => {
+    const pollEpoch = commandEpoch.current;
     const [unitResult, controllerResult, authResult] = await Promise.allSettled([
       requestJson<Data>("/state.json", { timeoutMs: 3500 }),
       requestJson<Data>("/api/controller/state?compact=1", { timeoutMs: 3500 }),
       requestJson<AuthState>("/api/auth/status", { timeoutMs: 3500 }),
     ]);
     if (unitResult.status === "fulfilled") setUnit(unitResult.value);
-    if (controllerResult.status === "fulfilled") setController(controllerResult.value);
+    if (controllerResult.status === "fulfilled" && pollEpoch === commandEpoch.current) setController(controllerResult.value);
     if (authResult.status === "fulfilled") setCsrf(authResult.value.csrf ?? "");
     reportPoll(unitResult.status === "fulfilled" && controllerResult.status === "fulfilled");
   }, [reportPoll]));
@@ -151,11 +163,14 @@ export function OverviewPage() {
     }
     setBusy(name);
     setNotice("Gemmer…");
+    commandEpoch.current += 1;
     try {
       const next = await postJson<Data>("/api/controller/config", patch, csrf);
+      commandEpoch.current += 1;
       setController(next);
       setNotice(success);
     } catch (error) {
+      commandEpoch.current += 1;
       setNotice(`Kunne ikke gemme: ${error instanceof Error ? error.message : "ukendt fejl"}`);
       await refresh();
     } finally {
@@ -220,13 +235,14 @@ export function OverviewPage() {
   const valveOpening = readValvePercent(controller);
   const afterheatStatus = [
     heating ? "Aktiv" : afterheatLockout ? "Spærret af sommerstop" : heatKnown ? "Inaktiv" : "Ukendt",
-    valveOpening === null ? null : `ventilåbning ${formatPercent(valveOpening)}`,
+    valveOpening === null ? null : valveText(valveOpening).toLowerCase(),
   ].filter(Boolean).join(" · ");
   const fireplace = controller.actual_fireplace === true || unit.fireplace === true;
   const bonfireActive = controller.bonfire_active === true;
   const standbyActive = controller.standby_active === true;
   const mode = String(controller.mode ?? "local_auto");
-  const level = number(controller.effective_level) ?? 3;
+  // Unknown stays unknown: no step button may look pressed without a reported level.
+  const level = number(controller.effective_level);
   const afterheatSetpoint = number(controller.afterheat_setpoint) ?? 20;
   const afterheatEnabled = controller.afterheat_enabled !== false;
   // While it freezes the Pi keeps the afterheat on at the floor or above, even
@@ -245,7 +261,11 @@ export function OverviewPage() {
     : actualAfterheatSelectionNumber !== null
       ? `${whole(actualAfterheatSelectionNumber)} °C`
       : "Afventer";
+  const decision = describeControl(controller);
   const busHealthy = controller.rs485_healthy === true || unit.bus_traffic === true || unit.available === true;
+  // Unit values are only trustworthy while frames flow: once the bus is quiet the numbers are old.
+  const frameAge = number(unit.bus_last_frame_age);
+  const unitStale = Object.keys(unit).length > 0 && (!busHealthy || (frameAge !== null && frameAge > 10));
   const quickBoostActive = (number(controller.quick_boost_remaining_seconds) ?? 0) > 0;
   const coolActive = (number(controller.cool_boost_remaining_seconds) ?? 0) > 0;
 
@@ -255,6 +275,7 @@ export function OverviewPage() {
     return value >= 0 && value <= 105 ? Math.round(value) : null;
   }, [bypassActual, outdoor, extract, exhaust]);
   const correctedT2 = number(controller.corrected_t2_temperature);
+  const t2Offset = number(controller.t2_offset_k) ?? 0;
   const t2Recovery = number(controller.supply_recovery_percent);
   const t2Difference = number(controller.afterheat_lift);
   const t2NeedsCheck = heatKnown && !heating && t2Difference !== null && t2Difference >= 0.5;
@@ -293,7 +314,7 @@ export function OverviewPage() {
     <article className="surface afterheat-setpoint-card ovx-heat">
       <AfterheatThermostat value={shownAfterheat} onChange={setAfterheatTarget} heating={heating} lockout={afterheatLockout}
         cutoff={afterheatCutoff} outdoor={outdoor} airBefore={correctedT2 ?? number(controller.actual_supply_before_heater_temperature)} airAfter={afterHeater}
-        registered={actualAfterheatSelection} lastOn={lastAfterheatOn.current}
+        registered={actualAfterheatSelection} stepText={afterheatControl.active === "pi" && afterheatControl.level !== null ? `${whole(afterheatControl.level)} af ${afterheatControl.levelMax}` : afterheatControl.active === "pi" ? "Pi'en styrer" : null} lastOn={lastAfterheatOn.current}
         current={committedAfterheat} onConfirm={confirmAfterheat} onCancel={() => setAfterheatDraft(null)} busy={busy !== null}
         frostLock={frostLock.locked} floor={frostLock.floor}/>
       {afterheatControl.known && <AfterheatLevelPanel control={afterheatControl}/>}
@@ -312,8 +333,8 @@ export function OverviewPage() {
           <p>Live visning af HCH5, luftveje, sensorer og den styring der er aktiv lige nu.</p>
         </div>
         <div className="overview-status-pills ovx-status">
-          <div><span className="status-led"/><small>Master</small><strong>{masterLabel(controller.active_master)}</strong></div>
-          <div><span className={`status-led ${busHealthy ? "" : "warn"}`}/><small>Bus</small><strong>{busHealthy ? "Sund" : "Afventer"}</strong></div>
+          <div><span className="status-led"/><small>Styres af</small><strong>{masterLabel(controller.active_master)}</strong></div>
+          <div><span className={`status-led ${busHealthy ? "" : "warn"}`}/><small>Forbindelse til anlægget</small><strong>{busHealthy ? "OK" : "Afventer"}</strong></div>
           <div><Leaf size={18}/><small>Driftstilstand</small><strong>{modeLabel(controller.mode)}</strong></div>
           {number(controller.unit_power_w) !== null && <div><Zap size={18}/><small>Forbrug</small><strong>{whole(number(controller.unit_power_w))} W</strong></div>}
           {number(controller.attic_temperature) !== null && <div><House size={18}/><small>Loftrum</small><strong>{temp(number(controller.attic_temperature))}</strong></div>}
@@ -329,13 +350,14 @@ export function OverviewPage() {
         <article className="surface pro-air-card ovx-air">
           <div className="pro-card-head">
             <div><h2>Luftstrømme og temperaturer</h2><p>Live luftveje gennem HCH5 med aktuelle temperaturer og fysisk status.</p></div>
-            <span className={`status-chip${online ? "" : " muted"}`}><span className="live-dot"/>{online ? "Live" : "Afventer"}</span>
+            <span className={`status-chip${online && !unitStale ? "" : " muted"}`}><span className="live-dot"/>{!online ? "Afventer" : unitStale ? "Ingen kontakt til anlægget" : "Live"}</span>
           </div>
+          {unitStale && <p className="hx-note" role="status">Tallene fra anlægget er gamle{frameAge !== null && frameAge > 10 ? ` (sidste svar for ${frameAge >= 120 ? `${Math.round(frameAge / 60)} min` : `${Math.round(frameAge)} sek.`} siden)` : ""}, fordi forbindelsen til anlægget er afbrudt. Ventilatorernes tal er skjult.</p>}
           <Hch5UnitDiagram
             onTemperatureClick={setActiveSensor}
             outdoor={outdoor} extract={extract} exhaust={exhaust} afterHeater={afterHeater} beforeHeater={correctedT2 ?? number(controller.actual_supply_before_heater_temperature)} t2Corrected={(number(controller.t2_offset_k) ?? 0) !== 0} beforeHeaterEstimate={number(controller.actual_supply_before_heater_estimate)}
             frost={frost} flowWater={flowWater} returnWater={returnWater}
-            supplyRpm={supplyRpm} extractRpm={extractRpm} supplyPercent={supplyPercent} extractPercent={extractPercent}
+            supplyRpm={unitStale ? null : supplyRpm} extractRpm={unitStale ? null : extractRpm} supplyPercent={unitStale ? null : supplyPercent} extractPercent={unitStale ? null : extractPercent}
             bypassActual={bypassActual} bypassRequest={bypassRequest} heating={heating} recovery={recovery} supplyRecovery={t2Recovery}
             busActive={busHealthy} bypassRaw={bypassRaw} afterheatLockout={afterheatLockout} afterheatFrostLock={frostLock.locked} afterheatCoil={controller.afterheat_coil === "water" ? "water" : "electric"}
             bypassTravelDirection={bypassTravelDirection} bypassTravelSeconds={bypassTravelSeconds} bypassTravelTotal={bypassTravelTotal}
@@ -359,7 +381,7 @@ export function OverviewPage() {
             {levels.map(value => <button key={value} title={dantherm ? `Trin ${value} · ${LEVEL_NAMES[value].da}${value === 4 ? ` (${MAX_LEVEL_HOURS} timer, derefter trin 3)` : ""}` : undefined} className={!standbyActive && level === value ? "active" : ""} disabled={busy !== null} onClick={() => void command(`level-${value}`, standbyActive ? { standby_minutes: 0, [levelPatch]: value } : { [levelPatch]: value }, standbyActive ? `Anlægget er tændt på trin ${value}.` : `Ventilation sat til trin ${value}.`)}>{value}</button>)}
             <button className={`level-off${standbyActive ? " active" : ""}`} aria-haspopup="dialog" aria-pressed={standbyActive} disabled={busy !== null} onClick={() => setStandbyDialog(true)}>OFF</button>
           </div>
-          <div className="active-decision"><span>Aktiv beslutning</span><strong>{standbyActive ? "OFF · anlæg slukket" : `Trin ${whole(level)} · ${text(controller.effective_source).replaceAll("_", " ")}`}</strong><small>{text(controller.effective_reason, "Afventer controllerens beslutning")}</small>{automationLines(controller).map(line => <small key={line} className="active-decision-note">{line}</small>)}</div>
+          <div className="active-decision"><span>Hvad bestemmer blæseren</span><strong>{standbyActive ? "OFF · anlæg slukket" : `Trin ${whole(level)} · ${decision.title}`}</strong><small>{standbyActive ? "Anlægget er slukket" : decision.reason}</small>{automationLines(controller).map(line => <small key={line} className="active-decision-note">{line}</small>)}</div>
         </article>
         {unit.unit_generation === "mk2" ? null : afterheatCard}
 
@@ -368,8 +390,8 @@ export function OverviewPage() {
           <FunctionTile active={quickBoostActive} icon={<Wind size={22}/>} label="Hurtig boost"
             state={quickBoostActive ? `Aktiv · ${remaining(controller.quick_boost_remaining_seconds)}` : "Ikke aktiv"}
             hint={fireplace ? "Ikke under pejsefunktion" : `Trin ${number(controller.quick_boost_level) ?? levels.length} i kort tid`}>
-            {[15, 30, 60].map(minutes => <button key={minutes} className={quickBoostActive && number(controller.quick_boost_minutes) === minutes ? "active" : ""} aria-pressed={quickBoostActive && number(controller.quick_boost_minutes) === minutes} disabled={busy !== null || fireplace} onClick={() => void command(`boost-${minutes}`, { quick_boost_minutes: minutes }, `Quick Boost ${minutes} min startet.`)}>{minutes} min</button>)}
-            {quickBoostActive && <button className="stop" onClick={() => void command("boost-stop", { quick_boost_minutes: 0 }, "Quick Boost stoppet.")}>Stop</button>}
+            {[15, 30, 60].map(minutes => <button key={minutes} className={quickBoostActive && number(controller.quick_boost_minutes) === minutes ? "active" : ""} aria-pressed={quickBoostActive && number(controller.quick_boost_minutes) === minutes} disabled={busy !== null || fireplace} onClick={() => void command(`boost-${minutes}`, { quick_boost_minutes: minutes }, `Kort boost ${minutes} min startet.`)}>{minutes} min</button>)}
+            {quickBoostActive && <button className="stop" onClick={() => void command("boost-stop", { quick_boost_minutes: 0 }, "Kort boost stoppet.")}>Stop</button>}
           </FunctionTile>
           <FunctionTile active={String(controller.bypass) === "on"} icon={<ArrowRight size={22}/>} label="Bypass-styring"
             state={`Faktisk: ${bypassActualLabel}`} hint={String(controller.bypass) === "on" ? "Ønske: On · bypass åben" : "Ønske: Auto · anlægget styrer selv"}>
@@ -413,11 +435,11 @@ export function OverviewPage() {
             </section>
             {/* Extract duct loss: the HA average of the rooms with an extract valve against T3 and the loft. */}
             {number(controller.extract_rooms_temperature) !== null && <section className="ovx-sec">
-              <div className="pro-card-head compact"><div><h2>Udsugningskanaler · afkøling på loftet</h2><p>Rum med udsugning → T3 ved anlægget{number(controller.attic_temperature) !== null ? ` · loft ${temp(number(controller.attic_temperature))}` : ""}</p></div></div>
+              <div className="pro-card-head compact"><div><h2>Udsugningskanaler · afkøling på loftet</h2><p>Rum med udsugning → udsugningsluften ved anlægget{number(controller.attic_temperature) !== null ? ` · loft ${temp(number(controller.attic_temperature))}` : ""}</p></div></div>
               <div className="climate-metrics">
                 <div className="climate-metric neutral"><span className="metric-heat">≋</span><span>Udsugningsrum</span><strong>{temp(number(controller.extract_rooms_temperature))}</strong><em>Gennemsnit fra Home Assistant</em></div>
-                <div className="climate-metric cyan"><Wind size={21}/><span>T3 ved anlægget</span><strong>{temp(number(controller.extract_duct_loss_k) === null ? null : number(controller.extract_rooms_temperature)! - number(controller.extract_duct_loss_k)!)}</strong><em>Udsugning ind i veksleren</em></div>
-                <div className="climate-metric neutral"><Gauge size={21}/><span>Afkøling</span><strong>{number(controller.extract_duct_loss_k) === null ? "—" : `${number(controller.extract_duct_loss_k)!.toLocaleString("da-DK", { maximumFractionDigits: 1 })} K`}</strong><em>Rum − T3</em></div>
+                <div className="climate-metric cyan"><Wind size={21}/><span>Udsugning ved anlægget</span><strong>{temp(number(controller.extract_duct_loss_k) === null ? null : number(controller.extract_rooms_temperature)! - number(controller.extract_duct_loss_k)!)}</strong><em>Udsugning ind i veksleren</em></div>
+                <div className="climate-metric neutral"><Gauge size={21}/><span>Afkøling</span><strong>{number(controller.extract_duct_loss_k) === null ? "—" : `${number(controller.extract_duct_loss_k)!.toLocaleString("da-DK", { maximumFractionDigits: 1 })} grader`}</strong><em>Rum minus udsugning ved anlægget</em></div>
                 <div className={`climate-metric ${(number(controller.extract_duct_loss_percent) ?? 0) > 15 ? "neutral" : "green"}`}><Snowflake size={21}/><span>Andel tabt</span><strong>{number(controller.extract_duct_loss_percent) === null ? "—" : `${whole(number(controller.extract_duct_loss_percent))} %`}</strong><em title="Afkølingen delt med forskellen mellem rummene og loftet. En isoleret, tæt kanal giver få procent.">af forskellen rum − loft</em></div>
               </div>
             </section>}
@@ -426,7 +448,7 @@ export function OverviewPage() {
             <section className="ovx-sec">
               <div className="pro-card-head compact"><div><h2>Diagnose og energi i dag</h2><p>{controller.diagnostics_status === "ok" || !controller.diagnostics_status ? "Ingen advarsler" : `${controller.diagnostics_alarm_count} advarsel${controller.diagnostics_alarm_count === 1 ? "" : "er"}`}</p></div></div>
               <div className="climate-metrics metrics-5">
-                <div className="climate-metric cyan"><Snowflake size={21}/><span>Frost i veksler</span><strong>{({ ok: "OK", watch: "Hold øje", risk: "Risiko", unknown: "—" } as Record<string, string>)[String(controller.frost_state ?? "unknown")] ?? "—"}</strong><em>Afkast T4 {temp(exhaust)}</em><i style={{ width: controller.frost_state === "risk" ? "100%" : controller.frost_state === "watch" ? "50%" : "5%" }}/></div>
+                <div className="climate-metric cyan"><Snowflake size={21}/><span>Frost i veksler</span><strong>{({ ok: "OK", watch: "Hold øje", risk: "Risiko", unknown: "—" } as Record<string, string>)[String(controller.frost_state ?? "unknown")] ?? "—"}</strong><em>Afkast {temp(exhaust)}</em><i style={{ width: controller.frost_state === "risk" ? "100%" : controller.frost_state === "watch" ? "50%" : "5%" }}/></div>
                 <div className="climate-metric neutral"><Gauge size={21}/><span>Filter · strøm</span><strong>{filterChange === null ? "—" : `${filterChange > 0 ? "+" : ""}${filterChange.toLocaleString("da-DK", { maximumFractionDigits: 1 })} %`}</strong><em title="Effekten ved samme ventilatorgear sammenlignet med de første 72 timer efter filterskift. Ventilatorerne holder omdrejningerne, så tilstopning ses som ændret strøm.">{number(controller.unit_power_w) === null ? "Kræver effektmåler" : filterLearning ? "Lærer rene filtre (72 t efter skift)" : controller.filter_reference_gears ? `ved gear ${String(controller.filter_reference_gears)} mod rene filtre` : "Ingen reference for disse gear endnu"}</em><i style={{ width: `${Math.min(100, Math.abs(filterChange ?? 0) / 15 * 100)}%` }}/></div>
                 <div className="climate-metric green"><Leaf size={21}/><span>Genvundet i dag</span><strong>{energy(number(controller.recovered_energy_today_kwh))} <small>kWh</small></strong><em>Teoretisk varmeværdi ca. {cost(number(controller.recovered_energy_today_kwh), number(controller.heat_price_dkk_kwh))}</em><i style={{ width: `${Math.min(100, (number(controller.recovered_energy_today_kwh) ?? 0) * 5)}%` }}/></div>
                 <div className="climate-metric neutral"><Zap size={21}/><span>Strøm i dag{number(controller.unit_energy_measured_today_kwh) !== null ? " · målt" : " · anslået"}</span><strong>{energy(number(controller.unit_energy_measured_today_kwh) ?? number(controller.unit_energy_today_kwh))} <small>kWh</small></strong><em>Ca. {cost(number(controller.unit_energy_measured_today_kwh) ?? number(controller.unit_energy_today_kwh), number(controller.electricity_price_dkk_kwh))} ved aktuel elpris</em><i style={{ width: `${Math.min(100, (number(controller.unit_energy_measured_today_kwh) ?? number(controller.unit_energy_today_kwh) ?? 0) * 50)}%` }}/></div>
@@ -435,13 +457,13 @@ export function OverviewPage() {
             </section>
             {/* Only with a measured T2 before the afterheat coil (1-Wire role "t2"). */}
             {number(controller.actual_supply_before_heater_temperature) !== null && <section className="ovx-sec">
-              <div className="pro-card-head compact"><div><h2>Genvinding og eftervarme · målt T2</h2><p>Luftmængde anslået for aktuelt trin{number(controller.supply_airflow_estimate_m3h) === null ? "" : ` · ${whole(number(controller.supply_airflow_estimate_m3h))} m³/h`}</p></div></div>
+              <div className="pro-card-head compact"><div><h2>Genvinding og eftervarme · føler før varmefladen</h2><p>Luftmængde anslået for aktuelt trin{number(controller.supply_airflow_estimate_m3h) === null ? "" : ` · ${whole(number(controller.supply_airflow_estimate_m3h))} m³/h`}</p></div></div>
               <div className="climate-metrics metrics-5">
-                <div className="climate-metric green"><Leaf size={21}/><span>Veksler · korrigeret T2</span><strong>{t2Recovery === null ? "—" : `≈${whole(t2Recovery)}`} <small>%</small></strong><em>{t2NeedsCheck ? "T2/T2AH afviger trods slukket eftervarme" : `T2 ${temp(number(controller.t2_offset_k))} · (T2 − T1) / (T3 − T1)`}</em><i style={{ width: `${Math.max(0, Math.min(100, t2Recovery ?? 0))}%` }}/></div>
-                <div className="climate-metric neutral"><Leaf size={21}/><span>Genvinding · udsugningsside</span><strong>{whole(recovery)} <small>%</small></strong><em>(T3 − T4) / (T3 − T1)</em><i style={{ width: `${Math.max(0, Math.min(100, recovery ?? 0))}%` }}/></div>
+                <div className="climate-metric green"><Leaf size={21}/><span>Veksler · genvinding med rettet føler</span><strong>{t2Recovery === null ? "—" : `≈${whole(t2Recovery)}`} <small>%</small></strong><em>{t2NeedsCheck ? "Luften før og efter varmefladen er forskellig, selvom eftervarmen er slukket" : t2Offset === 0 ? "Målt luft før varmefladen" : `Føleren før varmefladen er rettet ${offsetText(t2Offset)}`}</em><i style={{ width: `${Math.max(0, Math.min(100, t2Recovery ?? 0))}%` }}/></div>
+                <div className="climate-metric neutral"><Leaf size={21}/><span>Genvinding · målt på udsugningen</span><strong>{whole(recovery)} <small>%</small></strong><em>Hvor meget af udsugningens varme veksleren henter</em><i style={{ width: `${Math.max(0, Math.min(100, recovery ?? 0))}%` }}/></div>
                 <div className="climate-metric cyan"><Wind size={21}/><span>Genvundet varme</span><strong>{whole(number(controller.recovered_heat_w))} <small>W</small></strong><em>Veksler → indblæsning</em><i style={{ width: `${Math.min(100, (number(controller.recovered_heat_w) ?? 0) / 30)}%` }}/></div>
-                <div className="climate-metric neutral"><span className="metric-heat">≋</span><span>T2AH − T2 · korrigeret T2</span><strong>{temp(t2Difference)}</strong><em>{heating ? "Eftervarme aktiv" : `Kun T2 korrigeret ${temp(number(controller.t2_offset_k))}`}</em><i style={{ width: `${Math.max(0, Math.min(100, (t2Difference ?? 0) * 10))}%` }}/></div>
-                <div className="climate-metric neutral"><Flame size={21}/><span>Varmeflade til luft</span><strong>{whole(number(controller.afterheat_power_w))} <small>W</small></strong><em>Ud fra T2AH − T2 · anslået</em><i style={{ width: `${Math.min(100, (number(controller.afterheat_power_w) ?? 0) / 20)}%` }}/></div>
+                <div className="climate-metric neutral"><span className="metric-heat">≋</span><span>Varmeflade løfter luften</span><strong>{degrees(t2Difference)}</strong><em>{heating ? "Eftervarmen er i gang" : t2Offset === 0 ? "Eftervarmen er ikke i gang" : `Eftervarmen er ikke i gang · føleren før fladen er rettet ${offsetText(t2Offset)}`}</em><i style={{ width: `${Math.max(0, Math.min(100, (t2Difference ?? 0) * 10))}%` }}/></div>
+                <div className="climate-metric neutral"><Flame size={21}/><span>Varme til luften</span><strong>{whole(number(controller.afterheat_power_w))} <small>W</small></strong><em>Anslået ud fra, hvor meget fladen løfter luften</em><i style={{ width: `${Math.min(100, (number(controller.afterheat_power_w) ?? 0) / 20)}%` }}/></div>
               </div>
             </section>}
           </div>

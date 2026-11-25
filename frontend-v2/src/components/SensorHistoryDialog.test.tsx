@@ -26,21 +26,21 @@ describe("T2AH graph (afterheat)", () => {
   it("draws target, sent setpoint, valve opening and decision inside one plot", async () => {
     serve(index => ({ afterheat_target: 21, afterheat_setpoint: 25 + (index > 3 ? 1 : 0), afterheat_level: index < 3 ? 3 : 5, afterheat_level_target: 4 }));
     render(<SensorHistoryDialog sensor={SENSOR_HISTORY.afterHeater} onClose={() => {}}/>);
-    const chart = await screen.findByRole("img", { name: /^T2AH efter eftervarme: .*Ventilåbning \(faktisk\), Styringens beslutning/ });
+    const chart = await screen.findByRole("img", { name: /^T2AH efter eftervarme: .*Trin \(0-10\), Styringens beslutning/ });
     // One plot: no separate valve chart.
     expect(screen.getAllByRole("img")).toHaveLength(1);
     expect(legendValue("Mål")).toBe("21,0°C");
     expect(legendValue("Sendt til HAC1")).toBe("26,0°C");
-    expect(legendValue("Ventilåbning (faktisk)")).toBe("50 %");
-    expect(legendValue("Styringens beslutning")).toBe("40 %");
+    expect(legendValue("Trin (0-10)")).toBe("5");
+    expect(legendValue("Styringens beslutning")).toBe("4");
     expect(chart.querySelector("path.hx-ref")).toBeTruthy();
     expect(chart.querySelector("path.hx-cmd")).toBeTruthy();
     expect(chart.querySelector("path.hx-valve-area")?.getAttribute("d")).toMatch(/Z$/);
     expect(chart.querySelector("path.hx-decision")?.getAttribute("d")).toMatch(/^M/);
     // Own 0..100 % scale on the right edge.
-    expect([...chart.querySelectorAll("text.hx-tick-valve")].map(node => node.textContent)).toEqual(["0 %", "50 %", "100 %"]);
+    expect([...chart.querySelectorAll("text.hx-tick-valve")].map(node => node.textContent)).toEqual(["0", "5", "10"]);
     expect(screen.queryByText("Ventil åben")).toBeNull();
-    expect(screen.getByText(/HAC1's trin × 10 %/)).toBeTruthy();
+    expect(screen.getByText(/Trinnet er ikke det samme som, hvor meget ventilen er åben/)).toBeTruthy();
   });
 
   it("reads every value at the hovered moment", async () => {
@@ -54,8 +54,8 @@ describe("T2AH graph (afterheat)", () => {
     expect(legendValue("T2AH efter eftervarme")).toBe("23,5°C");
     expect(legendValue("Mål")).toBe("21,0°C");
     expect(legendValue("Sendt til HAC1")).toBe("28,0°C");
-    expect(legendValue("Ventilåbning (faktisk)")).toBe("30 %");
-    expect(legendValue("Styringens beslutning")).toBe("40 %");
+    expect(legendValue("Trin (0-10)")).toBe("3");
+    expect(legendValue("Styringens beslutning")).toBe("4");
     expect(chart.querySelector("circle.hx-valve-dot")).toBeTruthy();
   });
 
@@ -63,7 +63,7 @@ describe("T2AH graph (afterheat)", () => {
     serve(() => ({ afterheat_target: 21, afterheat_setpoint: 21, afterheat_level: 2, afterheat_level_target: null }));
     render(<SensorHistoryDialog sensor={SENSOR_HISTORY.afterHeater} onClose={() => {}}/>);
     const chart = await screen.findByRole("img", { name: /^T2AH efter eftervarme/ });
-    expect(legendValue("Ventilåbning (faktisk)")).toBe("20 %");
+    expect(legendValue("Trin (0-10)")).toBe("2");
     expect(legendValue("Styringens beslutning")).toBe("HAC1 styrer selv");
     expect(chart.querySelector("path.hx-decision")?.getAttribute("d")).toBe("");
     // HAC1 gets the target itself: no extra line on top of it.
@@ -76,7 +76,7 @@ describe("T2AH graph (afterheat)", () => {
     expect(await screen.findByText("Ventil åben")).toBeTruthy();
     expect(legendValue("Mål")).toBe("21,0°C");
     expect(screen.queryByText("Sendt til HAC1")).toBeNull();
-    expect(screen.queryByText("Ventilåbning (faktisk)")).toBeNull();
+    expect(screen.queryByText("Trin (0-10)")).toBeNull();
     expect(document.querySelector("text.hx-tick-valve")).toBeNull();
   });
 });

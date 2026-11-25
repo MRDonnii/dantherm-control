@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { describeControl } from "./control";
 
 describe("describeControl", () => {
-  it("explains Smart Auto driven by the unit's own CO2 sensor", () => {
+  it("explains the room automation driven by the unit's own CO2 sensor", () => {
     const c = describeControl({ active_master: "pi", effective_source: "ha_smart", effective_level: 4, effective_reason: "CO2 HCH5 / lokale sensorer 722 (auto)" });
-    expect(c.title).toBe("Smart Auto");
+    expect(c.title).toBe("Automatik med rummene");
     expect(c.level).toBe(4);
     expect(c.reason).toBe("CO₂ 722 ppm ved anlæggets egen føler");
     expect(c.footer).toBe("Pi styrer");
@@ -26,6 +26,14 @@ describe("describeControl", () => {
     expect(night.title).toBe("Nat · luftkvalitet");
     expect(night.tone).toBe("reduced");
     expect(night.reason).toBe("CO₂ 1040 ppm i Soveværelse; nat: luftkvalitet begrænset til trin 4; venter før nedgang");
+  });
+
+  it("says the air is good instead of naming a room when the fan sits on the normal step", () => {
+    const calm = describeControl({ active_master: "pi", effective_source: "ha_smart", effective_level: 4, effective_normal_level: 4, effective_reason: "CO2 Soveværelse 729 (auto)", co2_setpoint: 800, smart_max_co2: 715, smart_max_co2_room: "Soveværelse" });
+    expect(calm.reason).toBe("Normaltrin 4 · luften er god i alle rum (højest CO₂ 715 ppm i Soveværelse, grænsen er 800)");
+    const raised = describeControl({ active_master: "pi", effective_source: "ha_smart", effective_level: 5, effective_normal_level: 4, effective_reason: "CO2 Soveværelse 889 (auto)", co2_setpoint: 800, smart_max_co2: 889, smart_max_co2_room: "Soveværelse" });
+    expect(raised.reason).toBe("CO₂ 889 ppm i Soveværelse");
+    expect(describeControl({ active_master: "pi", effective_source: "ha_smart", effective_level: 4, effective_reason: "PM2.5 Køkken 2 µg/m³ (auto)" }).reason).toBe("Støv 2 µg/m³ i Køkken");
   });
 
   it("says when HCP4 or the fireplace takes over", () => {

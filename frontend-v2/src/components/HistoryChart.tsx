@@ -68,6 +68,11 @@ export interface ValveLayer {
   decisionIdle?: string;
   /** Share of the plot height the 0..100 % scale uses, from the bottom (default 0.4). */
   share?: number;
+  /**
+   * The scale runs 0..100 but means HAC1's step 0..10 (percent = step x 10). Shown as steps,
+   * because the valve opens far faster than step x 10 % (it is a quick-opening valve).
+   */
+  steps?: boolean;
 }
 
 const LEGACY_SLOT: Record<LegacyColor, SeriesSlot> = { blue: 1, orange: 2, green: 3, red: 2 };
@@ -227,8 +232,9 @@ export function HistoryChart({
     return lastValue(rows, key)?.value ?? null;
   };
   const show = (value: number | null, digits: number, suffix: string) => value === null ? "–" : `${formatNumber(value, digits)}${suffix}`;
+  const showValve = (value: number | null) => valve?.steps ? show(value === null ? null : value / 10, 0, "") : show(value, 0, " %");
   const showDecision = (decision: number | null, actual: number | null) =>
-    decision !== null ? show(decision, 0, " %") : actual !== null && valve?.decisionIdle ? valve.decisionIdle : "–";
+    decision !== null ? showValve(decision) : actual !== null && valve?.decisionIdle ? valve.decisionIdle : "–";
 
   const pointerToTs = (event: PointerEvent<SVGSVGElement>) => {
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -291,7 +297,7 @@ export function HistoryChart({
         <span className="hx-item">
           <i className="hx-key hx-key-valve"/>
           <span className="hx-label">{valve.label}</span>
-          <strong>{show(valueAt(valve.key), 0, " %")}</strong>
+          <strong>{showValve(valueAt(valve.key))}</strong>
         </span>
       )}
       {valve?.decisionKey && (
@@ -349,7 +355,7 @@ export function HistoryChart({
                     {band && <td>{num(sample[band.minKey]) === null ? "–" : `${formatNumber(num(sample[band.minKey]) as number, decimals)}–${formatNumber(num(sample[band.maxKey]) as number, decimals)}`}</td>}
                     {reference && <td>{show(num(sample[reference.key]), reference.decimals ?? 0, unit)}</td>}
                     {command && <td>{show(num(sample[command.key]), command.decimals ?? 0, unit)}</td>}
-                    {valve && <td>{show(num(sample[valve.key]), 0, " %")}</td>}
+                    {valve && <td>{showValve(num(sample[valve.key]))}</td>}
                     {valve?.decisionKey && <td>{showDecision(num(sample[valve.decisionKey]), num(sample[valve.key]))}</td>}
                     {strip && <td>{num(sample[strip.key]) === null ? "–" : `${Math.round((num(sample[strip.key]) as number) * 100)} %`}</td>}
                     {extras.map(extra => <td key={extra.key}>{show(num(sample[extra.key]), extra.decimals ?? 0, extra.unit)}</td>)}
@@ -388,7 +394,7 @@ export function HistoryChart({
         {valve && (
           <g className="hx-valve">
             {VALVE_TICKS.map(tick => (
-              <text key={tick} className="hx-tick hx-tick-valve" x={width - padRight + 5} y={yValve(tick) + (tick === 0 ? 0 : tick === 100 ? 7 : 3.5)} textAnchor="start">{`${tick} %`}</text>
+              <text key={tick} className="hx-tick hx-tick-valve" x={width - padRight + 5} y={yValve(tick) + (tick === 0 ? 0 : tick === 100 ? 7 : 3.5)} textAnchor="start">{valve.steps ? String(tick / 10) : `${tick} %`}</text>
             ))}
             <line className="hx-valve-top" x1={left} x2={width - padRight} y1={yValve(100)} y2={yValve(100)}/>
             <path className="hx-valve-area" d={valvePath(valve.key)}/>

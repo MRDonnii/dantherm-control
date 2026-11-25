@@ -237,7 +237,7 @@ function HistorySection() {
     <HistoryChart samples={rows} range={window_} hoverTs={hover} onHover={setHover} loading={loading} title="Eftervarmens styring" unit="°C" height={310} minSpan={3}
       series={[{ key: "heating_coil_after_temperature", label: "Luft efter varmefladen", slot: 1 }, { key: "ac_floor", label: "Bund (mål − 0,5 °C)", slot: 2, stepped: true }]}
       reference={{ key: "afterheat_target", label: "Mål", decimals: 1 }}
-      valve={{ key: "ac_level", label: "Trin (ventilåbning)", decisionKey: "ac_wanted", decisionLabel: "Styringens ønske", decisionIdle: "HAC1 styrer selv" }}/>
+      valve={{ key: "ac_level", label: "Trin (0-10)", steps: true, decisionKey: "ac_wanted", decisionLabel: "Styringens ønske", decisionIdle: "HAC1 styrer selv" }}/>
     {hasAlgo && <>
       <div className="ac-strip" role="img" aria-label={`Hvilken styring der kørte. Sikkerheden greb ind ${safetyCount} gange i perioden.`}>
         {segments.map(s => <i key={s.ts} title={s.code !== null ? algorithmName(CODES[s.code]) : "HAC1 styrer selv"}
