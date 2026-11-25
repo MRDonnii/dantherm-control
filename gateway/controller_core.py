@@ -110,6 +110,8 @@ STANDBY_PROFILE = {"extract": 0, "supply": 0, "name": "Slukket"}
 
 # Four Dantherm steps derived from the commissioning (fan_steps.py).
 DEFAULT_PROFILES = fan_steps.ladder(fan_steps.DEFAULT_FAN_SETTINGS)
+# Measured error of the 1-Wire T2 sensor (K to add); used for the lift, kWh and diagnostics only, never by the afterheat control.
+T2_OFFSET_MEASURED_K = 1.5
 
 DEFAULT_SCHEDULE = {
     str(day): {"enabled": True, "start": "07:00", "end": "22:00", "level": 3}
@@ -457,6 +459,8 @@ class ControllerState:
         "duct_rooms_offset_k": 0.0,
         "duct_t3_offset_k": 0.0,
         "t2_offset_k": 0.0,
+        # The T2 error was measured once (1.13.0-beta.14): see ControllerConfig.load.
+        "t2_offset_calibrated": False,
         "humidity_margin_gm3": 0.5,
         "dry_protection_enabled": False,
         # Dry-air limit: caps the level at dry_max_level while the Home
@@ -552,6 +556,17 @@ class ControllerState:
                 self.data.update(afterheat_room_target=22.0, afterheat_room_min=17, afterheat_room_max=24,
                                  afterheat_room_step_minutes=10)
             self.data["afterheat_room_v2"] = True
+        if not saved.get("t2_offset_calibrated"):
+            # The 1-Wire T2 reads about 1.5 K below the air that the extract-side heat balance gives
+            # (1148 minutes, p5-p95 1.3-2.3 K, the same at every afterheat level) and that the unit's
+            # own T2AH confirms when the coil is cold (0.07 K median over 17 days without water).
+            # The earlier correction of 0.4 K was too small: raise exactly that value to the measured
+            # 1.5 K, once. Any other value is the owner's own choice and is kept.
+            if abs(float(self.data.get("t2_offset_k") or 0.0) - 0.4) < 1e-9:
+                self.data["t2_offset_k"] = T2_OFFSET_MEASURED_K
+                migrated = True
+            self.data["t2_offset_calibrated"] = True
+            migrated = True
         if "air_quality_max_level" not in saved:
             # An existing six-step installation must keep its full range.
             self.data["air_quality_max_level"] = self.max_level()
@@ -1915,6 +1930,7 @@ class ControllerEngine:
         self._schedule_key: tuple | None = None
         # Frost lock (see _update_frost_lock); the latch itself is saved in the config.
         self.frost_lock_active = False
+        self.cool_stopped_by_frost = False
         self.frost_lock_reason: str | None = None
         self.frost_release_since: float | None = None
         self.frost_cold_since: float | None = None
@@ -2786,6 +2802,7 @@ class ControllerEngine:
                 d["cool_boost_until"], d["cool_boost_minutes"] = None, 0
                 d["updated_at"] = now
                 self.config.save()
+                self.cool_stopped_by_frost = True  # the runtime writes it to the change log
             if d["mode"] == "manual":
                 source, level, reason = "manual", int(d["manual_level"]), "Manuelt valgt niveau"
                 if self.config.dantherm_steps() and level == MAX_LEVEL and d.get("max_level_until"):

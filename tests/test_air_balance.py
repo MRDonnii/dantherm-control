@@ -300,6 +300,8 @@ class RuntimeBalanceTests(unittest.TestCase):
                        fan_supply_rpm=supply_rpm, fan_extract_rpm=extract_rpm, bypass_active=False)
         runtime.onewire.by_role = lambda role: t2 if role == "t2" else None
         runtime.refresh_measurements()
+        # The condensation check uses the rooms' humidity (the unit's own RH sensor reads far too low).
+        runtime.engine.set_external({"indoor_rh_average": 40.0})
         start = 1_790_460_000.0  # 23:00 local time
         for night in range(2):
             now = start + night * 86400
@@ -326,7 +328,9 @@ class OverpressureAlarmTests(unittest.TestCase):
         self.assertEqual(diagnostics.update(feed, 1800.0)["diagnostics_alarm_count"], 0)
         result = diagnostics.update(feed, 3700.0)
         self.assertIn("balance_overpressure", [alarm["code"] for alarm in result["diagnostics_alarms"]])
-        cleared = diagnostics.update({**feed, "fireplace": True}, 3800.0)
+        diagnostics.update({**feed, "fireplace": True}, 3800.0)
+        # The alarm clears after being gone for a while (hysteresis), not at once.
+        cleared = diagnostics.update({**feed, "fireplace": True}, 3800.0 + 1801.0)
         self.assertEqual(cleared["diagnostics_alarm_count"], 0)
 
 

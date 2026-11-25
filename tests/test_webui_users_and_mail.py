@@ -131,8 +131,31 @@ class MailTests(unittest.TestCase):
             self.assertEqual(mailer.check(now=1030), [])
             self.assertIn("KRITISK", FakeSmtp.sent[0]["Subject"])
             state["diagnostics_alarms"] = [{"code": "recovery_mismatch", "severity": "info", "text": "x", "since": 2}]
-            self.assertEqual([k for k, _ in mailer.check(now=1060)], ["resolved"])  # info is below "warning"
+            # "Løst" goes out only after the alarm has stayed away for 15 minutes (info is below "warning").
+            self.assertEqual(mailer.check(now=1060), [])
+            self.assertEqual([k for k, _ in mailer.check(now=1060 + 901)], ["resolved"])
             self.assertEqual(len(FakeSmtp.sent), 2)
+
+    def test_an_alarm_that_comes_back_is_not_mailed_again_within_an_hour(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mail = self.service(tmp)
+            mail.send_async = lambda to, subject, body, kind="mail": mail.send_now(to, subject, body, kind=kind)
+            alarm = {"code": "bus_unhealthy", "severity": "critical", "text": "Ingen RS485", "since": 1}
+            state = {"diagnostics_alarms": [alarm]}
+            mailer = AlarmMailer(mail, lambda: state)
+            self.assertEqual([k for k, _ in mailer.check(now=1000)], ["raised"])
+            # Gone for a few minutes and back: the "løst" mail never went out and nothing new is sent.
+            state["diagnostics_alarms"] = []
+            self.assertEqual(mailer.check(now=1100), [])
+            state["diagnostics_alarms"] = [alarm]
+            self.assertEqual(mailer.check(now=1400), [])
+            # Gone long enough to be resolved, then back within the hour: held until the hour has passed.
+            state["diagnostics_alarms"] = []
+            mailer.check(now=1500)
+            self.assertEqual([k for k, _ in mailer.check(now=2500)], ["resolved"])
+            state["diagnostics_alarms"] = [alarm]
+            self.assertEqual(mailer.check(now=2600), [])
+            self.assertEqual([k for k, _ in mailer.check(now=1000 + 3601)], ["raised"])
 
 
 class HttpRoleTests(unittest.TestCase):

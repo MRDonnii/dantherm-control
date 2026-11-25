@@ -26,7 +26,7 @@ from history_analysis import LEVEL_SOURCES
 from diagnostics import Diagnostics
 from controller_core import AFTERHEAT_OUTDOOR_CUTOFF_C, ControllerEngine, ControllerError, ControllerState, HardwareAdapter
 from master_arbitration import MasterArbitrator, RtuFrameStream
-from sensor_freshness import fresh_sensor_value, sensor_sample_age, hide_stale_sensor_values
+from sensor_freshness import UNIT_RH_MIN_PLAUSIBLE, fresh_sensor_value, sensor_sample_age, hide_stale_sensor_values
 from weather_bridge import humidity_at_t1, validate_weather
 from room_quality import quality_rooms, age_observations
 from operating_context import afterheat_context
@@ -258,7 +258,8 @@ class ControllerRuntime:
         # Free cooling and the afterheat use the same room temperature: by
         # default the HA room average, else the extract air (T3).
         self.engine.update_measurements(
-            rh=self._safe_number(self._first(state, "humidity", "relative_humidity"), 0, 100),
+            # The unit's RH sensor reads 9-14 % where the rooms have 30 %: below 20 % it is not a room value.
+            rh=self._safe_number(self._first(state, "humidity", "relative_humidity"), UNIT_RH_MIN_PLAUSIBLE, 100),
             co2=self._safe_number(self._first(state, "co2"), 250, 10000),
             outdoor=self._safe_number(self._first(state, "outdoor_temp", "outdoor_temperature"), -50, 60),
             room=room_temperature,
@@ -1419,7 +1420,10 @@ class ControllerRuntime:
             "t2": self.onewire.by_role("t2"),
             "t3": self._safe_number(self._first(state, "extract_temp", "extract_temperature"), -30, 60),
             "t4": self._safe_number(self._first(state, "exhaust_temp", "exhaust_temperature"), -50, 60),
-            "rh": self.engine.measurements.get("rh"),
+            # The condensation check needs the humidity of the extract air, i.e. of the rooms: the unit's
+            # own RH sensor reads about 10 % where the rooms have 30 %, which hid every condensation.
+            # Without fresh HA rooms there is no humidity and the check is skipped.
+            "rh": self.engine.external.get("indoor_rh_average"),
             "supply_percent": self._first(state, "fan_supply_percent", "supply_fan_percent"),
             "extract_percent": self._first(state, "fan_extract_percent", "extract_fan_percent"),
             "supply_rpm": supply_rpm,
@@ -1676,6 +1680,10 @@ class ControllerRuntime:
 
     def _note_frost_lock(self) -> None:
         """Write the frost lock engaging or releasing to the change log."""
+        if getattr(self.engine, "cool_stopped_by_frost", False):
+            self.engine.cool_stopped_by_frost = False
+            self._log_change({"timestamp": time.time(), "source": "Frostsikring",
+                              "changes": {"cool_boost_minutes": [None, 0]}, "reason": "Køl stoppet: frostsikring"})
         active = self.engine.frost_lock_active
         previous, self._frost_lock_logged = self._frost_lock_logged, active
         if previous is None or previous == active:
@@ -1829,6 +1837,17 @@ class ControllerRuntime:
         except Exception as error:  # diagnostics must never stop the controller
             LOG.warning("Diagnostics update failed: %s", error)
             return {}
+
+    def restore_outdoor_history(self, samples: list[tuple[float, float | None]], now: float | None = None) -> None:
+        """Rebuild the outdoor season (daily means, today so far) from the stored history after a restart."""
+        try:
+            history = self.engine.outdoor_history
+            if history.rebuild(samples, time.time() if now is None else now):
+                with self.config.lock:
+                    self.config.data["outdoor_daily_means"] = [list(day) for day in history.days]
+                    self.config.save()
+        except Exception as error:  # noqa: BLE001 - the season is a convenience, never stops the start
+            LOG.warning("Outdoor season not restored from the history: %s", error)
 
     def _history_recording(self) -> dict[str, object]:
         """Whether the history is being recorded (None when the dashboard has not said)."""

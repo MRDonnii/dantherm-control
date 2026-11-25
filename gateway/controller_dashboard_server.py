@@ -101,6 +101,13 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
         self.kontrolrum_sso = self._create_kontrolrum_sso()
         self.auth.session_guard = self._kontrolrum_session_problem
         self.alarm_mailer = AlarmMailer(self.mail, lambda: {**controller_runtime.snapshot(), **self.ha_link()}, events=self.events)
+        # A restart loses today's outdoor season values: rebuild them from the stored minutes (T1).
+        if hasattr(controller_runtime, "restore_outdoor_history"):
+            try:
+                rows = self.history.rows(6 * 86400, ("outdoor_temp",))
+                controller_runtime.restore_outdoor_history([(r["ts"], r.get("outdoor_temp")) for r in rows])
+            except Exception as error:  # noqa: BLE001
+                LOG.warning("Outdoor season not rebuilt: %s", error)
         # The runtime's diagnostics raise an alarm when the history stops recording.
         if hasattr(controller_runtime, "history_status_provider"):
             controller_runtime.history_status_provider = self.history.status
