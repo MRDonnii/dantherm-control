@@ -258,6 +258,10 @@ class DirectionCapture:
         self.directory.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         self.path = self.directory / f"direction-{stamp}.jsonl"
+        from sniffer import prune_captures
+
+        prune_captures([*self.directory.glob("direction-*.jsonl"), self.path])
+        self.started_monotonic = time.monotonic()
         self.running = True
         self.thread = threading.Thread(
             target=self._writer, name="rs485-direction-capture", daemon=True
@@ -276,12 +280,23 @@ class DirectionCapture:
 
     def _writer(self) -> None:
         assert self.path is not None
+        from sniffer import CAPTURE_MAX_BYTES, CAPTURE_MAX_SECONDS
+
+        written = 0
         with self.path.open("a", encoding="utf-8", buffering=1) as output:
             while True:
                 record = self.records.get()
                 if record is None:
                     break
-                output.write(json.dumps(record, separators=(",", ":")) + "\n")
+                line = json.dumps(record, separators=(",", ":")) + "\n"
+                output.write(line)
+                written += len(line)
+                if (written >= CAPTURE_MAX_BYTES
+                        or time.monotonic() - getattr(self, "started_monotonic", time.monotonic()) >= CAPTURE_MAX_SECONDS):
+                    # A forgotten capture stops by itself before it fills the SD card.
+                    self.running = False
+                    LOG.warning("Direction-aware capture stoppet automatisk (grænse nået): %s", self.path)
+                    break
 
     def record_tx(self, data: bytes, reason: str) -> None:
         if not self.running:

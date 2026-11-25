@@ -14,9 +14,31 @@ import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
+import shutil
 from typing import Any
 
 from passivelink_parser import RtuStreamParser
+
+
+# A forgotten capture must not fill the SD card: it stops by itself.
+CAPTURE_MAX_SECONDS = 2 * 3600
+CAPTURE_MAX_BYTES = 200 * 1024 * 1024
+CAPTURE_KEEP = 5
+
+
+def prune_captures(paths, keep: int = CAPTURE_KEEP) -> list[Path]:
+    """Remove all but the ``keep`` newest captures (names sort by time)."""
+    removed = []
+    for old in sorted(paths, key=lambda item: item.name)[:-keep] if keep > 0 else []:
+        try:
+            if old.is_dir():
+                shutil.rmtree(old)
+            else:
+                old.unlink()
+            removed.append(old)
+        except OSError:
+            pass
+    return removed
 
 
 class SnifferManager:
@@ -38,14 +60,22 @@ class SnifferManager:
         self._byte_offset = 0
         self._frame_index = 0
         self._recent = deque(maxlen=500)
+        self._started_monotonic: float | None = None
+        self.auto_stopped: str | None = None
         self.parser = RtuStreamParser(self._on_frame)
 
     def _ensure_capture_dir(self) -> None:
-        if self._capture_dir is not None:
+        if self._raw_fh is not None:
             return
         ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
         self._capture_dir = (self.base_dir / ts)
+        suffix = 1
+        while self._capture_dir.exists():  # a restart within the same second
+            suffix += 1
+            self._capture_dir = self.base_dir / f"{ts}-{suffix}"
         self._capture_dir.mkdir(parents=True, exist_ok=False)
+        prune_captures([item for item in self.base_dir.iterdir() if item.is_dir()])
+        self._started_monotonic = time.monotonic()
         self._raw_fh = open(self._capture_dir / "raw.bin", "ab")
         self._frames_fh = open(self._capture_dir / "frames.jsonl", "ab")
         self._markers_fh = open(self._capture_dir / "markers.jsonl", "ab")
@@ -55,6 +85,7 @@ class SnifferManager:
             if self._thread and self._thread.is_alive():
                 return {"ok": True, "running": True}
             self._stop.clear()
+            self.auto_stopped = None
             self._ensure_capture_dir()
             self._thread = threading.Thread(target=self._run, name="sniffer-thread", daemon=True)
             self._thread.start()
@@ -68,26 +99,41 @@ class SnifferManager:
             self._thread.join(timeout=5)
             self._thread = None
             self._connected = False
-            # close files
-            if self._raw_fh:
-                try:
-                    self._raw_fh.flush(); self._raw_fh.close()
-                except Exception:
-                    pass
-                self._raw_fh = None
-            if self._frames_fh:
-                try:
-                    self._frames_fh.flush(); self._frames_fh.close()
-                except Exception:
-                    pass
-                self._frames_fh = None
-            if self._markers_fh:
-                try:
-                    self._markers_fh.flush(); self._markers_fh.close()
-                except Exception:
-                    pass
-                self._markers_fh = None
+            self._close_files()
             return {"ok": True, "running": False}
+
+    def _close_files(self) -> None:
+        if self._raw_fh:
+            try:
+                self._raw_fh.flush(); self._raw_fh.close()
+            except Exception:
+                pass
+            self._raw_fh = None
+        if self._frames_fh:
+            try:
+                self._frames_fh.flush(); self._frames_fh.close()
+            except Exception:
+                pass
+            self._frames_fh = None
+        if self._markers_fh:
+            try:
+                self._markers_fh.flush(); self._markers_fh.close()
+            except Exception:
+                pass
+            self._markers_fh = None
+
+    def limit_reached(self) -> str | None:
+        """Why the capture must stop now (time or size), else None."""
+        started = self._started_monotonic
+        if started is not None and time.monotonic() - started >= CAPTURE_MAX_SECONDS:
+            return "time"
+        size = 0
+        for handle in (self._raw_fh, self._frames_fh):
+            try:
+                size += handle.tell() if handle else 0
+            except (OSError, ValueError):
+                pass
+        return "size" if size >= CAPTURE_MAX_BYTES else None
 
     def marker(self, name: str) -> dict[str, Any]:
         with self._lock:
@@ -112,6 +158,11 @@ class SnifferManager:
                 "frames": self._frames,
                 "last_frame": self._last_frame_at,
                 "capture_dir": str(self._capture_dir) if self._capture_dir else None,
+                "auto_stopped": self.auto_stopped,
+                "max_seconds": CAPTURE_MAX_SECONDS,
+                "max_bytes": CAPTURE_MAX_BYTES,
+                "seconds_left": (max(0, round(CAPTURE_MAX_SECONDS - (time.monotonic() - self._started_monotonic)))
+                                 if self._raw_fh and self._started_monotonic is not None else None),
             }
 
     def recent_frames(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -192,6 +243,12 @@ class SnifferManager:
                         self._byte_offset += len(data)
                     # feed parser
                     self.parser.feed(data)
+                    with self._lock:
+                        reason = self.limit_reached()
+                        if reason:
+                            self.auto_stopped = reason
+                            self._stop.set()
+                            self._close_files()
                 self._connected = False
             except Exception:
                 self._connected = False

@@ -349,3 +349,26 @@ def test_negative_content_length_does_not_hang(tmp_path, monkeypatch):
         assert answer.startswith(b"HTTP/1.")
     finally:
         server.stop()
+
+
+def test_captures_stop_by_themselves_and_old_ones_are_pruned(tmp_path):
+    """runtime-10: captures had no size/time limit and were never cleaned up."""
+    import time as _time
+
+    import sniffer
+
+    for index in range(7):
+        (tmp_path / f"2026010{index}T000000Z").mkdir()
+    manager = sniffer.SnifferManager(base_dir=str(tmp_path))
+    manager._ensure_capture_dir()
+    try:
+        assert len([p for p in tmp_path.iterdir() if p.is_dir()]) == sniffer.CAPTURE_KEEP
+        assert manager.limit_reached() is None
+        manager._started_monotonic = _time.monotonic() - sniffer.CAPTURE_MAX_SECONDS - 1
+        assert manager.limit_reached() == "time"
+    finally:
+        manager._close_files()
+    # A second start after a stop opens new files (it used to write to closed handles).
+    manager._ensure_capture_dir()
+    assert manager._raw_fh is not None
+    manager._close_files()
