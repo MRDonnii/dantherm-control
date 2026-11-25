@@ -295,6 +295,8 @@ def test_login_off_still_needs_a_csrf_token(tmp_path):
     auth.save("admin", "long-test-password", False)
     session = auth.authenticate_cookie("")
     assert session["csrf"] and session["csrf"] == auth.open_csrf
+    # The token survives a restart, so a tab left open can still save.
+    assert AuthManager(tmp_path / "auth.json").open_csrf == auth.open_csrf
 
 
 def test_unreadable_auth_file_does_not_reopen_setup(tmp_path):
@@ -494,3 +496,47 @@ def test_drift_reassert_is_rate_limited():
     assert runtime.engine.last_applied == {"fan_pair": (40, 40)}
     runtime._reassert_drifted_outputs(now=700.0)
     assert runtime.engine.last_applied == {}
+
+
+def test_sniffer_stop_while_data_flows_leaves_one_closed_capture(tmp_path):
+    """runtime-10 follow-up: stop() during steady bus data opened a stray capture folder."""
+    import socket
+
+    import sniffer
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    running = threading.Event()
+    running.set()
+
+    def feed():
+        conn, _ = listener.accept()
+        with conn:
+            while running.is_set():
+                try:
+                    conn.sendall(b"\x01\x03\x00\x00\x00\x01" * 50)
+                except OSError:
+                    return
+                time.sleep(0.005)
+
+    feeder = threading.Thread(target=feed, daemon=True)
+    feeder.start()
+    manager = sniffer.SnifferManager(base_dir=str(tmp_path), host="127.0.0.1", port=port)
+    try:
+        manager.start()
+        deadline = time.monotonic() + 5
+        while manager.status()["bytes"] == 0 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert manager.status()["bytes"] > 0
+        began = time.monotonic()
+        manager.stop()
+        assert time.monotonic() - began < 3
+        time.sleep(0.2)
+        assert len([p for p in tmp_path.iterdir() if p.is_dir()]) == 1
+        assert manager._raw_fh is None and manager._frames_fh is None and manager._markers_fh is None
+        assert not manager.status()["running"]
+    finally:
+        running.clear()
+        listener.close()

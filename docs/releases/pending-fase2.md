@@ -16,11 +16,11 @@
 - **Forkerte værdier i en indstilling giver nu en fejlbesked.** Før blev forbindelsen afbrudt uden svar. Indstillingerne bliver stadig ikke ændret.
 - **Home Assistants nøgle kan ikke længere ændre sikkerhedsindstillinger.** Det gælder frostsikringen, følerroller, rumopsætningen og typen af varmeflade. En administratornøgle eller en bruger, der er logget ind, kan stadig ændre dem. Alt det, Home Assistant selv bruger, virker som før.
 - **Login og WebUI:**
-  - Når login er slået fra, kræves der nu stadig et sikkerhedstoken. Det beskytter mod falske forespørgsler fra andre hjemmesider. Siderne for ugeplan og indregulering virker nu også, når login er slået fra.
+  - Når login er slået fra, kræves der nu stadig et sikkerhedstoken. Det beskytter mod falske forespørgsler fra andre hjemmesider. Tokenet gemmes på Pi'en, så en side, der står åben (fx på kiosken), stadig kan gemme efter en genstart. Siderne for ugeplan og indregulering virker nu også, når login er slået fra.
   - Hvis login-filen bliver beskadiget, åbner opsætningen ikke igen. Pi'en bruger i stedet den sidste gode kopi. Kan den heller ikke læses, forbliver login låst.
   - Sessioner er beskyttet, når flere bruger siden på én gang. En gammel cookie får ikke længere Pi'en til at skrive til SD-kortet ved hver forespørgsel.
   - Siden er bedre beskyttet mod at blive lagt ned fra hjemmenettet. En forbindelse, der ikke sender noget, lukkes efter 20 sekunder. En forkert længde i forespørgslen får ikke længere siden til at hænge. Grænsen på fem loginforsøg kan ikke omgås, ved at mange prøver på én gang. Højst to adgangskoder kontrolleres samtidig.
-- **Optagelser stopper af sig selv.** Sniffer- og retningsoptagelser stopper efter 2 timer eller 200 MB, og kun de 5 nyeste gemmes. Du kan nu også starte en ny optagelse lige efter, at du har stoppet en.
+- **Optagelser stopper af sig selv.** Sniffer- og retningsoptagelser stopper efter 2 timer eller 200 MB, og kun de 5 nyeste gemmes. Du kan nu også starte en ny optagelse lige efter, at du har stoppet en. Stop virker med det samme, også mens der kommer data, og efterlader ikke en ekstra tom optagelse.
 - **Opdateringer:**
   - Går en opdatering i stå, bliver den nu stoppet på en måde, så den gamle version bliver sat tilbage. Før blev processen dræbt, og så skete det ikke.
   - To opdateringer kan ikke startes på samme tid.

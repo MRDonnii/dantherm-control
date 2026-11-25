@@ -96,8 +96,14 @@ class SnifferManager:
             if not self._thread:
                 return {"ok": True, "running": False}
             self._stop.set()
-            self._thread.join(timeout=5)
-            self._thread = None
+            thread = self._thread
+        # Join without holding the lock: the reader thread needs the lock to
+        # notice the stop request, so joining while holding it would always
+        # wait the full timeout.
+        thread.join(timeout=5)
+        with self._lock:
+            if self._thread is thread:
+                self._thread = None
             self._connected = False
             self._close_files()
             return {"ok": True, "running": False}
@@ -236,7 +242,11 @@ class SnifferManager:
                         break
                     # write raw
                     with self._lock:
-                        self._ensure_capture_dir()
+                        # Only start() opens a capture. Once stop (or the
+                        # size/time limit) has closed the files, drop the data
+                        # instead of opening a stray new capture folder.
+                        if self._stop.is_set() or self._raw_fh is None:
+                            break
                         self._raw_fh.write(data)
                         self._raw_fh.flush()
                         self._bytes += len(data)

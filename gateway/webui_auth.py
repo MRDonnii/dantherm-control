@@ -48,13 +48,34 @@ class AuthManager:
         # Set by the web server: decides whether a Kontrolrum session may be
         # used by this request (see kontrolrum_sso.KontrolrumSso.session_problem).
         self.session_guard = None
-        # With login switched off the browser still needs a CSRF token; one per
-        # process start is handed out through the same-origin /api/auth/status.
-        self.open_csrf = secrets.token_urlsafe(24)
+        # With login switched off the browser still needs a CSRF token. It is
+        # handed out through the same-origin /api/auth/status and kept in the
+        # state dir, so tabs left open (kiosk) keep working after a restart.
+        self.open_csrf = self._load_open_csrf()
         # Only one or two password hashes at a time: each costs ~1 s of CPU on
         # a Pi 3B, and parallel logins must not starve the controller.
         self.hash_slots = threading.BoundedSemaphore(2)
         self._load_sessions()
+
+    def _load_open_csrf(self) -> str:
+        token_path = self.path.with_name("webui-open-csrf")
+        try:
+            token = token_path.read_text(encoding="utf-8").strip()
+            if len(token) >= 24:
+                return token
+        except OSError:
+            pass
+        token = secrets.token_urlsafe(24)
+        try:
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = token_path.with_name(token_path.name + ".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(token)
+            tmp.replace(token_path)
+        except OSError:
+            pass  # fall back to a per-process token
+        return token
 
     # ------------------------------------------------------------------ store
     @property
