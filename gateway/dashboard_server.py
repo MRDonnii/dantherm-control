@@ -200,7 +200,7 @@ class HistoryStore:
         columns = [
             (f'CASE WHEN MIN("{field}") = MAX("{field}") AND COUNT("{field}") = COUNT(*) '
              f'THEN MIN("{field}") END AS "{field}"') if field in ("afterheat_context", "afterheat_algorithm_code", "level_source_code") else
-            f'MAX("{field}") AS "{field}"' if field == "afterheat_safety_override" else
+            f'MAX("{field}") AS "{field}"' if field in ("afterheat_safety_override", "unit_frost_protection") else
             f'AVG({value(field)}) AS "{field}"' for field in HISTORY_FIELDS]
         for field in self.HISTORY_SPREAD_FIELDS:
             columns.append(f'MIN({value(field)}) AS "{field}_min"')

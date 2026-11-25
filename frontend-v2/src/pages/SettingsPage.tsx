@@ -51,6 +51,8 @@ export const CONTROLLER_KEYS = [
   "balance_enabled", "balance_extract_excess_percent", "balance_ratio_mode", "balance_duct_ratio", "fan_settings",
   "humidity_smart_enabled", "outdoor_humidity_source", "humidity_margin_gm3", "duct_extract_source", "duct_rooms_offset_k", "duct_t3_offset_k", "t2_offset_k",
   "dry_protection_enabled", "dry_rh_limit", "dry_max_level", "dry_hold_minutes",
+  "dry_release_steps_enabled", "dry_release_step_ppm",
+  "vacation_afterheat_enabled", "vacation_afterheat_drop_k", "cooling_afterheat_hold_enabled",
   "winter_dry_enabled", "winter_outdoor_max", "winter_outdoor_hysteresis", "winter_rh_limit", "winter_rh_hysteresis",
   "winter_rh_basis", "winter_level", "winter_hold_minutes",
   "fireplace_auto_enabled", "fireplace_auto_source", "fireplace_auto_on_temp", "fireplace_auto_off_temp",
@@ -644,6 +646,9 @@ export function SettingsPage() {
           <label>{lang === "da" ? "Tør luft under" : "Dry air below"}<input type="number" min="15" max="45" value={n(form.dry_rh_limit, 30)} onChange={num("dry_rh_limit")}/><span>% RH</span><Help>{lang === "da" ? "Under ca. 30 % RH giver tørre øjne, statisk elektricitet og revner i trægulve." : "Below about 30 % RH causes dry eyes, static and cracks in wooden floors."}</Help></label>
           <label>{lang === "da" ? "Maks. trin ved tør luft" : "Maximum level in dry air"}<input type="number" min="1" max={maxLevel} value={n(form.dry_max_level, 2)} onChange={num("dry_max_level")}/><Help>{lang === "da" ? "Styres grundtrinnet af husets størrelse, går det aldrig under det reducerede minimum." : "If the base level follows the house size, it never goes below the reduced minimum."}</Help></label>
           <label>{lang === "da" ? "Mindste tid før skift" : "Minimum time between changes"}<input type="number" min="1" max="240" value={n(form.dry_hold_minutes, 10)} onChange={num("dry_hold_minutes")}/><span>min</span><Help>{lang === "da" ? "Så længe holdes begrænsningen slået til eller fra, før den må skifte igen. Den slutter dog straks ved høj CO₂ eller fugt, der skal tørres ud. Den stopper, når rummene er grænsen plus vinterfunktionens hysterese." : "How long the limit stays on or off before it may change again. High CO₂ or humidity that needs drying still ends it at once. It stops when the rooms reach the limit plus the winter mode's hysteresis."}</Help></label>
+          <label className="check-row"><input type="checkbox" checked={form.dry_release_steps_enabled === true} onChange={check("dry_release_steps_enabled")}/> {lang === "da" ? "Skru op lidt ad gangen, når CO₂ stiger" : "Step up gradually when CO₂ rises"}</label>
+          <Help>{lang === "da" ? "Når CO₂ stiger over sin grænse, og rummene stadig er tørre, går anlægget kun ét trin op ad gangen i stedet for at springe helt op. Bliver luften endnu dårligere, går det et trin mere op. Skal et badeværelse eller et fugtigt rum tørres ud, går det stadig op med det samme." : "When CO₂ rises over its limit while the rooms are still dry, the unit goes up one level at a time instead of jumping all the way. If the air gets worse, it goes up one more level. A bathroom or humid room that needs drying still gets full ventilation at once."}</Help>
+          <label>{lang === "da" ? "Et trin mere for hver" : "One more level for every"}<input type="number" min="50" max="500" step="10" value={n(form.dry_release_step_ppm, 200)} onChange={num("dry_release_step_ppm")}/><span>ppm</span><Help>{lang === "da" ? "Så meget mere CO₂ over grænsen skal der til, før anlægget går endnu et trin op." : "How much more CO₂ over the limit it takes before the unit goes up one more level."}</Help></label>
         </div>
       </Card>
       <Card title={lang === "da" ? "Vinter: tør luft" : "Winter: dry air"} lead={lang === "da" ? "Lavere grundtrin, når det fryser og huset er tørt" : "A lower base level when it freezes and the house is dry"} icon={Droplets}>
@@ -681,6 +686,9 @@ export function SettingsPage() {
           <label>{lang === "da" ? "Indblæsning, grundsetpunkt" : "Supply air base setpoint"}<input type="number" min="10" max="35" value={n(form.afterheat_setpoint, 20)} onChange={num("afterheat_setpoint")}/><span>°C</span><Help>{lang === "da" ? "Temperaturen luften varmes op til efter varmefladen. Er Mål fra rummene slået til, er det kun udgangspunktet." : "The temperature the air is heated to after the coil. With the target from the rooms on, this is only the starting point."}</Help></label>
           <label>{lang === "da" ? "Varmeflade" : "Heating coil"}<select value={form.afterheat_coil === "water" ? "water" : "electric"} onChange={e => set("afterheat_coil", e.target.value)}><option value="electric">{lang === "da" ? "Elvarmeflade" : "Electric coil"}</option><option value="water">{lang === "da" ? "Vandbåren varmeflade" : "Water coil"}</option></select><Help>{lang === "da" ? "Ændrer kun tegningen på forsiden." : "Only changes the drawing on the overview."}</Help></label>
           <p className="settings-help">{lang === "da" ? "HAC1 varmer aldrig, når udetemperaturen er 15 °C eller mere. Det er anlæggets egen spærre." : "HAC1 never heats when it is 15 °C or warmer outside. That is the unit's own lockout."}</p>
+          <label className="check-row"><input type="checkbox" checked={form.vacation_afterheat_enabled === true} onChange={check("vacation_afterheat_enabled")}/> {lang === "da" ? "Koldere indblæsning, når I er på ferie" : "Cooler supply air while on vacation"}</label>
+          <Help>{lang === "da" ? "Mens ferie er slået til, varmes luften ikke så meget op. Frostsikringen virker som altid." : "While vacation is on, the air is not heated as much. Frost protection works as always."}</Help>
+          <label>{lang === "da" ? "Så meget koldere" : "This much cooler"}<input type="number" min="0.5" max="8" step="0.5" value={n(form.vacation_afterheat_drop_k, 2)} onChange={num("vacation_afterheat_drop_k")}/><span>°C</span></label>
         </div>
       </Card>
       <RoomTargetCard lang={lang} form={form} controller={controller} set={set} roomOptions={roomOptions}/>
@@ -699,6 +707,8 @@ export function SettingsPage() {
         <label>{lang === "da" ? "Vent før start" : "Wait before start"}<input type="number" min="0" max="1800" step="30" value={n(form.cooling_start_delay_seconds, 180)} onChange={num("cooling_start_delay_seconds")}/><span>s</span></label>
         <label>{lang === "da" ? "Mindste tid tændt" : "Minimum on time"}<input type="number" min="0" max="3600" step="60" value={n(form.cooling_min_on_seconds, 600)} onChange={num("cooling_min_on_seconds")}/><span>s</span></label>
         <label>{lang === "da" ? "Mindste tid slukket" : "Minimum off time"}<input type="number" min="0" max="3600" step="60" value={n(form.cooling_min_off_seconds, 300)} onChange={num("cooling_min_off_seconds")}/><span>s</span></label>
+        <label className="check-row"><input type="checkbox" checked={form.cooling_afterheat_hold_enabled === true} onChange={check("cooling_afterheat_hold_enabled")}/> {lang === "da" ? "Ingen eftervarme under frikøling" : "No afterheat during free cooling"}</label>
+        <Help>{lang === "da" ? "Når bypass er åben for at køle huset, varmer eftervarmen ikke den kølige luft op igen. Frostsikringen virker som altid." : "While the bypass is open to cool the house, the afterheat does not warm the cool air up again. Frost protection works as always."}</Help>
       </div>
     </Card>
       <NightCoolCard lang={lang} form={form} controller={controller} set={set} maxLevel={maxLevel}/>

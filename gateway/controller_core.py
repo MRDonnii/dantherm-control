@@ -489,6 +489,21 @@ class ControllerState:
         "dry_rh_limit": 30.0,
         "dry_max_level": 2,
         "dry_hold_minutes": 10,
+        # Dry-air release in steps (off by default): once the dry-air limit has
+        # let go while the rooms are still dry, CO2 lifts the level one step
+        # per dry_release_step_ppm over its setpoint, from dry_max_level + 1,
+        # instead of jumping straight to the full CO2 level. Humidity demand
+        # (bathroom drying, humid rooms) is never held back.
+        "dry_release_steps_enabled": False,
+        "dry_release_step_ppm": 200,
+        # Vacation lowers the afterheat target by vacation_afterheat_drop_k
+        # while it runs (off by default). Only the target changes: the
+        # afterheat control and the frost floor work as always.
+        "vacation_afterheat_enabled": False,
+        "vacation_afterheat_drop_k": 2.0,
+        # Free cooling holds the afterheat down like Køl (off by default), so
+        # the bypass air is not heated up again. The frost lock still wins.
+        "cooling_afterheat_hold_enabled": False,
         # Winter dry-air mode: when the outdoor air (T1) is cold and the indoor
         # air is dry, the base level is lowered to winter_level. CO2, humidity
         # demand, bathroom drying, boost, manual control and the house minimum
@@ -784,7 +799,8 @@ class ControllerState:
                  "humidity_smart_enabled", "dry_protection_enabled", "balance_enabled", "pm25_enabled",
                  "bathroom_night_drying", "winter_dry_enabled", "frost_lock_enabled",
                  "afterheat_room_weighted", "night_cool_enabled", "fireplace_cold_guard_enabled",
-                 "top_level_limit_enabled")
+                 "top_level_limit_enabled", "dry_release_steps_enabled", "vacation_afterheat_enabled",
+                 "cooling_afterheat_hold_enabled")
     TIME_KEYS = (("night_cool_start", "Natkøling start", "23:00"), ("night_cool_end", "Natkøling slut", "07:00"))
 
     def _sanitize_advanced(self) -> None:
@@ -868,6 +884,7 @@ class ControllerState:
         ("night_cool_min_indoor_c", 16.0, 26.0),
         ("fireplace_auto_on_temp", 15.0, 400.0), ("fireplace_auto_off_temp", 10.0, 399.0),
         ("humidity_margin_gm3", 0.0, 3.0), ("dry_rh_limit", 15.0, 45.0),
+        ("vacation_afterheat_drop_k", 0.5, 8.0),
         ("balance_extract_excess_percent", 0.0, 20.0), ("balance_duct_ratio", 0.7, 1.5),
         ("duct_rooms_offset_k", -3.0, 3.0), ("duct_t3_offset_k", -3.0, 3.0),
         ("t2_offset_k", -3.0, 3.0),
@@ -889,7 +906,7 @@ class ControllerState:
         ("fireplace_max_hours", 1, 24), ("dry_max_level", 1, None), ("pm25_max_level", 1, None),
         ("bathroom_rise_minutes", 3, 30), ("bathroom_max_minutes", 0, 720),
         ("winter_level", 1, None), ("winter_hold_minutes", 5, 240),
-        ("dry_hold_minutes", 1, 240),
+        ("dry_hold_minutes", 1, 240), ("dry_release_step_ppm", 50, 500),
         ("afterheat_pi_min_dwell_ticks", *PI_MIN_DWELL_TICKS_RANGE),
         ("night_cool_level", 1, None),
     )
@@ -1479,7 +1496,9 @@ class ControllerState:
         "duct_rooms_offset_k", "duct_t3_offset_k",
         "t2_offset_k",
         "humidity_margin_gm3", "dry_protection_enabled", "dry_rh_limit", "dry_max_level",
-        "dry_hold_minutes", "onewire_roles", "pm25_enabled", "pm25_setpoint", "pm25_step", "pm25_hysteresis",
+        "dry_hold_minutes", "dry_release_steps_enabled", "dry_release_step_ppm",
+        "vacation_afterheat_enabled", "vacation_afterheat_drop_k", "cooling_afterheat_hold_enabled",
+        "onewire_roles", "pm25_enabled", "pm25_setpoint", "pm25_step", "pm25_hysteresis",
         "pm25_max_level", "pm25_ignored_rooms",
         "bathroom_rise_percent", "bathroom_rise_minutes", "bathroom_night_drying",
         "bathroom_max_minutes", "bathroom_rooms",
@@ -1511,6 +1530,9 @@ class ControllerState:
         "humidity_rise_min_rh": "Fugtstigning tæller fra",
         "humidity_margin_gm3": "Fugtmargin", "dry_rh_limit": "Tør luft-grænse",
         "dry_max_level": "Maks. trin ved tør luft", "dry_hold_minutes": "Tør luft: mindste tid",
+        "dry_release_steps_enabled": "Tør luft: slip i trin", "dry_release_step_ppm": "Tør luft: CO2 pr. trin",
+        "vacation_afterheat_enabled": "Ferie: koldere indblæsning", "vacation_afterheat_drop_k": "Ferie: sænk indblæsningen med",
+        "cooling_afterheat_hold_enabled": "Frikøling: ingen eftervarme",
         "balance_extract_excess_percent": "Udsugning over indblæsning", "balance_duct_ratio": "Kanalforhold",
         "duct_rooms_offset_k": "Korrektion udsugningsrum", "duct_t3_offset_k": "Korrektion T3",
         "t2_offset_k": "Korrektion T2",
@@ -1973,6 +1995,11 @@ class ControllerEngine:
         self.dry_state = "disabled"
         # After high CO2 ended the limit it waits for CO2 <= setpoint - hysteresis.
         self.dry_co2_stopped = False
+        # Dry-air release in steps (see _dry_release_cap): the rooms are still dry
+        # with no humidity demand, the highest CO2 then, and the last step cap.
+        self.dry_rooms_dry = False
+        self.dry_release_co2: float | None = None
+        self.dry_release_cap: int | None = None
         # Automatic level changes in the last hour (flap counter, see _count_level_change).
         self.level_change_times: deque[float] = deque()
         self._counted_level: int | None = None
@@ -2316,6 +2343,14 @@ class ControllerEngine:
                 rh = self.ha_indoor_rh()
                 rh_text = f"{rh:.0f}" if rh is not None else "?"
                 reason = f"Tør luft (rum {rh_text}% RH): begrænset til trin {limit}"
+        flags["dry_release_active"] = False
+        cap = self._dry_release_cap(d) if (
+            d["mode"] != "manual" and not flags["cooling_active"] and not flags["night_cool_active"]) else None
+        if cap is not None and level > cap:
+            level = cap
+            flags["dry_release_active"] = True
+            source = "dry_protection"
+            reason = f"{reason}; tør luft slipper i trin: højst trin {cap} lige nu"
 
         flags["sizing_floor_active"] = False
         if d.get("sizing_enabled") and d["mode"] != "manual":
@@ -2428,6 +2463,7 @@ class ControllerEngine:
         over its setpoint while the limit is off) it only starts again with CO2
         at or under setpoint - hysteresis.
         """
+        self.dry_rooms_dry, self.dry_release_co2 = False, None
         if not d.get("dry_protection_enabled"):
             self.dry_active, self.dry_changed_at, self.dry_state = False, None, "disabled"
             self.dry_co2_stopped = False
@@ -2455,6 +2491,8 @@ class ControllerEngine:
         outdoor_ah, indoor_ah = self.outdoor_absolute_humidity(), self._room_absolute_humidity(rh)
         drying = outdoor_ah is None or indoor_ah is None or outdoor_ah < indoor_ah
         dry = rh < limit and drying
+        self.dry_rooms_dry = dry and demand is None
+        self.dry_release_co2 = max(co2_values) if co2_values else None
         start = dry and co2_clear and demand is None
         stop = rh >= limit + hysteresis or not drying
         may_change = self.dry_changed_at is None or now - self.dry_changed_at >= hold
@@ -2480,6 +2518,37 @@ class ControllerEngine:
         else:
             self.dry_state = "waiting" if start else "standby"
         return self.dry_active
+
+    # CO2 above the setpoint must climb this far below a step's start before the cap falls back.
+    DRY_RELEASE_HYSTERESIS_PPM = 50
+
+    def _dry_release_cap(self, d: dict) -> int | None:
+        """The highest level while the dry-air limit lets go in steps, or None for no cap.
+
+        Only with dry_release_steps_enabled, while the limit itself is off and
+        the rooms are still dry with no humidity demand (see _dry_air). From
+        dry_max_level + 1 one step per dry_release_step_ppm of CO2 over its
+        setpoint, so CO2 760 -> 810 gives level 3, not a jump from 2 to 5.
+        A lower cap needs CO2 DRY_RELEASE_HYSTERESIS_PPM under the step's start.
+        """
+        co2 = self.dry_release_co2
+        if (not d.get("dry_release_steps_enabled") or self.dry_active or not self.dry_rooms_dry
+                or co2 is None):
+            self.dry_release_cap = None
+            return None
+        step = max(50, int(d.get("dry_release_step_ppm") or 200))
+        over = float(co2) - int(d["co2_setpoint"])
+        base = int(d["dry_max_level"]) + 1
+
+        def cap_at(value: float) -> int:
+            return base + max(0, math.floor(value / step))
+
+        cap = cap_at(over)
+        previous = self.dry_release_cap
+        if previous is not None and cap < previous:
+            cap = max(cap, min(previous, cap_at(over + self.DRY_RELEASE_HYSTERESIS_PPM)))
+        self.dry_release_cap = cap
+        return cap
 
     # Automatic control only: these overlays and manual control choose the
     # level themselves, so their changes are never counted as flapping.
@@ -2781,10 +2850,14 @@ class ControllerEngine:
         """The afterheat target: the fixed setpoint, or the supply target the rooms want (room_cascade)."""
         d = self.config.data
         fixed = _clean_afterheat_setpoint(d["afterheat_setpoint"])
+        drop = self._vacation_afterheat_drop(now)
+        holiday = f" · ferie: {_danish_number(drop, 1)} K koldere" if drop else ""
         if not d.get("afterheat_room_enabled"):
             self.room_cascade.reset()
             self.afterheat_room_output = None
             self.afterheat_room_state = "disabled"
+            if drop:
+                return round(max(10.0, float(fixed) - drop), 1), "Fast setpunkt" + holiday
             return fixed, "Fast setpunkt"
         room = self.external.get("afterheat_room_temperature")
         room = float(room) if _is_number(room) else None
@@ -2794,11 +2867,15 @@ class ControllerEngine:
             base = float(saved) if _is_number(saved) else float(fixed) - offset
         else:
             base = float(fixed)
-        wanted = self.room_cascade.update(now=now, room=room, settings=d, base=base, locked=locked,
+        # On vacation the rooms' target is lowered, so the cascade itself asks for cooler air.
+        settings = {**d, "afterheat_room_target": float(d["afterheat_room_target"]) - drop} if drop else d
+        wanted = self.room_cascade.update(now=now, room=room, settings=settings, base=base, locked=locked,
                                           saturated=self._afterheat_saturation())
         self.afterheat_room_state = self.room_cascade.state
         if wanted is None:
             self.afterheat_room_output = None
+            if drop:
+                return round(max(10.0, float(fixed) - drop), 1), "Ingen rumtemperatur: fast setpunkt" + holiday
             return fixed, "Ingen rumtemperatur: fast setpunkt"
         # The setpoint at the unit: the air the rooms should get plus what the duct loses.
         value = round(min(35.0, max(10.0, wanted + offset)), 1)
@@ -2815,9 +2892,19 @@ class ControllerEngine:
         band = float(d.get("afterheat_room_band_k") or 0.0)
         extra = {"locked": f" · holdes: {locked}", "saturated": " · eftervarmen kan ikke følge med",
                  "at_limit": " · ved grænsen",
-                 "in_band": f" · inden for ±{_danish_number(band, 1)} K af {_danish_number(float(d['afterheat_room_target']), 1)} °C"}.get(
+                 "in_band": f" · inden for ±{_danish_number(band, 1)} K af {_danish_number(float(settings['afterheat_room_target']), 1)} °C"}.get(
                      self.room_cascade.state, "")
-        return value, text + extra
+        return value, text + extra + holiday
+
+    def _vacation_afterheat_drop(self, now: float) -> float:
+        """How many degrees vacation lowers the afterheat target right now (0 when off)."""
+        d = self.config.data
+        if not d.get("vacation_afterheat_enabled") or not self.config.vacation_running(now):
+            return 0.0
+        try:
+            return min(8.0, max(0.0, float(d.get("vacation_afterheat_drop_k") or 0.0)))
+        except (TypeError, ValueError):
+            return 0.0
 
     def _afterheat_pilot(self, now: float, d: dict, target: float, afterheat_on: bool, frost_lock: bool,
                          frost_floor: float, flags: dict, fans_stopped: bool, override: bool) -> dict[str, object]:
@@ -2953,11 +3040,14 @@ class ControllerEngine:
             afterheat_on = frost_lock or (bool(d["afterheat_enabled"]) and not fans_stopped)
             override = self._afterheat_override() if afterheat_on else None
             frost_floor = self.config.frost_lock_floor()
-            cooling_down = bool(flags.get("cool_boost_active") or flags.get("night_cool_active"))
+            # Optional: free cooling holds the afterheat down like Køl, so the bypass air is not heated again.
+            free_cool_hold = bool(flags.get("cooling_active") and d.get("cooling_afterheat_hold_enabled"))
+            cooling_down = bool(flags.get("cool_boost_active") or flags.get("night_cool_active") or free_cool_hold)
             locked = (
                 "eftervarmen er slukket" if not afterheat_on
                 else "Køl" if flags.get("cool_boost_active")
                 else "natkøling" if flags.get("night_cool_active")
+                else "frikøling" if free_cool_hold
                 else "forsøg med setpunkt" if override is not None
                 else "frostsikring" if frost_lock and self.afterheat_room_output is not None
                 and self.afterheat_room_output < frost_floor
@@ -2968,7 +3058,8 @@ class ControllerEngine:
                 # Cool lets cold outdoor air in on purpose: the afterheat must not warm it up again.
                 afterheat_setpoint = COOL_BOOST_AFTERHEAT_SETPOINT
                 afterheat_reason = ("Køl: eftervarme holdt nede" if flags.get("cool_boost_active")
-                                    else "Natkøling: eftervarme holdt nede")
+                                    else "Natkøling: eftervarme holdt nede" if flags.get("night_cool_active")
+                                    else "Frikøling: eftervarme holdt nede")
             if frost_lock:
                 afterheat_target = max(afterheat_target, frost_floor)
             if frost_lock and afterheat_setpoint < frost_floor:
