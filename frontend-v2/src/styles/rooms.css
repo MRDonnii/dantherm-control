@@ -46,3 +46,17 @@
   .room-save-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .room-save-actions > button:only-child { grid-column: 1 / -1; }
 }
+
+/* Luften i rummene */
+.room-air-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); }
+.room-air-list li { display: grid; gap: 6px; padding: 10px 12px; border-radius: 10px; background: var(--surface-soft); }
+.room-air-list li.decides { outline: 2px solid var(--accent, #3b82f6); }
+.room-air-name { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; justify-content: space-between; }
+.room-air-tag { font-size: 13px; color: var(--accent, #3b82f6); }
+.room-air-metric { display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; font-size: 15px; }
+.room-air-metric span { color: var(--muted); }
+.room-air-metric i { grid-column: 1 / -1; height: 6px; border-radius: 3px; background: rgba(127, 127, 127, .25); overflow: hidden; display: block; }
+.room-air-metric i u { display: block; height: 100%; background: #2fa66a; text-decoration: none; }
+.room-air-metric i.near u { background: #e0a030; }
+.room-air-metric i.over u { background: #d9534f; }
+.room-air-metric small { justify-self: end; color: var(--muted); font-size: 13px; }

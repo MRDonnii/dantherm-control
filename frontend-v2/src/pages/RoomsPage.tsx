@@ -1,3 +1,4 @@
+import { RoomAirOverview } from "../components/RoomAirOverview";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DoorOpen, Plus, RotateCcw, Save, Trash2, Wand2 } from "lucide-react";
 import { RoomSensorQuality, roomQuality, qualityLabel } from "../components/RoomSensorQuality";
@@ -165,6 +166,8 @@ export function RoomsPage() {
       <p>Vælg hvilke rum og følere fra Home Assistant der er med i styringen. Fugt, CO₂, PM2.5 og temperatur fra alle aktive rum bruges; rum uden ventilation ignoreres.</p></div></header>
 
     {error && <p className="settings-warning" role="alert">{error}</p>}
+
+    <RoomAirOverview state={state}/>
 
     {noCatalog && <article className="surface panel-card room-empty" role="status">
       <DoorOpen size={28}/>

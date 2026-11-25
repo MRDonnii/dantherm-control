@@ -118,6 +118,7 @@ export function HistoryPage() {
   const [changes, setChanges] = useState<ChangeEvent[]>([]);
   const [paused, setPaused] = useState(false);
   const [decisions, setDecisions] = useState<unknown>([]);
+  const [band, setBand] = useState(0.5);
   // Only the newest request may update the page: a slow answer for an older range is dropped.
   const requestId = useRef(0);
 
@@ -132,9 +133,10 @@ export function HistoryPage() {
       setPaused(result.recording?.state === "retrying");
       setWindow({ from: now - seconds, to: now });
       setUpdated(now);
-      const state = await requestJson<{ change_log?: ChangeEvent[]; decision_log?: unknown[] }>("/api/controller/state", { timeoutMs: 3500 }).catch(() => null);
+      const state = await requestJson<{ change_log?: ChangeEvent[]; decision_log?: unknown[]; afterheat_pi_band?: number }>("/api/controller/state", { timeoutMs: 3500 }).catch(() => null);
       if (id !== requestId.current) return;
       if (state && Array.isArray(state.change_log)) setChanges(state.change_log);
+      if (state && typeof state.afterheat_pi_band === "number" && state.afterheat_pi_band >= 0.1 && state.afterheat_pi_band <= 1.5) setBand(state.afterheat_pi_band);
       if (state && Array.isArray(state.decision_log)) setDecisions(state.decision_log);
       setOnline(true);
     } catch {
@@ -207,7 +209,7 @@ export function HistoryPage() {
           : <StatTile label="Eftervarme" value={valve.mean === null ? "–" : format(valve.mean * 100, 0)} unit="%" detail={`af tiden med åben ventil · ${label}`}/>}
       </div>
 
-      <AfterheatAnalysis samples={samples}/>
+      <AfterheatAnalysis samples={samples} band={band}/>
       <AfterheatScale/>
 
       <div className="history-grid">
