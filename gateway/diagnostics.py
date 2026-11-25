@@ -523,9 +523,13 @@ class Diagnostics:
         rooms = s.get("smart_ha_rooms") if isinstance(s.get("smart_ha_rooms"), dict) else {}
         quality = s.get("smart_room_quality") if isinstance(s.get("smart_room_quality"), dict) else {}
         missing = s.get("smart_missing_sensors") if isinstance(s.get("smart_missing_sensors"), dict) else {}
+        source_rooms = {str(n) for n in (s.get("smart_source_rooms") or [])}
         if online:
-            for name, room in rooms.items():
-                if not isinstance(room, dict) or room.get("enabled") is False or room.get("control") is False:
+            # Rooms HA left out of the message (all selected sensors lack data) count too.
+            for name in list(rooms) + [n for n in missing if n not in rooms]:
+                room = rooms.get(name, {})
+                if (not isinstance(room, dict) or room.get("enabled") is False
+                        or room.get("control") is False or name in source_rooms):
                     continue
                 per_kind = quality.get(name) if isinstance(quality.get(name), dict) else {}
                 names = []
@@ -557,9 +561,11 @@ class Diagnostics:
                 frozen.append(label)
         if online:
             for name, room in rooms.items():
-                if not isinstance(room, dict) or room.get("enabled") is False or room.get("control") is False:
+                if (not isinstance(room, dict) or room.get("enabled") is False
+                        or room.get("control") is False or name in source_rooms):
                     continue
-                for kind, label in (("co2", "CO₂"), ("humidity", "fugt")):
+                # Room humidity is whole percent and often reported only on change: only CO2 is watched.
+                for kind, label in (("co2", "CO₂"),):
                     per_kind = quality.get(name) if isinstance(quality.get(name), dict) else {}
                     state = (per_kind.get(kind) or {}).get("state") if isinstance(per_kind.get(kind), dict) else None
                     value = _num(room.get(kind)) if state in ("fresh", "unknown_age") else None

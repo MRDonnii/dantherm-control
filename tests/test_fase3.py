@@ -111,6 +111,21 @@ class AlarmTests(unittest.TestCase):
         quiet = dict(feed, smart_inputs_online=False)
         self.assertNotIn("room_sensor_missing", codes(run(Diagnostics(), quiet, T0, 31)))
 
+    def test_a_room_left_out_by_ha_is_caught_but_source_rooms_are_not(self):
+        feed = base(smart_inputs_online=True, smart_ha_rooms={},
+                    smart_missing_sensors={"Børneværelse": ["co2"], "Brændeovn": ["humidity"]},
+                    smart_source_rooms=["Brændeovn"])
+        result = run(Diagnostics(), feed, T0, 31)
+        self.assertIn("room_sensor_missing", codes(result))
+        self.assertIn("Børneværelse", result["diagnostics_alarm_text"])
+        self.assertNotIn("Brændeovn", result["diagnostics_alarm_text"])
+
+    def test_room_humidity_that_stays_put_is_not_frozen(self):
+        feed = base(smart_inputs_online=True,
+                    smart_ha_rooms={"Stue": {"enabled": True, "control": True, "humidity": 40.0}},
+                    smart_room_quality={"Stue": {"humidity": {"state": "fresh"}}})
+        self.assertNotIn("Stue", str(run(Diagnostics(), feed, T0, 13 * 60 + 1, step=60).get("diagnostics_alarm_text")))
+
     def test_pilot_fallbacks_and_a_high_setpoint_rate_are_alarms(self):
         d = Diagnostics()
         result = d.update(base(afterheat_fallbacks_6h=3, afterheat_rate_warnings_1h=4), T0)

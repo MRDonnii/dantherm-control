@@ -353,7 +353,7 @@ class ControllerRuntime:
             "level_source_code": (LEVEL_SOURCES.index(source) if source in LEVEL_SOURCES else
                                   None if source is None else len(LEVEL_SOURCES)),
             "frost_lock_active": 1 if snapshot.get("afterheat_frost_lock") is True else 0,
-            "unit_power_w": snapshot.get("unit_power_w"),
+            "unit_power_w": self._unit_power(),
             "indoor_rh_average": external.get("indoor_rh_average"),
             "indoor_rh_lowest": external.get("indoor_rh_lowest"),
             "outdoor_rh": external.get("outdoor_rh"),
@@ -1309,6 +1309,7 @@ class ControllerRuntime:
             "smart_ha_rooms": self.smart_rooms,
             "smart_missing_sensors": self.smart_missing_sensors,
             "smart_missing_rooms": self.smart_missing_rooms,
+            "smart_source_rooms": sorted(self._source_room_names()),
             "smart_room_quality": self._room_quality()[1],
             "smart_candidates": list(self.smart_candidates),
             "smart_demand": self.smart_demand if fresh else "stale",

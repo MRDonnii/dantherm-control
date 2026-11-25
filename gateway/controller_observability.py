@@ -180,7 +180,8 @@ class ControllerObservability:
         }
         sensors["ha_rooms"] = self._ha_rooms_health(snapshot)
 
-        required = [sensors["rh"], sensors["outdoor"], sensors["room"]]
+        # A unit RH that reads implausibly low is a known fault of the sensor, not a data problem.
+        required = [sensors[k] for k in ("rh", "outdoor", "room") if not (k == "rh" and implausible_rh)]
         if not bus_fresh:
             overall = "stale"
         elif all(item["available"] for item in required):
