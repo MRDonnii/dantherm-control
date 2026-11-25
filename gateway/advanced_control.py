@@ -251,6 +251,65 @@ def absolute_humidity(temperature: float | None, relative_humidity: float | None
     return saturation_hpa * relative_humidity * 2.1674 / (273.15 + temperature)
 
 
+def dry_air_stats(
+    controller: dict,
+    *,
+    airflow_m3h: float | None,
+    airflow_without_m3h: float | None,
+    bypass_open: bool = False,
+) -> dict[str, float | str | None]:
+    """Moisture and heat figures for the dynamic dry-air protection (all skøn: estimated airflow).
+
+    - dry_moisture_loss_l_day: water the ventilation carries out, airflow x (AH in - AH out) x 24 h.
+      Negative when the outdoor air holds more water (the house then gains moisture).
+    - dry_moisture_kept_l_day: what the cap keeps in, (airflow without the cap - airflow) x the same.
+    - dry_heat_saved_w: (airflow without - airflow) x 1.206 kJ/m3K x
+      [(1 - heat recovery) x (inside - outside) + max(0, afterheat target - inside)].
+      The exchanger leaves (1 - recovery) of the temperature difference for the afterheat or the
+      rooms to cover; an afterheat target over the room temperature costs that much more.
+      dry_heat_saved_afterheat_w is the share the afterheat coil covers (only while it runs).
+    The recovery is the 7-day median of the extract side, else the live value; with the bypass
+    open it is 0. Missing inputs give None, never a guess.
+    """
+    result: dict[str, float | str | None] = {
+        "dry_airflow_m3h": airflow_m3h, "dry_airflow_without_m3h": airflow_without_m3h,
+        "dry_moisture_loss_l_day": None, "dry_moisture_kept_l_day": None,
+        "dry_heat_saved_w": None, "dry_heat_saved_afterheat_w": None, "dry_heat_saved_kwh_day": None,
+        "dry_heat_saved_dkk_day": None, "dry_recovery_percent": None,
+        "dry_stats_method": "skøn",
+    }
+    diff = controller.get("dry_ah_difference")
+    if not controller.get("dry_dynamic_enabled") or not isinstance(diff, (int, float)) or airflow_m3h is None:
+        return result
+    result["dry_moisture_loss_l_day"] = round(airflow_m3h * diff * 24 / 1000, 1)
+    reduced = max(0.0, (airflow_without_m3h or airflow_m3h) - airflow_m3h)
+    result["dry_moisture_kept_l_day"] = round(reduced * max(0.0, diff) * 24 / 1000, 1)
+    recovery = next((float(v) for v in (controller.get("recovery_median_7d"), controller.get("extract_recovery_percent"))
+                     if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 100), None)
+    if bypass_open:
+        recovery = 0.0
+    inside, outside = controller.get("dry_indoor_temperature"), controller.get("dry_outdoor_temperature")
+    if recovery is None or not isinstance(inside, (int, float)) or not isinstance(outside, (int, float)):
+        return result
+    result["dry_recovery_percent"] = round(recovery, 1)
+    share = recovery / 100.0
+    flow = reduced / 3600.0 * AIR_HEAT_CAPACITY
+    target = controller.get("afterheat_target")
+    over_room = max(0.0, float(target) - inside) if isinstance(target, (int, float)) else 0.0
+    watts = flow * ((1 - share) * max(0.0, inside - outside) + over_room)
+    result["dry_heat_saved_w"] = round(watts)
+    if controller.get("actual_afterheat") is True and isinstance(target, (int, float)):
+        after_exchanger = outside + share * (inside - outside)
+        result["dry_heat_saved_afterheat_w"] = round(min(watts, flow * max(0.0, float(target) - after_exchanger)))
+    else:
+        result["dry_heat_saved_afterheat_w"] = 0
+    result["dry_heat_saved_kwh_day"] = round(watts * 24 / 1000, 2)
+    price = controller.get("heat_price_dkk_kwh")
+    if isinstance(price, (int, float)) and not isinstance(price, bool):
+        result["dry_heat_saved_dkk_day"] = round(watts * 24 / 1000 * price, 2)
+    return result
+
+
 def valid_source(value: object, *, allow_fixed: bool, allow_weather: bool = False) -> str:
     """Normalise a measurement source, optionally including leased HA weather."""
     text = str(value or "").strip()

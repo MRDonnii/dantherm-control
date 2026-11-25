@@ -17,7 +17,7 @@ import time
 from collections import defaultdict, deque
 from pathlib import Path
 
-from advanced_control import absolute_humidity, fan_curve, fit_fan_curve, side_constants, source_room, supply_after_core, supply_air_metrics
+from advanced_control import absolute_humidity, dry_air_stats, fan_curve, fit_fan_curve, side_constants, source_room, supply_after_core, supply_air_metrics
 from air_balance import HeatBalanceLearner, adopt, balance_from_temperatures, summarize, window_record
 from onewire_extras import OneWireExtras
 import room_setup
@@ -282,7 +282,12 @@ class ControllerRuntime:
             room=room_temperature,
         )
         comfort, comfort_count = self._comfort_rooms_temperature()
+        dry_outdoor = self._dry_outdoor_air()
         self.engine.set_external({
+            # Outdoor air for the dynamic dry-air protection: the Udeluft room, else T1 + HA weather.
+            "dry_outdoor_temperature": dry_outdoor[0],
+            "dry_outdoor_rh": dry_outdoor[1],
+            "dry_outdoor_source": dry_outdoor[2],
             "extract_temp": extract_temp,
             "outdoor_rh": self._outdoor_humidity(),
             "afterheat_room_temperature": room_temperature,
@@ -374,6 +379,9 @@ class ControllerRuntime:
             "indoor_rh_lowest": external.get("indoor_rh_lowest"),
             "outdoor_rh": external.get("outdoor_rh"),
             "max_room_co2": external.get("max_room_co2"),
+            # 1.13.0-beta.16: whether the dry-air protection is holding the level down, and the tier.
+            "dry_limit_active": 1 if snapshot.get("dry_protection_active") or snapshot.get("dry_release_active") else 0,
+            "dry_tier": snapshot.get("dry_tier"),
         })
         # Memory-only annotation. No extra polling, file I/O or actuator call.
         now = time.monotonic()
@@ -603,6 +611,33 @@ class ControllerRuntime:
             weather = self.weather_snapshot()
             return weather.get("humidity_at_t1") if weather else None
         return self._source_value(source, "humidity")
+
+    def _dry_outdoor_air(self) -> tuple[float | None, float | None, str | None]:
+        """Outdoor temperature, RH and their source for the dynamic dry-air protection.
+
+        First the outdoor HA room (the "Udeluft" room: room kind outdoor, or the
+        room chosen as outdoor humidity source) when it has a fresh temperature
+        and humidity; else the unit's T1 with the HA weather humidity at T1.
+        The pair always comes from one place, so the absolute humidity is right.
+        None when neither is fresh: the protection is then off.
+        """
+        chosen = source_room(self.config.data.get("outdoor_humidity_source"))
+        for name, values in self._fresh_ha_rooms().items():
+            if values.get("room_kind") != "outdoor" and name != chosen:
+                continue
+            temperature, humidity = values.get("temperature"), values.get("humidity")
+            if (isinstance(temperature, (int, float)) and not isinstance(temperature, bool)
+                    and not values.get("temperature_stale")
+                    and isinstance(humidity, (int, float)) and not isinstance(humidity, bool)
+                    and 0 < humidity <= 100):
+                return float(temperature), float(humidity), "udeluft"
+        weather = self.weather_snapshot()
+        t1 = self.engine.measurements.get("outdoor")
+        humidity = weather.get("humidity_at_t1") if weather else None
+        if (isinstance(t1, (int, float)) and not isinstance(t1, bool)
+                and isinstance(humidity, (int, float)) and not isinstance(humidity, bool) and 0 < humidity <= 100):
+            return float(t1), float(humidity), "t1_weather"
+        return None, None, None
 
     def _ha_room_average_temperature(self) -> float | None:
         """Average of the enabled HA rooms with a temperature.
@@ -1814,6 +1849,10 @@ class ControllerRuntime:
             float(self.config.data.get("t2_offset_k") or 0.0),
         ))
         result["t2_offset_k"] = self.config.data.get("t2_offset_k", 0.0)
+        result.update(dry_air_stats(
+            result, airflow_m3h=supply_m3h,
+            airflow_without_m3h=self._dry_airflow_without(result, supply_m3h),
+            bypass_open=self._first(self.gateway_state, "bypass_active") is True))
         try:
             # Read-only: the afterheat model, prediction and performance for Home Assistant.
             result["afterheat_ha"] = self.engine.afterheat_pilot.ha_block(result, time.time())
@@ -1821,6 +1860,22 @@ class ControllerRuntime:
             LOG.exception("Afterheat HA block failed")
             result["afterheat_ha"] = None
         return result
+
+    def _dry_airflow_without(self, result: dict, supply_m3h: float | None) -> float | None:
+        """Supply airflow at the level that would have run without the dry-air cap (skøn).
+
+        The live estimate scaled by the planned airflow of the two levels, so a
+        slow fan or boost scales both alike. None while nothing is capped.
+        """
+        uncapped, level = result.get("dry_uncapped_level"), result.get("effective_level")
+        if supply_m3h is None or not isinstance(uncapped, int) or not isinstance(level, int) or uncapped <= level:
+            return None
+        try:
+            levels = self.config.airflow_plan()["levels"]
+            planned, planned_without = float(levels[level]["supply_m3h"]), float(levels[uncapped]["supply_m3h"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return round(supply_m3h * planned_without / planned, 1) if planned > 0 else None
 
     def _supply_airflow(self, level: object) -> float | None:
         """Supply airflow for the running level, corrected by the real fan speed.

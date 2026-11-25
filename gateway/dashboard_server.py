@@ -28,7 +28,9 @@ RANGES = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000}
 HISTORY_FIELDS = ("humidity", "outdoor_temp", "supply_temp", "extract_temp", "exhaust_temp", "hrc2_t5_temperature", "heating_coil_after_temperature", "heating_coil_frost_temperature", "flow_temperature", "return_temperature", "co2", "fan_supply_rpm", "fan_extract_rpm", "fan_supply_percent", "fan_extract_percent", "heat_recovery_efficiency", "system_cpu_usage_percent", "pi_cpu_temperature", "system_memory_used_percent", "system_load_1m", "afterheat_setpoint", "afterheat_active", "afterheat_level", "afterheat_level_target", "afterheat_level_wanted", "afterheat_target", "afterheat_context", "afterheat_before_temperature", "afterheat_algorithm_code", "afterheat_algorithm_wanted", "afterheat_safety_override",
                   # Added 1.13.0-beta.13: what drove the level and the unit's own protection, and the room values it steered by.
                   "fan_level", "level_source_code", "bypass_active", "unit_frost_protection", "unit_frost_supply_percent",
-                  "frost_lock_active", "unit_power_w", "indoor_rh_average", "indoor_rh_lowest", "outdoor_rh", "max_room_co2")
+                  "frost_lock_active", "unit_power_w", "indoor_rh_average", "indoor_rh_lowest", "outdoor_rh", "max_room_co2",
+                  # Added 1.13.0-beta.16: the dry-air protection holding the level down (0/1) and its tier (0, 1, 2).
+                  "dry_limit_active", "dry_tier")
 # Values outside these limits are sensor glitches (T1 read 655 C for a day before the signed decode): they are
 # never stored, and rows stored before are read as missing and cleaned when the history is opened.
 AIR_RANGE, WATER_RANGE = (-50.0, 60.0), (-20.0, 110.0)

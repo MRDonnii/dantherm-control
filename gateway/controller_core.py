@@ -496,6 +496,32 @@ class ControllerState:
         # (bathroom drying, humid rooms) is never held back.
         "dry_release_steps_enabled": False,
         "dry_release_step_ppm": 200,
+        # Dynamic dry-air protection (1.13.0-beta.16, off by default; needs
+        # dry_protection_enabled). In place of the single dry_rh_limit and the
+        # winter mode's "T1 <= 3 C" gate: below dry_tier1_rh the level is capped
+        # at dry_tier1_level, below dry_tier2_rh at dry_tier2_level, above it
+        # normal demand control. A tier ends at its limit + dry_dynamic_rh_hysteresis.
+        # It only limits while the outdoor air really dries the house: indoor
+        # minus outdoor absolute humidity at least dry_ah_margin_gm3 (it stops
+        # under margin - dry_ah_hysteresis_gm3, and always at 0 or less). The
+        # cap never goes under max(dry_min_level, local_min_level, the house
+        # sizing minimum). While it is on, the winter mode steps aside.
+        "dry_dynamic_enabled": False,
+        # Defaults for this 6-step unit: level 1 (supply 7 % / extract 25 %) is
+        # badly unbalanced (underpressure with a wood stove), so never under 2.
+        "dry_tier1_rh": 32.0,
+        "dry_tier1_level": 2,
+        "dry_tier2_rh": 36.0,
+        "dry_tier2_level": 3,
+        "dry_dynamic_rh_hysteresis": 2.5,
+        "dry_ah_margin_gm3": 0.5,
+        "dry_ah_hysteresis_gm3": 0.3,
+        "dry_min_level": 2,
+        # Optional (off): while the dynamic protection holds, CO2 over its
+        # setpoint lifts at most one step over the tier cap; only CO2 over
+        # dry_co2_release_ppm releases it (again with co2_hysteresis).
+        "dry_co2_soft_enabled": False,
+        "dry_co2_release_ppm": 1000,
         # Vacation lowers the afterheat target by vacation_afterheat_drop_k
         # while it runs (off by default). Only the target changes: the
         # afterheat control and the frost floor work as always.
@@ -800,7 +826,8 @@ class ControllerState:
                  "bathroom_night_drying", "winter_dry_enabled", "frost_lock_enabled",
                  "afterheat_room_weighted", "night_cool_enabled", "fireplace_cold_guard_enabled",
                  "top_level_limit_enabled", "dry_release_steps_enabled", "vacation_afterheat_enabled",
-                 "cooling_afterheat_hold_enabled")
+                 "cooling_afterheat_hold_enabled", "dry_dynamic_enabled",
+                 "dry_co2_soft_enabled")
     TIME_KEYS = (("night_cool_start", "Natkøling start", "23:00"), ("night_cool_end", "Natkøling slut", "07:00"))
 
     def _sanitize_advanced(self) -> None:
@@ -841,6 +868,10 @@ class ControllerState:
             self.data["afterheat_room_min"], self.data["afterheat_room_max"] = 17, 24
         if self.data["fireplace_auto_off_temp"] >= self.data["fireplace_auto_on_temp"]:
             self.data["fireplace_auto_off_temp"] = self.data["fireplace_auto_on_temp"] - 1.0
+        if self.data["dry_tier1_rh"] >= self.data["dry_tier2_rh"]:
+            self.data["dry_tier1_rh"], self.data["dry_tier2_rh"] = 30.0, 35.0
+        if self.data["dry_tier1_level"] > self.data["dry_tier2_level"]:
+            self.data["dry_tier1_level"] = self.data["dry_tier2_level"]
         for key, allow_fixed, default in (
             ("afterheat_room_source", True, "auto"),
             ("fireplace_auto_source", False, ""),
@@ -884,6 +915,9 @@ class ControllerState:
         ("night_cool_min_indoor_c", 16.0, 26.0),
         ("fireplace_auto_on_temp", 15.0, 400.0), ("fireplace_auto_off_temp", 10.0, 399.0),
         ("humidity_margin_gm3", 0.0, 3.0), ("dry_rh_limit", 15.0, 45.0),
+        ("dry_tier1_rh", 15.0, 45.0), ("dry_tier2_rh", 20.0, 50.0),
+        ("dry_dynamic_rh_hysteresis", 1.0, 5.0),
+        ("dry_ah_margin_gm3", 0.0, 3.0), ("dry_ah_hysteresis_gm3", 0.0, 2.0),
         ("vacation_afterheat_drop_k", 0.5, 8.0),
         ("balance_extract_excess_percent", 0.0, 20.0), ("balance_duct_ratio", 0.7, 1.5),
         ("duct_rooms_offset_k", -3.0, 3.0), ("duct_t3_offset_k", -3.0, 3.0),
@@ -907,6 +941,8 @@ class ControllerState:
         ("bathroom_rise_minutes", 3, 30), ("bathroom_max_minutes", 0, 720),
         ("winter_level", 1, None), ("winter_hold_minutes", 5, 240),
         ("dry_hold_minutes", 1, 240), ("dry_release_step_ppm", 50, 500),
+        ("dry_tier1_level", 1, None), ("dry_tier2_level", 1, None), ("dry_min_level", 1, None),
+        ("dry_co2_release_ppm", 600, 2000),
         ("afterheat_pi_min_dwell_ticks", *PI_MIN_DWELL_TICKS_RANGE),
         ("night_cool_level", 1, None),
     )
@@ -1497,6 +1533,9 @@ class ControllerState:
         "t2_offset_k",
         "humidity_margin_gm3", "dry_protection_enabled", "dry_rh_limit", "dry_max_level",
         "dry_hold_minutes", "dry_release_steps_enabled", "dry_release_step_ppm",
+        "dry_dynamic_enabled", "dry_tier1_rh", "dry_tier1_level", "dry_tier2_rh", "dry_tier2_level",
+        "dry_dynamic_rh_hysteresis", "dry_ah_margin_gm3", "dry_ah_hysteresis_gm3", "dry_min_level",
+        "dry_co2_soft_enabled", "dry_co2_release_ppm",
         "vacation_afterheat_enabled", "vacation_afterheat_drop_k", "cooling_afterheat_hold_enabled",
         "onewire_roles", "pm25_enabled", "pm25_setpoint", "pm25_step", "pm25_hysteresis",
         "pm25_max_level", "pm25_ignored_rooms",
@@ -1531,6 +1570,12 @@ class ControllerState:
         "humidity_margin_gm3": "Fugtmargin", "dry_rh_limit": "Tør luft-grænse",
         "dry_max_level": "Maks. trin ved tør luft", "dry_hold_minutes": "Tør luft: mindste tid",
         "dry_release_steps_enabled": "Tør luft: slip i trin", "dry_release_step_ppm": "Tør luft: CO2 pr. trin",
+        "dry_dynamic_enabled": "Dynamisk fugtbeskyttelse",
+        "dry_tier1_rh": "Meget tør luft under", "dry_tier1_level": "Trin ved meget tør luft",
+        "dry_tier2_rh": "Tør luft under", "dry_tier2_level": "Trin ved tør luft",
+        "dry_dynamic_rh_hysteresis": "Fugt-hysterese", "dry_ah_margin_gm3": "Udeluften tørrere med mindst",
+        "dry_ah_hysteresis_gm3": "Hysterese for absolut fugt", "dry_min_level": "Mindste ventilation",
+        "dry_co2_soft_enabled": "Tør luft: CO2 løfter kun ét trin", "dry_co2_release_ppm": "Tør luft: CO2 slipper over",
         "vacation_afterheat_enabled": "Ferie: koldere indblæsning", "vacation_afterheat_drop_k": "Ferie: sænk indblæsningen med",
         "cooling_afterheat_hold_enabled": "Frikøling: ingen eftervarme",
         "balance_extract_excess_percent": "Udsugning over indblæsning", "balance_duct_ratio": "Kanalforhold",
@@ -1665,6 +1710,10 @@ class ControllerState:
                 self.data[key] = value
         if int(self.data["afterheat_room_min"]) > int(self.data["afterheat_room_max"]):
             raise ControllerError("Laveste indblæsning skal være under højeste")
+        if float(self.data["dry_tier1_rh"]) >= float(self.data["dry_tier2_rh"]):
+            raise ControllerError("Grænsen for meget tør luft skal være under grænsen for tør luft")
+        if int(self.data["dry_tier1_level"]) > int(self.data["dry_tier2_level"]):
+            raise ControllerError("Trinnet ved meget tør luft må ikke være over trinnet ved tør luft")
         for key, label, _default in self.TIME_KEYS:
             if key in patch:
                 self.data[key] = _validate_time(patch[key], label)
@@ -2000,6 +2049,21 @@ class ControllerEngine:
         self.dry_rooms_dry = False
         self.dry_release_co2: float | None = None
         self.dry_release_cap: int | None = None
+        # Dynamic dry-air protection (see _dry_dynamic): the held tier (0 none,
+        # 1 very dry, 2 dry), whether the outdoor air dries (absolute humidity,
+        # with hysteresis), the level cap, the house floor under it and why.
+        self.dry_tier = 0
+        self.dry_ah_open = False
+        self.dry_cap: int | None = None
+        self.dry_tier_level: int | None = None
+        self.dry_floor: int | None = None
+        self.dry_reason: str | None = None
+        self.dry_release_base: int | None = None
+        self.dry_air_values: dict[str, float | None] = {}
+        # dry_co2_soft_enabled: CO2 over its setpoint lifts the tier cap one step (latched with co2_hysteresis).
+        self.dry_co2_lift = False
+        # The level the automatic control wanted before the dry-air cap (None: no cap now).
+        self.dry_uncapped_level: int | None = None
         # Automatic level changes in the last hour (flap counter, see _count_level_change).
         self.level_change_times: deque[float] = deque()
         self._counted_level: int | None = None
@@ -2333,20 +2397,27 @@ class ControllerEngine:
                 reason = f"{reason}; {night_cool['night_cool_reason']} · bypass åben"
 
         flags["dry_protection_active"] = False
+        self.dry_uncapped_level = None
         dry = self._dry_air(d, now_ts)
         if dry and d["mode"] != "manual" and not flags["cooling_active"] and not flags["night_cool_active"]:
-            limit = int(d["dry_max_level"])
+            dynamic = self.dry_cap is not None
+            limit = int(self.dry_cap) if dynamic else int(d["dry_max_level"])
             if level > limit:
+                self.dry_uncapped_level = level
                 level = limit
                 flags["dry_protection_active"] = True
                 source = "dry_protection"
-                rh = self.ha_indoor_rh()
-                rh_text = f"{rh:.0f}" if rh is not None else "?"
-                reason = f"Tør luft (rum {rh_text}% RH): begrænset til trin {limit}"
+                if dynamic:
+                    reason = str(self.dry_reason)
+                else:
+                    rh = self.ha_indoor_rh()
+                    rh_text = f"{rh:.0f}" if rh is not None else "?"
+                    reason = f"Tør luft (rum {rh_text}% RH): begrænset til trin {limit}"
         flags["dry_release_active"] = False
         cap = self._dry_release_cap(d) if (
             d["mode"] != "manual" and not flags["cooling_active"] and not flags["night_cool_active"]) else None
         if cap is not None and level > cap:
+            self.dry_uncapped_level = max(level, self.dry_uncapped_level or 0)
             level = cap
             flags["dry_release_active"] = True
             source = "dry_protection"
@@ -2412,6 +2483,32 @@ class ControllerEngine:
             reason = f"Bål i haven · anlæg slukket · ca. {remaining} min tilbage"
         return level, source, reason, effective_bypass, flags
 
+    def _dry_dynamic_snapshot(self, d: dict) -> dict[str, object]:
+        """The dynamic dry-air protection for the WebUI and Home Assistant (dry_* keys)."""
+        values = self.dry_air_values
+        dynamic = bool(d.get("dry_protection_enabled") and d.get("dry_dynamic_enabled"))
+        diff = values.get("difference")
+        return {
+            "dry_dynamic_enabled": dynamic,
+            "dry_tier": self.dry_tier if dynamic else None,
+            "dry_tier_level": self.dry_tier_level,
+            "dry_cap_level": self.dry_cap,
+            "dry_floor_level": self.dry_floor,
+            "dry_floor_limited": (self.dry_tier_level is not None and self.dry_floor is not None
+                                  and self.dry_tier_level < self.dry_floor),
+            "dry_reason": self.dry_reason,
+            "dry_uncapped_level": self.dry_uncapped_level,
+            "dry_indoor_temperature": _round(values.get("indoor_temperature"), 2),
+            "dry_outdoor_temperature": _round(values.get("outdoor_temperature"), 2),
+            "dry_outdoor_rh": _round(values.get("outdoor_rh"), 1),
+            "dry_outdoor_source": self.external.get("dry_outdoor_source") if dynamic else None,
+            "dry_indoor_ah": _round(values.get("indoor_ah")),
+            "dry_outdoor_ah": _round(values.get("outdoor_ah")),
+            "dry_ah_difference": _round(diff),
+            "dry_ah_drying": self.dry_ah_open if dynamic and diff is not None else None,
+            "dry_co2_lift": self.dry_co2_lift if dynamic else None,
+        }
+
     def ha_indoor_rh(self) -> float | None:
         """RH of the Home Assistant rooms (winter_rh_basis); None while HA has no fresh rooms."""
         key = "indoor_rh_lowest" if self.config.data.get("winter_rh_basis") == "lowest" else "indoor_rh_average"
@@ -2464,10 +2561,17 @@ class ControllerEngine:
         at or under setpoint - hysteresis.
         """
         self.dry_rooms_dry, self.dry_release_co2 = False, None
+        self.dry_cap = self.dry_tier_level = self.dry_floor = self.dry_reason = self.dry_release_base = None
+        self.dry_air_values = {}
+        dynamic = bool(d.get("dry_protection_enabled") and d.get("dry_dynamic_enabled"))
+        if not dynamic:
+            self.dry_tier, self.dry_ah_open, self.dry_co2_lift = 0, False, False
         if not d.get("dry_protection_enabled"):
             self.dry_active, self.dry_changed_at, self.dry_state = False, None, "disabled"
             self.dry_co2_stopped = False
             return False
+        if dynamic:
+            return self._dry_dynamic(d, now)
         rh = self.ha_indoor_rh()
         if rh is None:
             if self.dry_active:
@@ -2519,6 +2623,174 @@ class ControllerEngine:
             self.dry_state = "waiting" if start else "standby"
         return self.dry_active
 
+    def _dry_floor_level(self, d: dict) -> int:
+        """The lowest level the dry-air tiers may cap at: never under the house minimum.
+
+        max(dry_min_level, local_min_level, the house sizing minimum when the
+        base level follows the house size). The Auto clamp and the sizing floor
+        later in the overlay enforce the same, so this only makes it visible.
+        """
+        floor = max(int(d.get("dry_min_level") or 1), int(d["local_min_level"]))
+        if d.get("sizing_enabled"):
+            try:
+                floor = max(floor, int(self.config.airflow_plan()["min_level"]))
+            except (KeyError, TypeError, ValueError):
+                pass
+        return min(floor, self.config.max_level())
+
+    def _dry_dynamic(self, d: dict, now: float) -> bool:
+        """Dynamic dry-air protection: RH tiers, only while the outdoor air dries the house.
+
+        Inputs: the HA rooms' RH (winter_rh_basis) and their average
+        temperature; outdoor temperature and RH from the runtime
+        (dry_outdoor_*: the Udeluft room, else T1 with the HA weather). Any of
+        the four missing or stale switches it off at once. The unit's own RH is
+        never used.
+
+        Tier 1 below dry_tier1_rh, tier 2 below dry_tier2_rh; the held tier
+        (and the stricter one) ends only at its limit + dry_dynamic_rh_hysteresis.
+        The tiers only apply while indoor minus outdoor absolute humidity is at
+        least dry_ah_margin_gm3; that ends under margin - dry_ah_hysteresis_gm3
+        and always at 0 or less (the outdoor air then does not dry anything).
+        Tier changes hold for dry_hold_minutes. CO2 over its setpoint and any
+        humidity demand (bathroom drying, a humid HA room, the unit's own RH
+        demand) release it at once; after a CO2 release it only starts again
+        with CO2 at or under setpoint - hysteresis, as the plain limit does.
+        """
+        hold = int(d.get("dry_hold_minutes", 10)) * 60
+        rh = self.ha_indoor_rh()
+        t_in = self.external.get("indoor_temperature_average")
+        t_out = self.external.get("dry_outdoor_temperature")
+        rh_out = self.external.get("dry_outdoor_rh")
+        ah_in = absolute_humidity(float(t_in), rh) if _is_number(t_in) and rh is not None else None
+        ah_out = (absolute_humidity(float(t_out), float(rh_out))
+                  if _is_number(t_out) and _is_number(rh_out) else None)
+        diff = ah_in - ah_out if ah_in is not None and ah_out is not None else None
+        self.dry_air_values = {
+            "indoor_rh": rh, "indoor_temperature": float(t_in) if _is_number(t_in) else None,
+            "outdoor_temperature": float(t_out) if _is_number(t_out) else None,
+            "outdoor_rh": float(rh_out) if _is_number(rh_out) else None,
+            "indoor_ah": ah_in, "outdoor_ah": ah_out, "difference": diff,
+        }
+        floor = self._dry_floor_level(d)
+        self.dry_floor = floor
+        if diff is None:
+            missing = [label for label, value in (
+                ("fugt inde", rh), ("temperatur inde", t_in), ("temperatur ude", t_out), ("fugt ude", rh_out))
+                if not _is_number(value)] or ["gyldige målinger"]
+            if self.dry_tier:
+                self.dry_changed_at = now
+            self.dry_tier, self.dry_ah_open, self.dry_active, self.dry_co2_stopped = 0, False, False, False
+            self.dry_co2_lift = False
+            self.dry_state = "sensor_missing"
+            self.dry_reason = "Slået fra: mangler friske målinger (" + ", ".join(missing) + ")"
+            return False
+
+        margin = float(d["dry_ah_margin_gm3"])
+        if self.dry_ah_open:
+            if diff <= 0 or diff < margin - float(d["dry_ah_hysteresis_gm3"]):
+                self.dry_ah_open = False
+        elif diff > 0 and diff >= margin:
+            self.dry_ah_open = True
+
+        current = self.dry_tier
+        hysteresis = float(d["dry_dynamic_rh_hysteresis"])
+        tier1_rh, tier2_rh = float(d["dry_tier1_rh"]), float(d["dry_tier2_rh"])
+        if rh < tier1_rh + (hysteresis if current == 1 else 0.0):
+            raw = 1
+        elif rh < tier2_rh + (hysteresis if current in (1, 2) else 0.0):
+            raw = 2
+        else:
+            raw = 0
+        wanted = raw if self.dry_ah_open else 0
+
+        if rh >= tier2_rh + hysteresis:
+            self.dry_co2_stopped = False  # no longer dry: the next start is a first start
+        setpoint, co2_hysteresis = int(d["co2_setpoint"]), int(d["co2_hysteresis"])
+        soft = bool(d.get("dry_co2_soft_enabled"))
+        # Soft CO2 (optional): only CO2 over dry_co2_release_ppm releases the protection;
+        # between the setpoint and that limit CO2 lifts the cap by one step.
+        co2_limit = max(int(d["dry_co2_release_ppm"]), setpoint) if soft else setpoint
+        co2_start_limit = co2_limit - co2_hysteresis if self.dry_co2_stopped else co2_limit
+        co2_values = [float(co2) for co2 in (self.measurements.get("co2"), self.external.get("max_room_co2"))
+                      if _is_number(co2)]
+        co2_high = any(co2 > co2_limit for co2 in co2_values)
+        co2_clear = all(co2 <= co2_start_limit for co2 in co2_values)
+        co2_max = max(co2_values) if co2_values else None
+        if not soft or co2_max is None:
+            self.dry_co2_lift = False
+        elif co2_max > setpoint:
+            self.dry_co2_lift = True
+        elif co2_max <= setpoint - co2_hysteresis:
+            self.dry_co2_lift = False
+        demand = self._humidity_demand(d, now)
+        may_change = self.dry_changed_at is None or now - self.dry_changed_at >= hold
+
+        new = current
+        if current and (co2_high or demand):
+            new = 0  # air quality first: released at once, whatever the hold
+            self.dry_co2_stopped = self.dry_co2_stopped or co2_high
+        elif wanted != current and may_change:
+            if current:
+                new = wanted
+            elif co2_clear and demand is None:
+                new = wanted
+                self.dry_co2_stopped = False
+        if new != current:
+            self.dry_tier, self.dry_changed_at = new, now
+        if co2_high and not new:
+            self.dry_co2_stopped = True
+        self.dry_active = new > 0
+
+        def tier_cap(tier: int) -> tuple[int, int]:
+            level = int(d["dry_tier1_level"] if tier == 1 else d["dry_tier2_level"])
+            return level, max(level, floor)
+
+        lift = 1 if self.dry_co2_lift else 0
+
+        self.dry_rooms_dry = wanted > 0 and demand is None
+        self.dry_release_co2 = max(co2_values) if co2_values else None
+        if wanted:
+            self.dry_release_base = tier_cap(wanted)[1] + 1 + lift
+        rh_text, diff_text = f"{rh:.0f} %", _danish_number(round(diff, 1), 1)
+        if new:
+            self.dry_tier_level, base_cap = tier_cap(new)
+            self.dry_cap = min(self.config.max_level(), base_cap + lift)
+            text = (f"Tør luft: {rh_text} fugt inde, udeluften er {diff_text} g/m³ tørrere"
+                    f" – højst trin {self.dry_cap}")
+            if self.dry_tier_level < floor:
+                text += f" (trin {self.dry_tier_level} er hævet til husets mindste ventilation, trin {floor})"
+            if lift and co2_max is not None:
+                text += f" · CO₂ {co2_max:.0f} ppm løfter ét trin"
+            if wanted != new:
+                self.dry_state = "held"
+                text += " · venter på mindste tid før skift"
+            else:
+                self.dry_state = "active"
+            self.dry_reason = text
+        elif raw and not self.dry_ah_open:
+            self.dry_state = "not_drying"
+            self.dry_reason = (f"Ikke aktiv: udeluften tørrer ikke huset nok (forskel {diff_text} g/m³,"
+                               f" skal være mindst {_danish_number(margin, 1)})")
+        elif wanted and demand:
+            self.dry_state = "humidity_demand"
+            self.dry_reason = {"bathroom_drying": "Slået fra: et badeværelse tørres ud",
+                               "ha_humidity": "Slået fra: der er høj fugt i et rum",
+                               "local_rh": "Slået fra: anlæggets egen fugtstyring beder om udluftning"}[demand]
+        elif wanted and co2_high:
+            self.dry_state = "co2_high"
+            self.dry_reason = f"Slået fra: CO₂ {max(co2_values):.0f} ppm er over {co2_limit} ppm"
+        elif wanted and not co2_clear:
+            self.dry_state = "co2_wait"
+            self.dry_reason = f"Venter: CO₂ skal ned på {co2_start_limit} ppm, før den starter igen"
+        elif wanted:
+            self.dry_state = "waiting"
+            self.dry_reason = "Starter, når mindste tid før skift er gået"
+        else:
+            self.dry_state = "standby"
+            self.dry_reason = f"Ikke aktiv: {rh_text} fugt inde er nok (grænse {tier2_rh:.0f} %)"
+        return self.dry_active
+
     # CO2 above the setpoint must climb this far below a step's start before the cap falls back.
     DRY_RELEASE_HYSTERESIS_PPM = 50
 
@@ -2538,7 +2810,8 @@ class ControllerEngine:
             return None
         step = max(50, int(d.get("dry_release_step_ppm") or 200))
         over = float(co2) - int(d["co2_setpoint"])
-        base = int(d["dry_max_level"]) + 1
+        base = (self.dry_release_base if self.dry_release_base is not None
+                else int(d["dry_max_level"]) + 1)
 
         def cap_at(value: float) -> int:
             return base + max(0, math.floor(value / step))
@@ -2625,6 +2898,13 @@ class ControllerEngine:
             self.winter_active, self.winter_changed_at = False, None
             self.winter_pause_until, self.winter_pause_reason = 0.0, None
             self.winter_state = "disabled"
+            return
+        if d.get("dry_protection_enabled") and d.get("dry_dynamic_enabled"):
+            # The dynamic dry-air protection takes over (tiers by RH and the
+            # absolute humidity): one mechanism, not two pulling at the level.
+            self.winter_active, self.winter_changed_at = False, None
+            self.winter_pause_until, self.winter_pause_reason = 0.0, None
+            self.winter_state = "dynamic"
             return
         hold = int(d["winter_hold_minutes"]) * 60
         outdoor = self.measurements.get("outdoor")
@@ -3155,6 +3435,7 @@ class ControllerEngine:
                 "winter_indoor_rh_source": self.winter_indoor_rh()[1],
                 "dry_protection_state": self.dry_state,
                 "dry_protection_indoor_rh": _round(self.ha_indoor_rh(), 1),
+                **self._dry_dynamic_snapshot(d),
                 "level_changes_last_hour": level_changes,
                 "level_change_quiet_seconds": self.level_change_quiet_seconds(now),
             }

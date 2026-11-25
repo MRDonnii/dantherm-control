@@ -46,7 +46,7 @@ HEALTH_FIELDS = ("heating_coil_after_temperature", "afterheat_target", "afterhea
                  "afterheat_level", "fan_supply_percent", "afterheat_context", "afterheat_algorithm_code",
                  # The comfort part of the report (new columns are empty in older rows).
                  "max_room_co2", "indoor_rh_average", "unit_frost_protection", "outdoor_temp",
-                 "extract_temp", "exhaust_temp", "bypass_active")
+                 "extract_temp", "exhaust_temp", "bypass_active", "dry_limit_active", "dry_tier")
 CO2_LIMITS = (900, 1000)
 DRY_RH_PERCENT = 30.0
 # Heat recovery is only meaningful with this much difference between extract and outdoor air.
@@ -348,6 +348,8 @@ def comfort_report(rows: list[dict], since: float) -> dict:
     co2 = [v for r in rows if (_number(r.get("ts")) or 0) >= since and (v := _number(r.get("max_room_co2"))) is not None]
     rh = [v for r in rows if (_number(r.get("ts")) or 0) >= since and (v := _number(r.get("indoor_rh_average"))) is not None]
     frost = [v for r in rows if (_number(r.get("ts")) or 0) >= since and (v := _number(r.get("unit_frost_protection"))) is not None]
+    dry = [(v, _number(r.get("dry_tier"))) for r in rows
+           if (_number(r.get("ts")) or 0) >= since and (v := _number(r.get("dry_limit_active"))) is not None]
     recovery = []
     for r in rows:
         if (_number(r.get("ts")) or 0) < since or _number(r.get("bypass_active")):
@@ -363,6 +365,10 @@ def comfort_report(rows: list[dict], since: float) -> dict:
         "co2_over_1000_minutes": sum(1 for v in co2 if v > CO2_LIMITS[1]) if co2 else None,
         "dry_air_hours": round(sum(1 for v in rh if v < DRY_RH_PERCENT) / 60, 1) if rh else None,
         "unit_frost_minutes": round(sum(1 for v in frost if v >= 0.5)) if frost else None,
+        # Minutes the dry-air protection held the level down, and per tier (1.13.0-beta.16 columns).
+        "dry_limit_hours": round(sum(1 for v, _t in dry if v >= 0.5) / 60, 1) if dry else None,
+        "dry_tier1_hours": round(sum(1 for v, t in dry if v >= 0.5 and t is not None and round(t) == 1) / 60, 1) if dry else None,
+        "dry_tier2_hours": round(sum(1 for v, t in dry if v >= 0.5 and t is not None and round(t) == 2) / 60, 1) if dry else None,
         "recovery_median_percent": round(statistics.median(recovery), 1) if len(recovery) >= 30 else None,
     }
     lines = []
@@ -371,6 +377,9 @@ def comfort_report(rows: list[dict], since: float) -> dict:
                      f"(over 900 ppm: {result['co2_over_900_minutes']} minutter)")
     if result["dry_air_hours"] is not None:
         lines.append(f"Tør luft (under 30 % fugt indenfor): {result['dry_air_hours']} timer")
+    if result["dry_limit_hours"] is not None:
+        lines.append(f"Fugtbeskyttelsen har holdt ventilationen nede i {result['dry_limit_hours']} timer"
+                     f" (meget tør luft: {result['dry_tier1_hours']} timer, tør luft: {result['dry_tier2_hours']} timer)")
     if result["unit_frost_minutes"] is not None:
         lines.append(f"Anlæggets egen frostsikring har skåret ned på indblæsningen i {result['unit_frost_minutes']} minutter")
     if result["recovery_median_percent"] is not None:
