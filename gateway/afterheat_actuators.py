@@ -20,6 +20,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from afterheat_algorithms import Algorithm, make_algorithm
+from afterheat_data import Telemetry, build_block, predict
 from afterheat_control import (ALGORITHM_CODES, ALGORITHM_DEFAULT, ALGORITHM_LABELS, ALGORITHMS, DIRECT_SPEC,
                                FROST_MARGIN_K, HAC1_SPEC, OVERRIDE_FAULT, OVERRIDE_NONE, CoilModel, ControlView,
                                Decision, OutputSpec, SafetyFacts, SafetyLayer, SafetyResult, clamp, danish, num)
@@ -45,6 +46,7 @@ class AlgorithmControl:
         self.algorithms: dict[str, Algorithm] = {}
         self.saved: dict[str, object] = {}
         self.safety = SafetyLayer()
+        self.telemetry = Telemetry()
         self.name = ALGORITHM_DEFAULT
         self.started = False
         self.decision: Decision | None = None
@@ -134,7 +136,8 @@ class AlgorithmControl:
     def to_dict(self) -> dict[str, object]:
         algorithms = dict(self.saved)
         algorithms.update({name: algorithm.to_dict() for name, algorithm in self.algorithms.items()})
-        return {"version": STORE_VERSION, "model": self.model.to_dict(), "algorithms": algorithms}
+        return {"version": STORE_VERSION, "model": self.model.to_dict(), "algorithms": algorithms,
+                "energy": self.telemetry.energy_dict()}
 
     def load(self) -> None:
         if self.store_path is None:
@@ -152,6 +155,7 @@ class AlgorithmControl:
         if not isinstance(data, dict) or data.get("version") != STORE_VERSION:
             return
         self.model = CoilModel.from_dict(data.get("model"))
+        self.telemetry.load_energy(data.get("energy"))
         algorithms = data.get("algorithms")
         self.saved = {k: v for k, v in algorithms.items() if isinstance(k, str)} if isinstance(algorithms, dict) else {}
         self.algorithms = {}
@@ -170,17 +174,19 @@ class AlgorithmControl:
         except OSError as error:
             LOG.warning("Afterheat algorithm store not saved: %s", error)
 
+    def status_summary(self) -> dict[str, object]:
+        """The model's state word: learning (under 30 min or no score yet), uncertain, ready."""
+        error = self.model.prediction_error()
+        if self.model.learned_s / 60 < 30 or error is None:
+            return {"state": "learning"}
+        return {"state": "uncertain" if error > 0.5 else "ready"}
+
     def status(self) -> dict[str, object]:
         """What the shared model has learned, in plain terms for the WebUI (see learning_state)."""
         model = self.model
         error = model.prediction_error()
         learned_minutes = model.learned_s / 60
-        if learned_minutes < 30 or error is None:
-            state = "learning"
-        elif error > 0.5:
-            state = "uncertain"
-        else:
-            state = "ready"
+        state = self.status_summary()["state"]
         scale = model.last_scale
         return {
             "state": state,
@@ -205,6 +211,7 @@ class AlgorithmPilot(AfterheatPilot):
     def __init__(self, period: float = TICK_PERIOD_S, store_path: str | Path | None = None) -> None:
         self.control = AlgorithmControl(replace(HAC1_SPEC, period=period), store_path)
         self.algo_wish: float | None = None
+        self.prediction: dict[str, object] = {}
         super().__init__(period)
 
     @property
@@ -231,6 +238,9 @@ class AlgorithmPilot(AfterheatPilot):
         target = num(inp.target) if inp.target is not None else None
         self.control.observe(inp.now, self._raw(inp), float(int(inp.level)), inp.fan_supply, inp.water_flow,
                              inp.before_heater, target)
+        self.control.telemetry.sample(inp.now, self._raw(inp), target, float(int(inp.level)))
+        # The model's view a minute and ten minutes ahead, once a tick (read-only, for the HA block).
+        self.prediction = predict(self.control.model, inp.now)
 
     def _view(self, inp: PilotInputs, low: int, high: int) -> ControlView:
         return ControlView(
@@ -267,6 +277,13 @@ class AlgorithmPilot(AfterheatPilot):
         if target < level:
             return "down", target
         return "hold", level
+
+    def ha_block(self, state: dict, now: float) -> dict[str, object]:
+        """The compact read-only block for Home Assistant (see afterheat_data); ``state`` is the controller snapshot."""
+        self.control.telemetry.add_power(now, state.get("afterheat_power_w"))
+        algorithm = self.control.algorithms.get("pid")
+        return build_block(self.control, self.control.telemetry, state, state.get("afterheat_algorithm_forecast"),
+                           self.prediction, getattr(algorithm, "parts", None), now)
 
     def _deactivate(self) -> None:
         super()._deactivate()

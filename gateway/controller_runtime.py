@@ -1583,6 +1583,12 @@ class ControllerRuntime:
             float(self.config.data.get("t2_offset_k") or 0.0),
         ))
         result["t2_offset_k"] = self.config.data.get("t2_offset_k", 0.0)
+        try:
+            # Read-only: the afterheat model, prediction and performance for Home Assistant.
+            result["afterheat_ha"] = self.engine.afterheat_pilot.ha_block(result, time.time())
+        except Exception:  # noqa: BLE001 - an exposure bug never stops the snapshot
+            LOG.exception("Afterheat HA block failed")
+            result["afterheat_ha"] = None
         return result
 
     def _supply_airflow(self, level: object) -> float | None:
