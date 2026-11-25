@@ -823,7 +823,9 @@ class Gateway:
             deadline = result.pop("deadline", None)
             if deadline is not None and time.monotonic() > deadline:
                 result["error"] = "expired"
-                self.controller_hardware_expired = getattr(self, "controller_hardware_expired", 0) + 1
+                state = getattr(self, "state", None)
+                if isinstance(state, dict):
+                    state["controller_hardware_expired"] = int(state.get("controller_hardware_expired") or 0) + 1
                 LOG.warning("Udløbet styrekommando sprunget over: %s", action)
                 done.set()
                 continue
@@ -1860,9 +1862,11 @@ class Gateway:
         # for the rare CRC byte equal to the byte count).
         crc = crc16(header).to_bytes(2, "little")
         tail = frame[2:6] + crc[:1] if crc[0] != frame[6] else None
-        for _attempt in range(2):
+        for attempt in range(2):
             if not self.wait_quiet(ser):
                 raise RuntimeError("RS485 bus did not become quiet")
+            if attempt:
+                self.count_bus(0x40, "retry")
             self.serial_write(ser, frame, reason)
             ser.flush()
             deadline = time.monotonic() + 0.5
@@ -1873,11 +1877,14 @@ class Gateway:
                 index = received.find(header)
                 if index >= 0 and (header_seen or len(received) >= index + 8):
                     self.last_afterheat_block_at = time.monotonic()
+                    self.count_bus(0x40, "ok")
                     return
                 header_seen = index >= 0
                 if tail is not None and tail in received:
                     self.last_afterheat_block_at = time.monotonic()
+                    self.count_bus(0x40, "ok")
                     return
+            self.count_bus(0x40, "timeout")
         raise RuntimeError(f"missing FC16 acknowledgement for register {start}")
 
     def _afterheat_temperature_words(self, ser: serial.Serial) -> list[int]:
@@ -2031,15 +2038,34 @@ class Gateway:
         time.sleep(0.15)
         self.write_pair(ser, *target)
 
+    def count_bus(self, slave: int, outcome: str) -> None:
+        """Per-slave RS485 counters (unit = 1, HAC1 = 0x40) for the diagnostics.
+
+        ``outcome`` is ok, retry, timeout (no answer) or crc_error (an answer
+        with the right header but a broken checksum).
+        """
+        state = getattr(self, "state", None)
+        if not isinstance(state, dict):
+            return
+        name = {1: "unit", 0x40: "hac1"}.get(int(slave), f"slave{int(slave)}")
+        key = f"rs485_{name}_{outcome}"
+        state[key] = int(state.get(key) or 0) + 1
+
     def read_fan_pair(self, ser: serial.Serial) -> tuple[int, int] | None:
         request = self.read_frame(66, 2)
+        sent = 0
         for _attempt in range(4):
             if not self.wait_quiet(ser):
                 continue
-            self.serial_write(ser, request, "ACTIVE_READ")
+            # Zero bytes written: the master gate kept it off the wire (not counted).
+            wrote = self.serial_write(ser, request, "ACTIVE_READ") != 0
+            if wrote and sent:
+                self.count_bus(1, "retry")
+            sent += wrote
             ser.flush()
             deadline = time.monotonic() + 0.4
             received = bytearray()
+            crc_bad = False
             while time.monotonic() < deadline:
                 received.extend(self.serial_read(ser, 256))
                 for offset in range(max(0, len(received) - 256), len(received) - 8):
@@ -2047,11 +2073,15 @@ class Gateway:
                     if frame[:3] != b"\x01\x03\x04":
                         continue
                     if crc16(frame[:-2]) != int.from_bytes(frame[-2:], "little"):
+                        crc_bad = True
                         continue
+                    self.count_bus(1, "ok")
                     return (
                         int.from_bytes(frame[3:5], "big"),
                         int.from_bytes(frame[5:7], "big"),
                     )
+            if wrote:
+                self.count_bus(1, "crc_error" if crc_bad else "timeout")
         return None
 
     def read_register_block(
@@ -2059,6 +2089,7 @@ class Gateway:
     ) -> list[int] | None:
         request = self.read_frame(start, count, slave=slave, function=function)
         expected_length = 5 + count * 2
+        sent = 0
         for _attempt in range(4):
             if not self._active_read_allowed():
                 return None
@@ -2066,10 +2097,15 @@ class Gateway:
                 continue
             if not self._active_read_allowed():
                 return None
-            self.serial_write(ser, request, "ACTIVE_READ")
+            # Zero bytes written: the master gate kept it off the wire (not counted).
+            wrote = self.serial_write(ser, request, "ACTIVE_READ") != 0
+            if wrote and sent:
+                self.count_bus(slave, "retry")
+            sent += wrote
             ser.flush()
             deadline = time.monotonic() + 0.18
             received = bytearray()
+            crc_bad = False
             while time.monotonic() < deadline:
                 received.extend(self.serial_read(ser, 256))
                 for offset in range(
@@ -2080,15 +2116,19 @@ class Gateway:
                     if frame[:3] != bytes([slave, function, count * 2]):
                         continue
                     if crc16(frame[:-2]) != int.from_bytes(frame[-2:], "little"):
+                        crc_bad = True
                         continue
                     # A CRC-valid response to an active read also proves that the
                     # RS485 bus is alive. Without this, installations with no
                     # unsolicited frames are restarted by the watchdog every 60 s.
                     self.last_bus_frame = time.monotonic()
+                    self.count_bus(slave, "ok")
                     return [
                         int.from_bytes(frame[index : index + 2], "big")
                         for index in range(3, len(frame) - 2, 2)
                     ]
+            if wrote:
+                self.count_bus(slave, "crc_error" if crc_bad else "timeout")
         return None
 
     def _active_read_allowed(self) -> bool:

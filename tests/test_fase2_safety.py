@@ -174,3 +174,24 @@ def test_sniffer_duplicate_memory_is_bounded():
     for value in range(2000):
         list(sniffer.feed(_fc06(1, 66, value % 65536)))
     assert len(sniffer.last_seen) <= module.SNIFFER_LAST_SEEN_PRUNE_AT + 1
+
+
+def test_rs485_counters_per_slave():
+    """safety-11: timeouts, CRC errors and retries per slave."""
+    module, gateway = _bare_gateway()
+    gateway.state = {}
+    gateway.wait_quiet = lambda ser, seconds=0.015: True
+    gateway.serial_write = lambda ser, data, reason: len(data)
+    body = bytes([0x40, 3, 2, 0, 5])
+    broken = body + b"\x00\x00"
+    answers = iter([broken, b"", b"", b""] + [b""] * 400)
+    gateway.serial_read = lambda ser, size: next(answers, b"")
+
+    class Ser:
+        def flush(self):
+            pass
+
+    assert gateway.read_register_block(Ser(), 0x40, 10, 1) is None
+    assert gateway.state["rs485_hac1_crc_error"] == 1
+    assert gateway.state["rs485_hac1_timeout"] == 3
+    assert gateway.state["rs485_hac1_retry"] == 3
