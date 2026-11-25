@@ -180,7 +180,10 @@ class MpcAlgorithm(Algorithm):
                 first = view.spec.limit(plan[0] + delta, view.output, view.low, view.high)
                 consider((first, *plan[1:]))
         _cost, plan, lowest = best
-        return Decision(plan[0], self._why(view, plan, lowest), plan)
+        path = view.model.simulate(view.now, list(plan), view.spec, scale, base, self.STEP_S)
+        per_minute = max(1, int(round(60.0 / self.STEP_S)))
+        forecast = tuple(round(air, 2) for air in path[per_minute - 1::per_minute])
+        return Decision(plan[0], self._why(view, plan, lowest), plan, forecast)
 
     def _why(self, view: ControlView, plan: tuple[float, ...], lowest: float) -> str:
         spec, now = view.spec, plan[0]

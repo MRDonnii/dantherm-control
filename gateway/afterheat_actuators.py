@@ -171,13 +171,31 @@ class AlgorithmControl:
             LOG.warning("Afterheat algorithm store not saved: %s", error)
 
     def status(self) -> dict[str, object]:
+        """What the shared model has learned, in plain terms for the WebUI (see learning_state)."""
         model = self.model
+        error = model.prediction_error()
+        learned_minutes = model.learned_s / 60
+        if learned_minutes < 30 or error is None:
+            state = "learning"
+        elif error > 0.5:
+            state = "uncertain"
+        else:
+            state = "ready"
+        scale = model.last_scale
         return {
-            "lift_k": [round(v, 2) for v in model.lift[:4]],
+            "state": state,
+            # Kelvin each level adds now (the fan and water of the last look), levels 1..4.
+            "step_k_now": [round(scale * (model.lift[n] - model.lift[n - 1]), 2) for n in range(1, 5)],
+            "lift_k": [round(v, 2) for v in model.lift],
             "tau_up_s": round(model.tau_up), "tau_down_s": round(model.tau_down), "dead_s": round(model.dead),
-            "offset_k": round(model.offset, 2), "learned_minutes": round(model.learned_s / 60),
+            "offset_k": round(model.offset, 2), "learned_minutes": round(learned_minutes),
+            "samples": model.samples, "buffer_minutes": round(len(model.buffer) * 10 / 60),
+            "prediction_error_k": None if error is None else round(error, 2),
+            "prediction_checks": len(model.check_errors),
             "refits": model.reid_accepted, "refit_attempts": model.reid_tried,
+            "refit_last": model.reid_last,
             "safety_overrides_hour": len(self.safety.overrides),
+            "algorithms": {name: algorithm.to_dict() for name, algorithm in self.algorithms.items()},
         }
 
 
@@ -302,6 +320,12 @@ class AlgorithmPilot(AfterheatPilot):
             "afterheat_algorithm_state": fallback,
             "afterheat_safety_override": result.override if result is not None else None,
             "afterheat_model": control.status(),
+            "afterheat_algorithm_forecast": (list(control.decision.forecast)
+                                             if algorithm_steers and control.decision is not None else None),
+            # What the standard pilot itself has learned: K per level step (reference fan) and fall overruns.
+            "afterheat_pilot_learned": {
+                "step_k": [round(self.heat.step(n), 2) for n in range(4)], "steps_measured": self.heat.measured,
+                "fall_overrun_s": {str(k * 5): round(v) for k, v in sorted(self.fall_overrun.items())}},
         })
         if algorithm_steers and self.algo_wish is not None:
             snapshot["afterheat_level_wanted"] = round(self.algo_wish, 1)

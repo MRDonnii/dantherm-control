@@ -185,8 +185,9 @@ class ControlView:
 class Decision:
     output: float
     why: str
-    # The plan behind it (MPC), for the diagnostics.
+    # The plan behind it and the air it expects each minute (MPC), for the diagnostics.
     plan: tuple[float, ...] = ()
+    forecast: tuple[float, ...] = ()
 
 
 # ------------------------------------------------------------------ coil model
@@ -243,6 +244,7 @@ class CoilModel:
         self.checks: deque[tuple[float, float]] = deque()
         self.check_errors: deque[tuple[float, float]] = deque()
         self.samples = 0
+        self.last_scale = 1.0
 
     def _reset_filter(self) -> None:
         self.sens = [0.0] * (LEVEL_MAX + 1)
@@ -298,7 +300,7 @@ class CoilModel:
             self.outputs.append((now, float(output)))
         while len(self.outputs) > 2 and self.outputs[1][0] < now - 2 * DEAD_RANGE_S[1]:
             self.outputs.popleft()
-        scale = self.scale(fan, water, air_in)
+        scale = self.last_scale = self.scale(fan, water, air_in)
         base = self.base(air_in)
         if self.x is None or self.updated is None or now - self.updated > 600 or now < self.updated:
             self._reset_filter()
@@ -499,7 +501,7 @@ class CoilModel:
         fitted = fit(params, holdout)
         accepted = (math.isfinite(prior) and math.isfinite(fitted) and fitted <= (1 - REID_REL_GAIN) * prior
                     and prior - fitted >= REID_ABS_GAIN_K)
-        self.reid_last = {"prior_rmse": round(prior, 3), "fitted_rmse": round(fitted, 3),
+        self.reid_last = {"at": rows[-1][0], "prior_rmse": round(prior, 3), "fitted_rmse": round(fitted, 3),
                           "accepted": 1.0 if accepted else 0.0, **{k: round(v, 3) for k, v in params.items()}}
         if accepted:
             self.tau_up, self.tau_down, self.dead = params["tau_up"], params["tau_down"], params["dead"]
@@ -551,7 +553,8 @@ class CoilModel:
         return {"version": self.VERSION, "lift": [round(v, 4) for v in self.lift], "tau_up": round(self.tau_up, 2),
                 "tau_down": round(self.tau_down, 2), "dead": round(self.dead, 2), "learned_s": round(self.learned_s),
                 "reid_accepted": self.reid_accepted, "reid_tried": self.reid_tried,
-                "offset": round(self.offset, 3), "air_in": self.air_in_last}
+                "offset": round(self.offset, 3), "air_in": self.air_in_last, "samples": self.samples,
+                "reid_last": self.reid_last}
 
     @classmethod
     def from_dict(cls, data: object) -> "CoilModel":
@@ -574,6 +577,10 @@ class CoilModel:
         model.reid_accepted = int(num(data.get("reid_accepted")) or 0)
         model.reid_tried = int(num(data.get("reid_tried")) or 0)
         model.offset = clamp(num(data.get("offset")) or 0.0, -OFFSET_LIMIT_K, OFFSET_LIMIT_K)
+        model.samples = int(num(data.get("samples")) or 0)
+        last = data.get("reid_last")
+        if isinstance(last, dict) and all(num(v) is not None for v in last.values()):
+            model.reid_last = {str(k): float(v) for k, v in last.items()}
         air_in = num(data.get("air_in"))
         model.air_in_last = air_in if air_in is not None and -30 < air_in < 50 else None
         return model

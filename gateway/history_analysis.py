@@ -34,7 +34,7 @@ SCALE_FIELDS = ("afterheat_level", "heating_coil_after_temperature", "afterheat_
                 "return_temperature", "flow_temperature", "afterheat_target", "afterheat_context")
 MAX_FAN_GROUPS = 6
 HEALTH_FIELDS = ("heating_coil_after_temperature", "afterheat_target", "afterheat_active",
-                 "afterheat_level", "fan_supply_percent", "afterheat_context")
+                 "afterheat_level", "fan_supply_percent", "afterheat_context", "afterheat_algorithm_code")
 HEALTH_DAYS = 7
 IN_BAND_K = 0.5
 # The combined HA-room status that the weekly report repeats.
@@ -42,7 +42,11 @@ HA_ROOMS_KEYS = ("state", "fresh", "connection_online", "fresh_count", "stale_co
                  "missing_count", "missing_rooms_count")
 # Operating-mode filter of the afterheat precision (operating_context.afterheat_context values,
 # as the History page's "Vurder driftstilstand"); "unknown" = older or mixed data.
-HEALTH_CONTEXTS = ("all", *(str(value) for value in range(9)), "unknown")
+HEALTH_CONTEXTS = ("all", *(str(value) for value in range(9)), "unknown",
+                   # Or which afterheat algorithm steered (afterheat_control.ALGORITHMS).
+                   "algo:standard", "algo:mpc", "algo:mpc_simple", "algo:pid", "algo:tpi", "algo:heat_power")
+ALGORITHM_CONTEXT_CODES = {"algo:standard": 0, "algo:mpc": 1, "algo:mpc_simple": 2, "algo:pid": 3, "algo:tpi": 4,
+                           "algo:heat_power": 5}
 # What the report says when its data basis is missing or recording is paused.
 DATA_BASIS_TEXT = {
     "ok": "",
@@ -211,6 +215,15 @@ def row_context(row: dict) -> str:
     return str(int(value)) if value is not None and value.is_integer() and 0 <= value <= 8 else "unknown"
 
 
+def row_matches(row: dict, context: str) -> bool:
+    """The sample belongs to ``context``: all, its operating mode or the algorithm that steered."""
+    if context == "all":
+        return True
+    if context in ALGORITHM_CONTEXT_CODES:
+        return _number(row.get("afterheat_algorithm_code")) == ALGORITHM_CONTEXT_CODES[context]
+    return row_context(row) == context
+
+
 class _Period:
     def __init__(self) -> None:
         self.samples = 0
@@ -262,7 +275,7 @@ def _scan(rows: list[dict], *, since: float, until: float, context: str, total: 
         if ts is None or ts < since or ts > until:
             continue
         periods = (total, per_day[_day(ts)]) if per_day is not None else (total,)
-        selected = context == "all" or row_context(row) == context
+        selected = row_matches(row, context)
         for period in periods:
             period.samples += 1
             period.context_samples += selected
@@ -291,7 +304,7 @@ def _scan(rows: list[dict], *, since: float, until: float, context: str, total: 
             elif 0 < gap <= SAMPLE_GAP_S:
                 level, before = _number(row.get("afterheat_level")), _number(previous.get("afterheat_level"))
                 fan, fan_before = _number(row.get("fan_supply_percent")), _number(previous.get("fan_supply_percent"))
-                both_selected = selected and (context == "all" or row_context(previous) == context)
+                both_selected = selected and row_matches(previous, context)
                 if level is not None and before is not None and both_selected:
                     for period in periods:
                         period.covered_s += gap
@@ -384,7 +397,7 @@ def weekly_health(rows: list[dict], *, events: list[dict], restarts: list[dict],
 # --- Before/after a software update -------------------------------------------------------
 
 COMPARE_FIELDS = ("heating_coil_after_temperature", "afterheat_target", "afterheat_active", "afterheat_level",
-                  "fan_supply_percent", "afterheat_context", "outdoor_temp")
+                  "fan_supply_percent", "afterheat_context", "outdoor_temp", "afterheat_algorithm_code")
 COMPARE_WINDOWS = {"24h": 86400, "3d": 3 * 86400, "7d": 7 * 86400}
 # Start-up and settling after an update are left out of both windows.
 COMPARE_SETTLE_S = 30 * 60
@@ -555,3 +568,71 @@ def update_comparison(update: dict, windows: dict, before_rows: list[dict], afte
                  "stopper ved den forrige opdatering, så to versioner aldrig blandes. "
                  "Forskelle under tærsklen kaldes uændret."),
     }
+
+
+# --- Per afterheat algorithm (afterheat_control.ALGORITHMS) ------------------------------
+
+ALGORITHM_FIELDS = ("heating_coil_after_temperature", "afterheat_target", "afterheat_level",
+                    "afterheat_algorithm_code", "afterheat_safety_override", "afterheat_context")
+ALGORITHM_WINDOWS = {"1h": 3600, "24h": 86400, "7d": 7 * 86400}
+# Fewer measured minutes than this for an algorithm in a window: shown, but not compared.
+ALGORITHM_MIN_MINUTES = 30
+SOFT_FLOOR_K = 0.5
+
+
+def algorithm_performance(rows: list[dict], now: float) -> dict:
+    """How each algorithm did in the last hour, day and week (read-only, from the one-minute history).
+
+    Per window and algorithm code: measured minutes, mean deviation from the target, lowest air,
+    share of minutes under target - 0.5 K, level changes an hour and minutes the safety layer
+    took over. Minutes with HAC1 alone (no code), switched off or cooling are left out; a level
+    change counts for the algorithm when both minutes are its own and one minute apart.
+    """
+    from afterheat_control import ALGORITHM_CODES, ALGORITHM_LABELS
+    names = {code: name for name, code in ALGORITHM_CODES.items()}
+    result = {}
+    for window, span in ALGORITHM_WINDOWS.items():
+        since = now - span
+        stats: dict[str, dict] = {}
+        previous = None
+        for row in rows:
+            ts = _number(row.get("ts"))
+            if ts is None or ts < since or ts > now:
+                continue
+            code = _number(row.get("afterheat_algorithm_code"))
+            name = names.get(int(code)) if code is not None and code.is_integer() else None
+            air, target = _number(row.get("heating_coil_after_temperature")), _number(row.get("afterheat_target"))
+            level = _number(row.get("afterheat_level"))
+            if name is not None and row.get("afterheat_context") not in (4, 5):
+                item = stats.setdefault(name, {"minutes": 0, "errors": [], "air": [], "under": 0, "changes": 0,
+                                               "covered_s": 0.0, "overrides": 0})
+                item["minutes"] += 1
+                if (_number(row.get("afterheat_safety_override")) or 0) > 0:
+                    item["overrides"] += 1
+                if air is not None and target is not None:
+                    item["errors"].append(air - target)
+                    item["air"].append(air)
+                    item["under"] += air < target - SOFT_FLOOR_K
+                if previous is not None and previous[1] == name and 0 < ts - previous[0] <= SAMPLE_GAP_S:
+                    item["covered_s"] += ts - previous[0]
+                    if level is not None and previous[2] is not None and round(level) != round(previous[2]):
+                        item["changes"] += 1
+            previous = (ts, name, level)
+        listed = []
+        for name, item in stats.items():
+            errors, hours = item["errors"], item["covered_s"] / 3600
+            listed.append({
+                "algorithm": name, "label": ALGORITHM_LABELS.get(name, name), "minutes": item["minutes"],
+                "measured_minutes": len(errors),
+                "enough": len(errors) >= ALGORITHM_MIN_MINUTES,
+                "mean_error": round(statistics.fmean(errors), 2) if errors else None,
+                "mean_abs_error": round(statistics.fmean(abs(e) for e in errors), 2) if errors else None,
+                "air_min": round(min(item["air"]), 1) if item["air"] else None,
+                "under_floor_percent": round(100 * item["under"] / len(errors), 1) if errors else None,
+                "level_changes_per_hour": round(item["changes"] / hours, 1) if hours >= 0.25 else None,
+                "safety_minutes": item["overrides"],
+            })
+        listed.sort(key=lambda entry: ALGORITHM_CODES.get(entry["algorithm"], 99))
+        result[window] = {"algorithms": listed,
+                          "compare": sum(1 for entry in listed if entry["enough"]) >= 2}
+    return result

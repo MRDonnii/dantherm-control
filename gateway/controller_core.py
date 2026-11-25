@@ -33,6 +33,8 @@ from afterheat_pilot import (
     AfterheatPilot,
     PilotInputs,
 )
+from afterheat_actuators import AlgorithmPilot
+from afterheat_control import ALGORITHM_DEFAULT as AFTERHEAT_ALGORITHM_DEFAULT, ALGORITHMS as AFTERHEAT_ALGORITHMS
 from night_cooling import NightCooling, OutdoorHistory
 from room_cascade import SATURATION_MARGIN_K, RoomCascade
 from advanced_control import (
@@ -434,6 +436,9 @@ class ControllerState:
         # target (K), and a level is kept this many HAC1 ticks unless urgent.
         "afterheat_pi_band": PI_BAND_DEFAULT,
         "afterheat_pi_min_dwell_ticks": PI_MIN_DWELL_TICKS_DEFAULT,
+        # Which algorithm chooses the level while the Pi steers (afterheat_control.ALGORITHMS);
+        # "standard" is the pilot above, unchanged.
+        "afterheat_algorithm": AFTERHEAT_ALGORITHM_DEFAULT,
         # Fireplace mode held by a stove sensor or an external switch.
         "fireplace_auto_enabled": False,
         "fireplace_auto_source": "",
@@ -768,6 +773,8 @@ class ControllerState:
             self.data["winter_rh_basis"] = "average"
         if self.data.get("afterheat_control_mode") not in AFTERHEAT_CONTROL_MODES:
             self.data["afterheat_control_mode"] = "native"
+        if self.data.get("afterheat_algorithm") not in AFTERHEAT_ALGORITHMS:
+            self.data["afterheat_algorithm"] = AFTERHEAT_ALGORITHM_DEFAULT
         self.data["balance_learned"] = self._clean_learned(self.data.get("balance_learned"))
         for key, low, high in self.ADVANCED_FLOATS:
             try:
@@ -1423,7 +1430,7 @@ class ControllerState:
         "winter_rh_hysteresis", "winter_rh_basis", "winter_level", "winter_hold_minutes",
         "frost_lock_enabled", "frost_lock_outdoor_c", "frost_lock_coil_c", "frost_lock_min_setpoint_c",
         "afterheat_control_mode", "afterheat_pi_gain", "afterheat_pi_integral_minutes",
-        "afterheat_pi_band", "afterheat_pi_min_dwell_ticks",
+        "afterheat_pi_band", "afterheat_pi_min_dwell_ticks", "afterheat_algorithm",
         "afterheat_room_integral_minutes", "afterheat_room_max_step", "afterheat_room_weighted",
         "afterheat_room_band_k", "afterheat_room_offset_k",
         "night_cool_enabled", "night_cool_start", "night_cool_end", "night_cool_forecast_c", "night_cool_today_c",
@@ -1462,6 +1469,7 @@ class ControllerState:
         "afterheat_pi_integral_minutes": "Eftervarme: integraltid",
         "afterheat_pi_band": "Eftervarme: komfortbånd",
         "afterheat_pi_min_dwell_ticks": "Eftervarme: mindste tid pr. trin",
+        "afterheat_algorithm": "Eftervarme: styring",
     }
 
     def frost_lock_in_force(self) -> bool:
@@ -1541,6 +1549,10 @@ class ControllerState:
             if patch["afterheat_control_mode"] not in AFTERHEAT_CONTROL_MODES:
                 raise ControllerError("afterheat_control_mode skal være native eller pi")
             self.data["afterheat_control_mode"] = patch["afterheat_control_mode"]
+        if "afterheat_algorithm" in patch:
+            if patch["afterheat_algorithm"] not in AFTERHEAT_ALGORITHMS:
+                raise ControllerError("afterheat_algorithm skal være en af " + ", ".join(AFTERHEAT_ALGORITHMS))
+            self.data["afterheat_algorithm"] = patch["afterheat_algorithm"]
         if "winter_rh_basis" in patch:
             if patch["winter_rh_basis"] not in WINTER_RH_BASES:
                 raise ControllerError("winter_rh_basis skal være average eller lowest")
@@ -1870,7 +1882,10 @@ class ControllerEngine:
         # The last afterheat control snapshot (saturation for the room loop).
         self.last_pilot: dict[str, object] = {}
         # Pi-side afterheat level control (afterheat_pilot) and what it is fed with.
-        self.afterheat_pilot = AfterheatPilot()
+        # What the selectable afterheat algorithms learn is kept next to the settings.
+        config_path = getattr(config, "path", None)
+        self.afterheat_pilot = AlgorithmPilot(
+            store_path=Path(config_path).with_name("afterheat_algorithms.json") if config_path else None)
         self.afterheat_inputs: dict[str, object] = {}
         self.last_afterheat: dict[str, object] = {}
         self.current_auto_level: int | None = None
@@ -2715,6 +2730,7 @@ class ControllerEngine:
             integral_minutes=float(d.get("afterheat_pi_integral_minutes", PI_INTEGRAL_MINUTES_DEFAULT)),
             band=float(d.get("afterheat_pi_band", PI_BAND_DEFAULT)),
             min_dwell_ticks=int(d.get("afterheat_pi_min_dwell_ticks", PI_MIN_DWELL_TICKS_DEFAULT)),
+            algorithm=str(d.get("afterheat_algorithm") or AFTERHEAT_ALGORITHM_DEFAULT),
         ))
 
     def afterheat_native_setpoint(self, lock_timeout: float | None = None) -> int | None:

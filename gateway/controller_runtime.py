@@ -319,7 +319,10 @@ class ControllerRuntime:
     # Controller values kept in the gateway state for the history (dashboard_server.HISTORY_FIELDS).
     # HAC1's level and the user's target in both modes; the Pi's decision (whole and
     # continuous target level) only while it steers, else None ("HAC1 styrer selv").
-    HISTORY_KEYS = ("afterheat_level", "afterheat_level_target", "afterheat_level_wanted", "afterheat_target")
+    # Per decision also which algorithm steered (code, None: HAC1 alone), what it wanted and
+    # whether the safety layer overrode it (afterheat_control.OVERRIDE_*), for the comparison per algorithm.
+    HISTORY_KEYS = ("afterheat_level", "afterheat_level_target", "afterheat_level_wanted", "afterheat_target",
+                    "afterheat_algorithm_code", "afterheat_algorithm_wanted", "afterheat_safety_override")
 
     def _publish_history_values(self, snapshot: dict[str, object]) -> None:
         for key in self.HISTORY_KEYS:

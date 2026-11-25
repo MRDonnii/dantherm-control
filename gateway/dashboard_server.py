@@ -25,7 +25,7 @@ ASSET_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; chars
 AUXILIARY_REFRESH_SECONDS = 5
 PREHEATER_STALE_SECONDS = 60
 RANGES = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000}
-HISTORY_FIELDS = ("humidity", "outdoor_temp", "supply_temp", "extract_temp", "exhaust_temp", "hrc2_t5_temperature", "heating_coil_after_temperature", "heating_coil_frost_temperature", "flow_temperature", "return_temperature", "co2", "fan_supply_rpm", "fan_extract_rpm", "fan_supply_percent", "fan_extract_percent", "heat_recovery_efficiency", "system_cpu_usage_percent", "pi_cpu_temperature", "system_memory_used_percent", "system_load_1m", "afterheat_setpoint", "afterheat_active", "afterheat_level", "afterheat_level_target", "afterheat_level_wanted", "afterheat_target", "afterheat_context", "afterheat_before_temperature")
+HISTORY_FIELDS = ("humidity", "outdoor_temp", "supply_temp", "extract_temp", "exhaust_temp", "hrc2_t5_temperature", "heating_coil_after_temperature", "heating_coil_frost_temperature", "flow_temperature", "return_temperature", "co2", "fan_supply_rpm", "fan_extract_rpm", "fan_supply_percent", "fan_extract_percent", "heat_recovery_efficiency", "system_cpu_usage_percent", "pi_cpu_temperature", "system_memory_used_percent", "system_load_1m", "afterheat_setpoint", "afterheat_active", "afterheat_level", "afterheat_level_target", "afterheat_level_wanted", "afterheat_target", "afterheat_context", "afterheat_before_temperature", "afterheat_algorithm_code", "afterheat_algorithm_wanted", "afterheat_safety_override")
 HISTORY_SENSOR_MARKERS = {
     "humidity": "humidity_sample_fresh",
     "co2": "co2_sample_fresh",
@@ -180,7 +180,8 @@ class HistoryStore:
         value = self._fresh_column
         columns = [
             (f'CASE WHEN MIN("{field}") = MAX("{field}") AND COUNT("{field}") = COUNT(*) '
-             f'THEN MIN("{field}") END AS "{field}"') if field == "afterheat_context" else
+             f'THEN MIN("{field}") END AS "{field}"') if field in ("afterheat_context", "afterheat_algorithm_code") else
+            f'MAX("{field}") AS "{field}"' if field == "afterheat_safety_override" else
             f'AVG({value(field)}) AS "{field}"' for field in HISTORY_FIELDS]
         for field in self.HISTORY_SPREAD_FIELDS:
             columns.append(f'MIN({value(field)}) AS "{field}_min"')

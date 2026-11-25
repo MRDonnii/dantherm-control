@@ -24,8 +24,10 @@ from controller_token import ControllerTokenStore
 from control_replay import (REPLAY_BUSY_TEXT, REPLAY_LOCK, learned_steps, replay_afterheat, replay_local_auto,
                             replay_smart_auto)
 from diagnostics import WATCHDOG_RESTART_FILE, WATCHDOG_RESTART_RETENTION, read_watchdog_restarts
-from history_analysis import (COMPARE_FIELDS, COMPARE_WINDOWS, HEALTH_CONTEXTS, HEALTH_DAYS, HEALTH_FIELDS, SCALE_FIELDS,
-                              afterheat_scale, comparison_windows, update_comparison, weekly_health)
+from history_analysis import (ALGORITHM_FIELDS, COMPARE_FIELDS, COMPARE_WINDOWS, HEALTH_CONTEXTS, HEALTH_DAYS,
+                              HEALTH_FIELDS, SCALE_FIELDS, afterheat_scale, algorithm_performance, comparison_windows,
+                              update_comparison, weekly_health)
+from afterheat_control import ALGORITHM_HELP, ALGORITHM_LABELS, ALGORITHMS, OVERRIDE_TEXT
 from update_history import UPDATE_HISTORY_FILE, find_version_file, merged_updates, record_start
 from control_history import ControlHistory
 from api_keys import ApiKeyStore, SCOPE_LABELS
@@ -177,6 +179,33 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                              events=self.events.list(kinds=ALARM_KINDS, limit=500), restarts=restarts,
                              controller=controller, now=now, context=context,
                              history=self.history.status())
+
+    # The controller values the afterheat algorithm view shows "now" (see afterheat_algorithm).
+    ALGORITHM_NOW_KEYS = (
+        "afterheat_control_mode", "afterheat_control_active", "afterheat_control_reason", "afterheat_level",
+        "afterheat_level_target", "afterheat_level_wanted", "afterheat_target", "afterheat_control_error",
+        "afterheat_next_action", "afterheat_algorithm", "afterheat_algorithm_label", "afterheat_algorithm_active",
+        "afterheat_algorithm_wanted", "afterheat_algorithm_why", "afterheat_algorithm_state",
+        "afterheat_safety_override", "afterheat_algorithm_forecast", "afterheat_model", "afterheat_pilot_learned",
+        "actual_supply_air_temperature", "heating_coil_after_temperature", "afterheat_frost_lock")
+
+    def afterheat_algorithm(self, now: float | None = None) -> dict:
+        """The afterheat algorithm view: the decision now, the results per algorithm, what is learned (read-only)."""
+        now = time.time() if now is None else now
+        try:
+            controller = self.controller_runtime.snapshot()
+        except Exception:  # noqa: BLE001 - the view shows what it can
+            LOG.exception("Afterheat algorithm view: controller snapshot unavailable")
+            controller = {}
+        rows = self.history.rows(7 * 86400, ALGORITHM_FIELDS, now=now)
+        return {
+            "now": {key: controller.get(key) for key in self.ALGORITHM_NOW_KEYS},
+            "performance": algorithm_performance(rows, now),
+            "algorithms": [{"key": key, "label": ALGORITHM_LABELS[key], "help": ALGORITHM_HELP[key]}
+                           for key in ALGORITHMS],
+            "overrides": {str(code): text for code, text in OVERRIDE_TEXT.items()},
+            "history": self.history.status(),
+        }
 
     def _record_version(self) -> None:
         """Note the running version when it differs from the last one (the update comparison's timeline)."""
@@ -486,6 +515,9 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                         if result is None:
                             return self._json_error(400, "Ukendt opdatering")
                         self._json(result)
+                elif parsed.path == "/api/afterheat/algorithm":
+                    if self._require("diagnostics") is not None:
+                        self._json(dashboard.afterheat_algorithm())
                 elif parsed.path == "/api/diagnostics/report":
                     if self._require("diagnostics") is not None:
                         self._diagnostic_report()
