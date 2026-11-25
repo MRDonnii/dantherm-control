@@ -47,8 +47,8 @@ function SensorPicker({ kind, room, catalog, onChange }: { kind: SensorKind; roo
   </label>;
 }
 
-function RoomCard({ room, catalog, state, bathroom, onChange, onUnitSensor, onRemove }: {
-  room: Room; catalog: CatalogArea[]; state: State; bathroom: { rh: number; hysteresis: number; level: number; maxLevel: number };
+function RoomCard({ room, catalog, state, bathroom, co2Setpoint, onChange, onUnitSensor, onRemove }: {
+  room: Room; catalog: CatalogArea[]; state: State; bathroom: { rh: number; hysteresis: number; level: number; maxLevel: number }; co2Setpoint: number;
   onChange: (room: Room) => void; onUnitSensor: (on: boolean) => void; onRemove: () => void;
 }) {
   const indoor = isIndoor(room.type);
@@ -92,6 +92,8 @@ function RoomCard({ room, catalog, state, bathroom, onChange, onUnitSensor, onRe
         <label>Hysterese<input inputMode="decimal" aria-label={`${room.name} hysterese`} placeholder={String(bathroom.hysteresis)} value={room.rh_hysteresis ?? ""} onChange={e => set({ rh_hysteresis: numberOrUndefined(e.target.value) })}/><span>%</span></label>
         <label>Højeste trin<input inputMode="numeric" aria-label={`${room.name} højeste trin`} placeholder={String(bathroom.level)} value={room.max_level ?? ""} onChange={e => set({ max_level: numberOrUndefined(e.target.value) })}/><small className="settings-field-help">Tomme felter bruger de fælles værdier under Indstillinger → Fugt og tør luft.</small></label>
       </>}
+      {indoor && <label>CO₂-grænse<input inputMode="numeric" aria-label={`${room.name} CO₂-grænse`} placeholder={String(co2Setpoint)} value={room.co2_limit ?? ""} onChange={e => set({ co2_limit: numberOrUndefined(e.target.value) })}/><span>ppm</span>
+        <small className="settings-field-help">Tom = husets {co2Setpoint} ppm. Højere tal: rummet skruer først op senere.</small></label>}
       {indoor && <label className="check-row room-unit-row"><input type="checkbox" checked={room.unit_sensor} onChange={e => onUnitSensor(e.target.checked)}/> Anlæggets egen føler sidder her
         <small className="settings-field-help">Anlæggets rumføler (T5 og fugt) udfylder de målinger, rummet mangler fra Home Assistant.</small></label>}
     </div>
@@ -139,6 +141,7 @@ export function RoomsPage() {
   usePullRefresh(({ keepDraft }) => load(keepDraft), { dirty });
   const problems = useMemo(() => roomProblems(rooms), [rooms]);
   const maxLevel = Number(state.max_level) || 6;
+  const co2Setpoint = Number(state.co2_setpoint) || 800;
   const bathroom = { rh: Number(state.bathroom_rh_setpoint) || 65, hysteresis: Number(state.bathroom_rh_hysteresis) || 5, level: Number(state.bathroom_max_level) || maxLevel, maxLevel };
   const counts = { control: rooms.filter(room => isIndoor(room.type) && room.control).length, measure: rooms.filter(room => !isIndoor(room.type) && room.type !== "excluded").length, excluded: rooms.filter(room => room.type === "excluded").length };
 
@@ -188,7 +191,7 @@ export function RoomsPage() {
     </article>}
 
     <div className="room-setup-list">
-      {rooms.map((room, index) => <RoomCard key={`${room.id}-${index}`} room={room} catalog={catalog} state={state} bathroom={bathroom}
+      {rooms.map((room, index) => <RoomCard key={`${room.id}-${index}`} room={room} catalog={catalog} state={state} bathroom={bathroom} co2Setpoint={co2Setpoint}
         onChange={next => update(index, next)} onUnitSensor={on => setRooms(list => withUnitSensor(list, room.id, on))}
         onRemove={() => setRooms(list => list.filter((_, i) => i !== index))}/>)}
     </div>

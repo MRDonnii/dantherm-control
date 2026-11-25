@@ -301,6 +301,7 @@ class ControllerRuntime:
             "indoor_temperature_average": self._indoor_room_temperature(),
             "stove_temperature": self._source_value(self._measuring_source("fireplace_auto_source"), "temperature"),
             "max_room_co2": self._max_room_co2(),
+            **self._room_co2_signals(),
             # The afterheat frost lock looks at T1, the attic and the water-side frost sensor.
             "outdoor_temperature": self._safe_number(self._first(state, "outdoor_temp", "outdoor_temperature"), -50, 60),
             "attic_temperature": self.onewire.by_role("attic"),
@@ -748,14 +749,56 @@ class ControllerRuntime:
         return {"indoor_rh_average": round(sum(values) / len(values), 1), "indoor_rh_lowest": min(values)}
 
     def _max_room_co2(self) -> float | None:
+        values = [co2 for _name, co2, _limit in self._room_co2_values()]
+        return max(values) if values else None
+
+    @staticmethod
+    def _room_co2_limit(values: dict[str, object]) -> float | None:
+        """The room's own CO2 limit from the page Rum, or None for the house's co2_setpoint."""
+        limit = values.get("co2_limit")
+        if isinstance(limit, bool) or not isinstance(limit, (int, float)):
+            return None
+        return float(limit)
+
+    def _room_co2_values(self) -> list[tuple[str, float, float | None]]:
+        """(room, CO2, own limit or None) for the controlling HA rooms with fresh CO2."""
         excluded = self._source_room_names()
-        values = [
-            float(values["co2"])
+        return [
+            (name, float(values["co2"]), self._room_co2_limit(values))
             for name, values in self._fresh_ha_rooms().items()
             if name not in excluded and values.get("enabled", True) and values.get("control", True)
-            and isinstance(values.get("co2"), (int, float))
+            and isinstance(values.get("co2"), (int, float)) and not isinstance(values.get("co2"), bool)
         ]
-        return max(values) if values else None
+
+    def _room_co2_signals(self) -> dict[str, object]:
+        """The room CO2 the dry-air protection and winter mode compare with the house setpoint.
+
+        A room with its own CO2 limit counts as its CO2 minus (limit - house
+        setpoint): Køkken at 1250 with limit 1200 and the house at 800 counts as
+        850. So every house threshold (setpoint, setpoint - hysteresis, the
+        dry-air CO2 release 1200 / restart 1100, the release steps) moves up by
+        the same 400 ppm for that room only. Rooms without a limit are unchanged.
+        The room, its CO2 and its limit are passed on for the reason texts when
+        the highest room has a limit of its own.
+        """
+        setpoint = float(self.config.data["co2_setpoint"])
+        home = self._unit_sensor_room()
+        unit_limit = self._room_co2_limit(home) if home else None
+        # The unit's own CO2 sensor sits in this room: its limit applies to that sensor too.
+        unit = {"unit_co2_room": str(home["name"]) if unit_limit is not None else None,
+                "unit_co2_room_limit": unit_limit}
+        best: tuple[float, str, float, float | None] | None = None
+        for name, co2, limit in self._room_co2_values():
+            effective = co2 - (limit - setpoint) if limit is not None else co2
+            if best is None or effective > best[0]:
+                best = (effective, name, co2, limit)
+        if best is None:
+            return {**unit, "max_room_co2_effective": None, "max_room_co2_room": None,
+                    "max_room_co2_room_value": None, "max_room_co2_room_limit": None}
+        effective, name, co2, limit = best
+        own = limit is not None
+        return {**unit, "max_room_co2_effective": round(effective, 1), "max_room_co2_room": name if own else None,
+                "max_room_co2_room_value": co2 if own else None, "max_room_co2_room_limit": limit}
 
     def external_signals(self, payload: dict[str, object]) -> dict[str, object]:
         """Leased external switches from Home Assistant (e.g. fireplace)."""
@@ -956,6 +999,12 @@ class ControllerRuntime:
         with self.config.lock:
             self.config.data["ha_last_seen"] = None
 
+    def _unit_sensor_room(self) -> dict[str, object] | None:
+        """The set-up room the unit's own sensor sits in (page Rum), if any."""
+        return next((room for room in self._room_setup().values()
+                     if room.get("unit_sensor") and room.get("type") in room_setup.INDOOR_TYPES
+                     and room.get("enabled", True)), None)
+
     def _rooms_with_unit_sensors(self) -> dict[str, dict[str, object]]:
         """Combine HA rooms with the unit's own local indoor sensors."""
         combined = self._fresh_ha_rooms()
@@ -992,9 +1041,7 @@ class ControllerRuntime:
             return combined
         # The room the unit's own sensor sits in (page "Rum"): its HA sensors win,
         # the unit fills in what HA does not measure there.
-        home = next((room for room in self._room_setup().values()
-                     if room.get("unit_sensor") and room.get("type") in room_setup.INDOOR_TYPES
-                     and room.get("enabled", True)), None)
+        home = self._unit_sensor_room()
         if home is None:
             combined["HCH5 / lokale sensorer"] = local
             return combined
@@ -1300,12 +1347,18 @@ class ControllerRuntime:
 
             co2 = values.get("co2")
             if isinstance(co2, (int, float)):
-                setpoint, step, hysteresis = float(d["co2_setpoint"]), float(d["auto_step_co2"]), float(d["co2_hysteresis"])
+                # A room's own CO2 limit (page Rum) replaces the house setpoint for that
+                # room only; step and hysteresis stay the house's.
+                own_limit = self._room_co2_limit(values)
+                setpoint = own_limit if own_limit is not None else float(d["co2_setpoint"])
+                step, hysteresis = float(d["auto_step_co2"]), float(d["co2_hysteresis"])
                 raw = self._metric_level(float(co2), setpoint, step, hysteresis, normal)
                 raw = self._band_level((name, "co2"), raw, float(co2), setpoint, step, hysteresis, normal)
                 seen_bands.add((name, "co2"))
                 adjusted = min(air_cap, self._priority_level(raw, priority, normal))
-                candidates.append((adjusted, raw, float(co2), name, "co2", f"CO2 {name} {float(co2):.0f} ({priority})"))
+                limit_text = f" (grænse {own_limit:.0f})" if own_limit is not None else ""
+                candidates.append((adjusted, raw, float(co2), name, "co2",
+                                   f"CO2 {name} {float(co2):.0f}{limit_text} ({priority})"))
 
             pm25 = values.get("pm25")
             if d.get("pm25_enabled") and isinstance(pm25, (int, float)) and name not in (d.get("pm25_ignored_rooms") or []):

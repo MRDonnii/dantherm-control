@@ -106,7 +106,7 @@ Rooms sent to `/api/controller/inputs` can also serve as measurement sources cho
 
 Rooms are set up in the WebUI on the page **Opsætning → Rum** and stored in the controller config as `room_setup`
 (a list of rooms: `id`, `name`, `area_id`, `type`, `priority`, `control`, `enabled`, `unit_sensor`, `sensors`
-`{temperature, humidity, co2, pm25}` and, for bathrooms, optional `rh_setpoint`, `rh_hysteresis`, `max_level`).
+`{temperature, humidity, co2, pm25}` and, for bathrooms, optional `rh_setpoint`, `rh_hysteresis`, `max_level`; for rooms that control, an optional `co2_limit` in ppm, 600–2000, that replaces the house `co2_setpoint` for that room only — leave it out for the house value).
 Types: `normal`, `bedroom`, `bathroom`, `kitchen` (indoor rooms in the control), `source`, `outdoor`, `extract`
 (measuring only, usable as sources) and `excluded` (not ventilated, ignored everywhere). At most one room has
 `unit_sensor` – the room the unit's own sensor (T5 and RH) sits in; the unit fills in what HA does not measure there.

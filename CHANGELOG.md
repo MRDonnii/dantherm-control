@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.13.0-beta.17 — Egen CO₂-grænse pr. rum
+
+- **Nyt felt på siden Rum: "CO₂-grænse".** Tomt felt betyder husets grænse (800 ppm) som før. Skriv fx 1200 i køkkenet, så skruer rummet først op ved 1200 ppm. Tilladt er 600–2000 ppm.
+- **Kun det rum flytter sig:** trinene ovenover er de samme som for huset (+1 trin over grænsen, +2 trin 200 ppm højere osv.). Andre rum styres som før.
+- **Gælder overalt, hvor rummets CO₂ bruges:** Smart Auto, natten og beskyttelsen mod tør luft (også CO₂-hensynet om natten og genstart). Et rum med egen grænse tæller som sin CO₂ minus forskellen til husets grænse; med 1200 i køkkenet slipper fugtbeskyttelsen derfor først ved 1200 ppm (eller 1600 ppm med CO₂-hensynet slået til) i køkkenet.
+- **Rummet, hvor anlæggets egen føler sidder** (fx Spisestue), bruger også sin grænse for anlæggets CO₂-måling i Smart Auto, om natten og i fugtbeskyttelsen. Anlæggets egen automatik (Lokal auto) er uændret.
+- **Teksterne viser grænsen**, fx "CO2 Køkken 1250 (grænse 1200)". Ændret af Claude AI.
+- Se [release notes](docs/releases/1.13.0-beta.17.md).
+
 ## 1.13.0-beta.16 — Dynamisk fugtbeskyttelse
 
 - **Ny, valgfri dynamisk fugtbeskyttelse** (slået fra, til den bliver slået til): under 32 % fugt inde kører anlægget højst trin 2, mellem 32 og 36 % højst trin 3, og over 36 % styres det som normalt. Et trin slutter først 2,5 procentpoint over grænsen. Alle grænser og trin kan ændres.

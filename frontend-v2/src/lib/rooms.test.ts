@@ -75,6 +75,17 @@ describe("room setup helpers", () => {
     expect(toPayload([{ ...a, name: " Stue ", rh_setpoint: undefined }])[0]).not.toHaveProperty("rh_setpoint");
   });
 
+  it("keeps a room's own CO2 limit and checks it like the Pi", () => {
+    const a = { ...blankRoom([], "Køkken"), type: "kitchen" as const };
+    expect(toPayload([{ ...a, co2_limit: 1200 }])[0].co2_limit).toBe(1200);
+    expect(toPayload([{ ...a, co2_limit: undefined }])[0]).not.toHaveProperty("co2_limit");
+    expect(roomProblems([{ ...a, co2_limit: 1200 }])).toEqual([]);
+    expect(roomProblems([{ ...a, co2_limit: 500 }])).toEqual(["Køkken: CO₂-grænsen skal være et helt tal fra 600 til 2000 ppm."]);
+    expect(roomProblems([{ ...a, co2_limit: Number.NaN }])).toHaveLength(1);
+    expect(withType({ ...a, co2_limit: 1200 }, "outdoor")).not.toHaveProperty("co2_limit");
+    expect(withType({ ...a, co2_limit: 1200 }, "bedroom").co2_limit).toBe(1200);
+  });
+
   it("reads the live values the Pi uses", () => {
     const state = { smart_rooms: { Spisestue: { temperature: 21.4, humidity: 44, unit_sensor: true } } };
     expect(liveValues(state, "spisestue")).toEqual({ temperature: 21.4, humidity: 44, unit_sensor: true });

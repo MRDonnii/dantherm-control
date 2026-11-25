@@ -30,6 +30,8 @@ PRIORITIES = ("auto", "low", "normal", "high", "critical")
 # Stored rooms or catalogues with other kinds (e.g. "presence" from 1.12.0) drop them silently.
 SENSOR_KINDS = ("temperature", "humidity", "co2", "pm25")
 MAX_ROOMS = 32
+# A room's own CO2 limit (ppm), see clean_room.
+CO2_LIMIT_MIN, CO2_LIMIT_MAX = 600, 2000
 MAX_AREAS = 64
 MAX_SENSORS_PER_AREA = 40
 ENTITY_RE = re.compile(r"^sensor\.[a-z0-9_]{1,120}$")
@@ -112,10 +114,14 @@ def clean_room(raw: object, *, max_level: int = 6) -> dict[str, object]:
         ("rh_setpoint", 35.0, 90.0, "fugtgrænse", float),
         ("rh_hysteresis", 1.0, 20.0, "hysterese", float),
         ("max_level", 1, max_level, "højeste trin", int),
+        # 1.13.0-beta.17: the room's own CO2 limit (ppm); empty = the house's co2_setpoint.
+        ("co2_limit", CO2_LIMIT_MIN, CO2_LIMIT_MAX, "CO2-grænse", int),
     ):
         value = _number(raw, key, low, high, kind, name, label)
         if value is not None:
             room[key] = value
+    if room_type not in INDOOR_TYPES:
+        room.pop("co2_limit", None)
     return room
 
 
@@ -287,4 +293,6 @@ def room_kind_flags(room: dict[str, object]) -> dict[str, object]:
         "room_kind": room.get("type", "normal"),
         "room_id": room.get("id"),
         "area_id": room.get("area_id"),
+        # None = the house's co2_setpoint (it also clears a limit an older copy carried).
+        "co2_limit": room.get("co2_limit"),
     }

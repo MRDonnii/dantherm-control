@@ -2281,10 +2281,11 @@ class ControllerEngine:
                     reason = f"{reason}; ugeplan {name} · trin {planned['set_level'] or planned['min_level']}"
             if d.get("night_enabled") and _time_window_active(now, str(d["night_start"]), str(d["night_end"])):
                 flags["night_active"] = True
-                rh, co2 = self.measurements.get("rh"), self.measurements.get("co2")
+                rh, unit_co2 = self.measurements.get("rh"), self._unit_co2_input()
                 local_urgent = (
                     isinstance(rh, (int, float)) and rh > float(d["rh_setpoint"]) + float(d["rh_hysteresis"]) or
-                    isinstance(co2, (int, float)) and co2 > int(d["co2_setpoint"]) + int(d["co2_hysteresis"])
+                    # The unit sensor room's own CO2 limit counts here too (see _unit_co2_input).
+                    unit_co2 is not None and unit_co2[0] > int(d["co2_setpoint"]) + int(d["co2_hysteresis"])
                 )
                 # Night mode is a final policy layer, not a competing writer. HA Smart
                 # demand may lift the night level for air quality, but only to a
@@ -2546,6 +2547,57 @@ class ControllerEngine:
             return "local_rh"
         return None
 
+    def _co2_inputs(self) -> list[tuple[float, float, str | None, float | None]]:
+        """CO2 compared with the house thresholds: (value, ppm to add for the text, room, room limit).
+
+        The unit's own sensor as measured, plus the highest HA room. A room with
+        its own CO2 limit (page Rum) arrives as its CO2 minus (limit - house
+        setpoint), see ControllerRuntime._room_co2_signals, so each threshold is
+        that much higher for that room. Without that signal (older callers)
+        max_room_co2 is used as before.
+        """
+        inputs: list[tuple[float, float, str | None, float | None]] = []
+        unit = self._unit_co2_input()
+        if unit is not None:
+            inputs.append(unit)
+        ext = self.external
+        effective, room = ext.get("max_room_co2_effective"), ext.get("max_room_co2_room")
+        if _is_number(effective):
+            value, limit = ext.get("max_room_co2_room_value"), ext.get("max_room_co2_room_limit")
+            if room and _is_number(value) and _is_number(limit):
+                inputs.append((float(effective), float(value) - float(effective), str(room), float(limit)))
+            else:
+                inputs.append((float(effective), 0.0, None, None))
+        elif _is_number(ext.get("max_room_co2")):
+            inputs.append((float(ext["max_room_co2"]), 0.0, None, None))
+        return inputs
+
+    def _unit_co2_input(self) -> tuple[float, float, str | None, float | None] | None:
+        """The unit's own CO2 sensor, shifted by the CO2 limit of the room it sits in.
+
+        The unit sensor room (page Rum, e.g. Spisestue) may have its own CO2
+        limit; then the unit CO2 counts as CO2 minus (limit - house setpoint),
+        like an HA room. The local-auto mode (_local_auto_level) is not affected.
+        """
+        unit = self.measurements.get("co2")
+        if not _is_number(unit):
+            return None
+        room, limit = self.external.get("unit_co2_room"), self.external.get("unit_co2_room_limit")
+        if room and _is_number(limit):
+            offset = float(limit) - float(self.config.data["co2_setpoint"])
+            return float(unit) - offset, offset, str(room), float(limit)
+        return float(unit), 0.0, None, None
+
+    @staticmethod
+    def _co2_text(item: tuple[float, float, str | None, float | None], threshold: float,
+                  word: str) -> str:
+        """'CO₂ 950 ppm er over 800 ppm' or, for a room with its own limit,
+        'CO₂ Køkken 1650 ppm er over 1600 ppm (grænse 1200)'."""
+        value, offset, room, limit = item
+        if room is None:
+            return f"CO₂ {value:.0f} ppm {word} {threshold:.0f} ppm"
+        return f"CO₂ {room} {value + offset:.0f} ppm {word} {threshold + offset:.0f} ppm (grænse {limit:.0f})"
+
     def _dry_air(self, d: dict, now: float) -> bool:
         """Dry-air limit: the HA rooms are dry, the outdoor air dries and CO2 is fine.
 
@@ -2585,10 +2637,7 @@ class ControllerEngine:
             self.dry_co2_stopped = False  # no longer dry: the next start is a first start
         co2_limit = int(d["co2_setpoint"])
         co2_start_limit = co2_limit - int(d["co2_hysteresis"]) if self.dry_co2_stopped else co2_limit
-        co2_values = [
-            float(co2) for co2 in (self.measurements.get("co2"), self.external.get("max_room_co2"))
-            if _is_number(co2)
-        ]
+        co2_values = [item[0] for item in self._co2_inputs()]
         co2_high = any(co2 > co2_limit for co2 in co2_values)
         co2_clear = all(co2 <= co2_start_limit for co2 in co2_values)
         demand = self._humidity_demand(d, now)
@@ -2712,8 +2761,9 @@ class ControllerEngine:
         # between the setpoint and that limit CO2 lifts the cap by one step.
         co2_limit = max(int(d["dry_co2_release_ppm"]), setpoint) if soft else setpoint
         co2_start_limit = co2_limit - co2_hysteresis if self.dry_co2_stopped else co2_limit
-        co2_values = [float(co2) for co2 in (self.measurements.get("co2"), self.external.get("max_room_co2"))
-                      if _is_number(co2)]
+        co2_inputs = self._co2_inputs()
+        co2_values = [item[0] for item in co2_inputs]
+        co2_top = max(co2_inputs, key=lambda item: item[0]) if co2_inputs else None
         co2_high = any(co2 > co2_limit for co2 in co2_values)
         co2_clear = all(co2 <= co2_start_limit for co2 in co2_values)
         co2_max = max(co2_values) if co2_values else None
@@ -2760,8 +2810,9 @@ class ControllerEngine:
                     f" – højst trin {self.dry_cap}")
             if self.dry_tier_level < floor:
                 text += f" (trin {self.dry_tier_level} er hævet til husets mindste ventilation, trin {floor})"
-            if lift and co2_max is not None:
-                text += f" · CO₂ {co2_max:.0f} ppm løfter ét trin"
+            if lift and co2_top is not None:
+                value, offset, room, _limit = co2_top
+                text += f" · CO₂{' ' + room if room else ''} {value + offset:.0f} ppm løfter ét trin"
             if wanted != new:
                 self.dry_state = "held"
                 text += " · venter på mindste tid før skift"
@@ -2779,10 +2830,10 @@ class ControllerEngine:
                                "local_rh": "Slået fra: anlæggets egen fugtstyring beder om udluftning"}[demand]
         elif wanted and co2_high:
             self.dry_state = "co2_high"
-            self.dry_reason = f"Slået fra: CO₂ {max(co2_values):.0f} ppm er over {co2_limit} ppm"
+            self.dry_reason = "Slået fra: " + self._co2_text(co2_top, co2_limit, "er over")
         elif wanted and not co2_clear:
             self.dry_state = "co2_wait"
-            self.dry_reason = f"Venter: CO₂ skal ned på {co2_start_limit} ppm, før den starter igen"
+            self.dry_reason = f"Venter: {self._co2_text(co2_top, co2_start_limit, 'skal ned på')}, før den starter igen"
         elif wanted:
             self.dry_state = "waiting"
             self.dry_reason = "Starter, når mindste tid før skift er gået"
@@ -2870,9 +2921,9 @@ class ControllerEngine:
     def _winter_pause_trigger(self, d: dict, now: float) -> str | None:
         """Air-quality demand that suspends winter mode: it then ventilates as usual."""
         co2_limit = int(d["co2_setpoint"]) + int(d["co2_hysteresis"])
-        for co2 in (self.measurements.get("co2"), self.external.get("max_room_co2")):
-            if isinstance(co2, (int, float)) and co2 > co2_limit:
-                return f"CO2 {co2:.0f} ppm over {co2_limit} ppm"
+        for item in self._co2_inputs():
+            if item[0] > co2_limit:
+                return self._co2_text(item, co2_limit, "over").replace("CO₂", "CO2", 1)
         if self._ha_live(d, now):
             if d.get("ha_bathroom_drying"):
                 return "badeværelse tørres ud"

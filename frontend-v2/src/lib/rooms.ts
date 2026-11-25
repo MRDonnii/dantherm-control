@@ -13,6 +13,9 @@ export const PRIORITIES = ["auto", "low", "normal", "high", "critical"] as const
 export type Priority = typeof PRIORITIES[number];
 
 export const MAX_ROOMS = 32;
+/** A room's own CO2 limit (ppm), as the Pi checks it. */
+export const CO2_LIMIT_MIN = 600;
+export const CO2_LIMIT_MAX = 2000;
 
 export const TYPE_LABELS: Record<RoomType, string> = {
   normal: "Normalt rum", bedroom: "Soverum", bathroom: "Badeværelse", kitchen: "Køkken",
@@ -46,6 +49,8 @@ export interface Room {
   rh_setpoint?: number;
   rh_hysteresis?: number;
   max_level?: number;
+  /** The room's own CO2 limit (ppm); empty = the house's co2_setpoint. */
+  co2_limit?: number;
 }
 
 export interface CatalogSensor { entity_id: string; name: string; kind: SensorKind; unit?: string }
@@ -158,7 +163,7 @@ export function withArea(room: Room, area: CatalogArea | undefined): Room {
 
 export function withType(room: Room, type: RoomType): Room {
   const next: Room = { ...room, type, control: isIndoor(type) ? (isIndoor(room.type) ? room.control : true) : false };
-  if (!isIndoor(type)) next.unit_sensor = false;
+  if (!isIndoor(type)) { next.unit_sensor = false; delete next.co2_limit; }
   if (type !== "bathroom") { delete next.rh_setpoint; delete next.rh_hysteresis; delete next.max_level; }
   return next;
 }
@@ -212,6 +217,12 @@ export function roomProblems(rooms: Room[]): string[] {
   for (const [name, count] of names) if (name && count > 1) problems.push(`Navnet "${rooms.find(r => r.name.trim().toLocaleLowerCase("da") === name)?.name.trim()}" bruges af flere rum.`);
   if (rooms.filter(room => room.unit_sensor).length > 1) problems.push("Anlæggets egen føler kan kun sidde i ét rum.");
   if (rooms.length > MAX_ROOMS) problems.push(`Højst ${MAX_ROOMS} rum.`);
+  for (const room of rooms) {
+    const limit = room.co2_limit;
+    if (limit !== undefined && limit !== null && !(Number.isInteger(limit) && limit >= CO2_LIMIT_MIN && limit <= CO2_LIMIT_MAX)) {
+      problems.push(`${room.name.trim() || "Et rum"}: CO₂-grænsen skal være et helt tal fra ${CO2_LIMIT_MIN} til ${CO2_LIMIT_MAX} ppm.`);
+    }
+  }
   return [...new Set(problems)];
 }
 
@@ -219,7 +230,7 @@ export function roomProblems(rooms: Room[]): string[] {
 export function toPayload(rooms: Room[]): Room[] {
   return rooms.map(room => {
     const out: Room = { ...room, name: room.name.trim() };
-    for (const key of ["rh_setpoint", "rh_hysteresis", "max_level"] as const) {
+    for (const key of ["rh_setpoint", "rh_hysteresis", "max_level", "co2_limit"] as const) {
       if (out[key] === undefined || out[key] === null || Number.isNaN(out[key])) delete out[key];
     }
     return out;
