@@ -645,6 +645,10 @@ class AfterheatPilot:
         self.note_at = 0.0
         self.changes: deque[float] = deque()
         self.rate_warned_at: float | None = None
+        # When the pilot handed back to HAC1 (fallback) and when the setpoint rate warning was
+        # raised, kept 6 h for the diagnostics (a recurring one would otherwise only be in the journal).
+        self.fallback_times: deque[float] = deque()
+        self.rate_warning_times: deque[float] = deque()
         # A step a selectable algorithm's safety layer has already rate limited (afterheat_actuators):
         # not held back again by the setpoint rate limit. Always False for the standard pilot.
         self.step_cleared = False
@@ -1902,6 +1906,13 @@ class AfterheatPilot:
     def _note(self, inp: PilotInputs, text: str) -> None:
         self.note, self.note_at = text, inp.now
 
+    @staticmethod
+    def _recent(times: deque, now: float, window: float) -> int:
+        """Events within ``window`` seconds; anything older than 6 h is dropped."""
+        while times and now - times[0] > 6 * 3600:
+            times.popleft()
+        return sum(1 for at in times if now - at <= window)
+
     def _set(self, inp: PilotInputs, setpoint: int) -> None:
         if setpoint == self.setpoint:
             return
@@ -1914,6 +1925,7 @@ class AfterheatPilot:
         if len(self.changes) > RATE_WARN_CHANGES and (
                 self.rate_warned_at is None or inp.now - self.rate_warned_at >= RATE_WINDOW_S):
             self.rate_warned_at = inp.now
+            self.rate_warning_times.append(inp.now)
             LOG.warning("Afterheat: %d HAC1 setpoint changes in 10 minutes", len(self.changes))
 
     def _decide(self, inp: PilotInputs, wanted: float, low: int, high: int, tick: float | None) -> None:
@@ -2002,6 +2014,7 @@ class AfterheatPilot:
         if self.active and self.follow_failures >= FOLLOW_FAIL_LIMIT:
             self.fallback_until = now + FALLBACK_S
             self.fallback_reason = f"HAC1 fulgte ikke Pi-styringen {FOLLOW_FAIL_LIMIT} gange i træk"
+            self.fallback_times.append(now)
             LOG.warning("Afterheat: HAC1 did not follow %d ticks in a row; native for %d min",
                         FOLLOW_FAIL_LIMIT, FALLBACK_S // 60)
             self._deactivate()
@@ -2166,6 +2179,8 @@ class AfterheatPilot:
                 max(0, int(math.ceil(self.fallback_until - inp.now)))
                 if self.fallback_until is not None and self.fallback_until > inp.now else None),
             "afterheat_setpoint_changes_10min": len(self.changes),
+            "afterheat_fallbacks_6h": self._recent(self.fallback_times, inp.now, 6 * 3600),
+            "afterheat_rate_warnings_1h": self._recent(self.rate_warning_times, inp.now, 3600),
             "afterheat_in_band": bool(active and self.in_band),
             # HAC1's own steps (not asked for by the Pi): one in the last tick, and the count this hour.
             "afterheat_unasked_step": bool(active and self.unasked and inp.now - self.unasked[-1] <= self.clock.period),

@@ -33,6 +33,9 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(r["diagnostics_status"], "warning")
         r = d.update(winter(), T0 + 310)
         self.assertEqual(r["frost_state"], "watch")
+        # The alarm holds until the condition has been gone for a while (no flapping).
+        self.assertEqual(r["diagnostics_alarm_count"], 1)
+        r = d.update(winter(), T0 + 310 + 301)
         self.assertEqual(r["diagnostics_alarm_count"], 0)
 
     def test_low_recovery_and_bus_alarm(self):
