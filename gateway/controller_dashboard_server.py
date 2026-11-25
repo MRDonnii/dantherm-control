@@ -186,7 +186,7 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
         "afterheat_level_target", "afterheat_level_wanted", "afterheat_target", "afterheat_control_error",
         "afterheat_next_action", "afterheat_algorithm", "afterheat_algorithm_label", "afterheat_algorithm_active",
         "afterheat_algorithm_wanted", "afterheat_algorithm_why", "afterheat_algorithm_state",
-        "afterheat_safety_override", "afterheat_algorithm_forecast", "afterheat_model", "afterheat_pilot_learned",
+        "afterheat_safety_override", "afterheat_algorithm_forecast", "afterheat_model", "afterheat_ha", "afterheat_pilot_learned",
         "actual_supply_air_temperature", "heating_coil_after_temperature", "afterheat_frost_lock")
 
     def afterheat_algorithm(self, now: float | None = None) -> dict:

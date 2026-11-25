@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.13.0-beta.11 — Eftervarmens model og ydelse som data til Home Assistant
+
+- **Nyt, kompakt datablok `afterheat_ha`** i controllerens tilstand (`/api/controller/state`, læsenøglen kan hente den): hvilken styring der kører, om modellen stadig lærer, hvor meget varme hvert trin giver, hvor hurtigt luften reagerer op og ned, forsinkelsen, rettelsen, hvad luften forventes at være om 1 og 10 minutter og den laveste forventede luft, forudsigelsesfejlen, seneste genberegning, varmen fra fladen i kW og i dag i kWh, PID-udgang og -afvigelse samt ydelsen for seneste time og døgn (middelafvigelse, laveste luft, tid under bunden, skift pr. time). Det er kun aflæsning: styringen er uændret.
+- Varmen i kW regnes af luftmængden, der allerede beregnes, og temperaturstigningen over fladen. Kendes luftmængden ikke, vises ingenting. kWh i dag gemmes sammen med det lærte og nulstilles ved midnat.
+- **WebUI:** siden "Eftervarmens styring" viser nu også varmen fra varmefladen lige nu (kW) og i dag (kWh). Ændret af Claude AI.
+- Se [release notes](docs/releases/1.13.0-beta.11.md).
+
 ## 1.13.0-beta.10 — Vælg eftervarmens styring og sammenlign dem
 
 - **Seks styringer at vælge imellem:** Under Indstillinger → Regulering kan Pi-styringen nu bruge *Standard (Pi-pilot)* (som i dag, standardvalget), *Forudseende (MPC)*, *Forudseende enkel*, *Klassisk regulator (PID)*, *Tidsdeling (TPI)* eller *Varmeeffekt*. De er bygget efter styringerne i Better Thermostat og tilpasset vandfladen. Uden ændret indstilling kører alt præcis som i beta.9.

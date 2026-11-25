@@ -20,7 +20,7 @@ type Model = { state?: string | null; step_k_now?: Num[] | null; tau_up_s?: Num;
 type Now = { afterheat_control_reason?: string | null; afterheat_level?: Num; afterheat_level_target?: Num; afterheat_level_wanted?: Num;
   afterheat_target?: Num; afterheat_algorithm_active?: string | null; afterheat_algorithm_wanted?: Num; afterheat_algorithm_why?: string | null;
   afterheat_algorithm_state?: string | null; afterheat_safety_override?: Num; afterheat_algorithm_forecast?: Num[] | null;
-  afterheat_model?: Model | null; heating_coil_after_temperature?: Num;
+  afterheat_model?: Model | null; afterheat_ha?: { heat_kw?: Num; energy_today_kwh?: Num } | null; heating_coil_after_temperature?: Num;
   afterheat_pilot_learned?: { step_k?: Num[]; steps_measured?: Num; fall_overrun_s?: Record<string, Num> } | null };
 export type AlgorithmReport = { now?: Now; performance?: Record<string, Performance>; algorithms?: { key: string; label: string; help?: string }[];
   overrides?: Record<string, string> };
@@ -179,6 +179,10 @@ function Learned({ now }: { now: Now }) {
   return <Card title="Hvad den har lært" lead="Den fælles model bruges af Forudseende; de andre bruger den til at hjælpe og sikre." label="Hvad den har lært">
     {model ? <InfoList rows={learnedRows(model)}/> : <p className="hx-note">Modellen er ikke tilgængelig endnu.</p>}
     {extra.length > 0 && <InfoList rows={extra}/>}
+    {now.afterheat_ha && <InfoList rows={[
+      { label: "Varme fra varmefladen lige nu", value: n(now.afterheat_ha.heat_kw, 2, " kW") },
+      { label: "Varme fra varmefladen i dag", value: n(now.afterheat_ha.energy_today_kwh, 2, " kWh") },
+    ]}/>}
     <p className="hx-note ac-model-note">Tidsdeling og Forudseende lærer ikke selv noget ekstra; de bruger den fælles model.</p>
     {pilot && <InfoList rows={[
       { label: "Standardstyringen har målt", value: `${n(pilot.steps_measured, 0)} trinskift` },
