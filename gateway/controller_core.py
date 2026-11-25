@@ -2519,7 +2519,7 @@ class ControllerEngine:
                 readings.append((label, float(value), limit))
         return readings
 
-    def _update_frost_lock(self, now: float) -> bool:
+    def _update_frost_lock(self, now: float, clock: float | None = None) -> bool:
         """Decide the afterheat frost lock; the one place this is decided.
 
         Any known value at or below its limit for FROST_LOCK_ENGAGE_SECONDS
@@ -2530,6 +2530,10 @@ class ControllerEngine:
         With no known value the previous state is kept (fail-safe).
         The lock acts only when enabled and the coil is a water coil.
         """
+        if clock is None:
+            clock = getattr(self, "_interval_now", None)
+        clock = now if clock is None else clock
+        self._frost_clock_now = clock
         d = self.config.data
         readings = self.frost_readings()
         latched = d.get("frost_lock_latched") is True
@@ -2543,8 +2547,8 @@ class ControllerEngine:
                 f"{label} {_danish_number(value, 1)} °C (grænse {_danish_number(limit)} °C)" for label, value, limit in cold)
             if not latched:
                 if self.frost_cold_since is None:
-                    self.frost_cold_since = now
-                if now - self.frost_cold_since >= self.frost_engage_seconds:
+                    self.frost_cold_since = clock
+                if clock - self.frost_cold_since >= self.frost_engage_seconds:
                     latched = True
                     self.frost_cold_since = None
         elif not readings:
@@ -2566,8 +2570,8 @@ class ControllerEngine:
                     for label, value, limit in waiting)
             else:
                 if self.frost_release_since is None:
-                    self.frost_release_since = now
-                left = FROST_LOCK_RELEASE_SECONDS - (now - self.frost_release_since)
+                    self.frost_release_since = clock
+                left = FROST_LOCK_RELEASE_SECONDS - (clock - self.frost_release_since)
                 if left <= 0:
                     latched = False
                     self.frost_release_since = None
@@ -2771,6 +2775,10 @@ class ControllerEngine:
         return int(min(35, max(10, native)))
 
     def resolve(self, now: float | None = None) -> dict[str, object]:
+        # Intervals (the frost lock's 2 min engage and 30 min release) run on
+        # the monotonic clock in production: the Pi has no RTC and NTP steps
+        # the wall clock after boot. A caller-given ``now`` drives both.
+        interval_now = time.monotonic() if not now else now
         now = now or time.time()
         with self.config.lock, self.lock:
             self.config._expire_fireplace(now)
@@ -2780,7 +2788,11 @@ class ControllerEngine:
             self.config._expire_max_level(now)
             d = self.config.data
             self._update_winter(now)
-            frost_lock = self._update_frost_lock(now)
+            self._interval_now = interval_now
+            try:
+                frost_lock = self._update_frost_lock(now)
+            finally:
+                self._interval_now = None
             if frost_lock and d.get("cool_boost_until"):
                 # Køl lets freezing air past the coil: it ends when the frost lock engages.
                 d["cool_boost_until"], d["cool_boost_minutes"] = None, 0
@@ -2907,7 +2919,7 @@ class ControllerEngine:
                 "afterheat_frost_lock_reason": self.frost_lock_reason,
                 "afterheat_frost_lock_floor": frost_floor,
                 "afterheat_frost_lock_release_seconds": (
-                    max(0, math.ceil(FROST_LOCK_RELEASE_SECONDS - (now - self.frost_release_since)))
+                    max(0, math.ceil(FROST_LOCK_RELEASE_SECONDS - (getattr(self, "_frost_clock_now", now) - self.frost_release_since)))
                     if frost_lock and self.frost_release_since is not None else None),
                 "afterheat_room_state": self.afterheat_room_state,
                 "afterheat_room_reason": afterheat_reason,

@@ -104,3 +104,29 @@ def test_journal_lines_carry_the_syslog_priority():
     assert line(logging.INFO, "i").startswith("<6>")
     assert line(logging.DEBUG, "d").startswith("<7>")
     assert stderr_is_journal() in (True, False)
+
+
+def test_frost_release_ignores_a_wall_clock_step(tmp_path, monkeypatch):
+    """safety-9: an NTP step forward must not shorten the 30 min thaw wait."""
+    import controller_core
+    from controller_core import ControllerEngine, ControllerState, HardwareAdapter
+
+    state = ControllerState(tmp_path / "controller.json")
+    state.configure({"afterheat_coil": "water"})
+    hardware = HardwareAdapter(**{name: (lambda *_a: None) for name in
+                                  ("set_fireplace", "set_standby", "write_fan_pair", "set_afterheat_setpoint")})
+    engine = ControllerEngine(state, hardware)
+    engine.frost_engage_seconds = 0
+    clock = {"wall": 1_800_000_000.0, "mono": 1000.0}
+    monkeypatch.setattr(controller_core.time, "time", lambda: clock["wall"])
+    monkeypatch.setattr(controller_core.time, "monotonic", lambda: clock["mono"])
+    engine.set_external({"outdoor_temperature": -2.0})
+    assert engine.resolve()["afterheat_frost_lock"] is True
+    engine.set_external({"outdoor_temperature": 12.0, "afterheat_frost_temperature": 25.0})
+    engine.resolve()  # the thaw wait starts
+    clock["wall"] += 2 * 3600  # NTP step; almost no real time passed
+    clock["mono"] += 5
+    assert engine.resolve()["afterheat_frost_lock"] is True
+    clock["mono"] += controller_core.FROST_LOCK_RELEASE_SECONDS + 1
+    clock["wall"] += controller_core.FROST_LOCK_RELEASE_SECONDS + 1
+    assert engine.resolve()["afterheat_frost_lock"] is False
