@@ -195,3 +195,25 @@ def test_rs485_counters_per_slave():
     assert gateway.state["rs485_hac1_crc_error"] == 1
     assert gateway.state["rs485_hac1_timeout"] == 3
     assert gateway.state["rs485_hac1_retry"] == 3
+
+
+def test_drifted_fan_pair_and_bypass_are_written_again():
+    """safety-5: re-assert after 30 s of drift, but never fight the unit's frost protection."""
+    import types
+
+    from controller_runtime import ControllerRuntime
+
+    runtime = ControllerRuntime.__new__(ControllerRuntime)
+    runtime.engine = types.SimpleNamespace(last_applied={"fan_pair": (40, 40), "bypass": "off"})
+    runtime.gateway_state = {"fan_extract_percent": 30, "fan_supply_percent": 30, "bypass_request": "ON"}
+    runtime._reassert_drifted_outputs(now=0.0)
+    runtime._reassert_drifted_outputs(now=29.0)
+    assert runtime.engine.last_applied == {"fan_pair": (40, 40), "bypass": "off"}
+    runtime._reassert_drifted_outputs(now=31.0)
+    assert runtime.engine.last_applied == {}
+    # Frost pattern (extract kept, supply lowered) is the unit's own protection.
+    runtime.engine.last_applied = {"fan_pair": (40, 40)}
+    runtime.gateway_state = {"fan_extract_percent": 40, "fan_supply_percent": 20}
+    runtime._reassert_drifted_outputs(now=100.0)
+    runtime._reassert_drifted_outputs(now=200.0)
+    assert runtime.engine.last_applied == {"fan_pair": (40, 40)}
