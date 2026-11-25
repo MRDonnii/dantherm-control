@@ -15,7 +15,7 @@ describe("Bathroom settings", () => {
     expect(CONTROLLER_KEYS).not.toContain("bathroom_rooms");
   });
 
-  it("lives under Badeværelse og tør luft with common limits, shower detection and a link to Rum", () => {
+  it("lives under Fugt og tør luft with common limits, shower detection and a link to Rum", () => {
     window.location.hash = "#/settings?section=humidity";
     const markup = renderToStaticMarkup(<SettingsPage/>);
     for (const text of ["Badeværelse", "Højeste trin ved udtørring", "Bad opdages før grænsen nås", "Tør også ud om natten", "Maks. udtørringstid", "Hvilke rum der er badeværelser"]) {

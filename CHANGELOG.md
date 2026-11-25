@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.13.0-beta.16 — Dynamisk fugtbeskyttelse
+
+- **Ny, valgfri dynamisk fugtbeskyttelse** (slået fra, til den bliver slået til): under 32 % fugt inde kører anlægget højst trin 2, mellem 32 og 36 % højst trin 3, og over 36 % styres det som normalt. Et trin slutter først 2,5 procentpoint over grænsen. Alle grænser og trin kan ændres.
+- **Kun når udeluften faktisk tørrer huset:** fugten regnes om til gram vand pr. m³ inde og ude. Har udeluften lige så meget vand som indeluften (eller mere), begrænses intet. En lille margen (0,5 g/m³) og hysterese (0,3 g/m³) holder den rolig. Dette afløser "koldt ude under 3 °C", mens den dynamiske beskyttelse er slået til, og vinterfunktionen holder pause imens.
+- **Sikkerhed først:** høj CO₂, badeværelse der tørres ud, høj fugt i et rum, anlæggets egen fugtstyring og manglende eller gamle målinger (fugt og temperatur inde og ude) slipper begrænsningen med det samme. Den går aldrig under husets mindste ventilation (mindst trin 2).
+- **Valgfrit CO₂-hensyn om natten** (slået fra): under 1200 ppm må CO₂ kun løfte ét trin over fugttrinnet; over 1200 ppm vinder CO₂ altid.
+- **Tal og historik:** vand i luften inde og ude, fugttab gennem ventilationen, fugt holdt inde og sparet varme (alle skøn), og hvorfor den er til eller fra. Historikken gemmer, hvornår den holdt ventilationen nede, og på hvilket trin; Ugerapporten viser timerne.
+- **Alt om fugt og tør luft samlet ét sted:** Indstillinger → "Fugt og tør luft" har nu ét kort med tænd/sluk, trin, udeluft, hvad der altid vinder, avanceret og tallene. De gamle indstillinger virker som før. Ændret af Claude AI.
+- Se [release notes](docs/releases/1.13.0-beta.16.md).
+
 ## 1.13.0-beta.15 — Siderne passer på telefonen
 
 - **Ventilationstilstand klippes ikke mere af:** på en smal skærm (fx iPhone) stod den tredje knap, "Manuel", delvist uden for kortet "Drift og styring". Valgknapperne kan nu blive smallere, og teksten på dem fylder flere linjer, så alle tre er helt synlige. På computer ser de ud som før.

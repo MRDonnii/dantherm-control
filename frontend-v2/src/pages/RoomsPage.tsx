@@ -90,7 +90,7 @@ function RoomCard({ room, catalog, state, bathroom, onChange, onUnitSensor, onRe
       {room.type === "bathroom" && <>
         <label>Fugt start<input inputMode="decimal" aria-label={`${room.name} fugt start`} placeholder={String(bathroom.rh)} value={room.rh_setpoint ?? ""} onChange={e => set({ rh_setpoint: numberOrUndefined(e.target.value) })}/><span>%</span></label>
         <label>Hysterese<input inputMode="decimal" aria-label={`${room.name} hysterese`} placeholder={String(bathroom.hysteresis)} value={room.rh_hysteresis ?? ""} onChange={e => set({ rh_hysteresis: numberOrUndefined(e.target.value) })}/><span>%</span></label>
-        <label>Højeste trin<input inputMode="numeric" aria-label={`${room.name} højeste trin`} placeholder={String(bathroom.level)} value={room.max_level ?? ""} onChange={e => set({ max_level: numberOrUndefined(e.target.value) })}/><small className="settings-field-help">Tomme felter bruger de fælles værdier under Indstillinger → Badeværelse og tør luft.</small></label>
+        <label>Højeste trin<input inputMode="numeric" aria-label={`${room.name} højeste trin`} placeholder={String(bathroom.level)} value={room.max_level ?? ""} onChange={e => set({ max_level: numberOrUndefined(e.target.value) })}/><small className="settings-field-help">Tomme felter bruger de fælles værdier under Indstillinger → Fugt og tør luft.</small></label>
       </>}
       {indoor && <label className="check-row room-unit-row"><input type="checkbox" checked={room.unit_sensor} onChange={e => onUnitSensor(e.target.checked)}/> Anlæggets egen føler sidder her
         <small className="settings-field-help">Anlæggets rumføler (T5 og fugt) udfylder de målinger, rummet mangler fra Home Assistant.</small></label>}

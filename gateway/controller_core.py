@@ -521,7 +521,7 @@ class ControllerState:
         # setpoint lifts at most one step over the tier cap; only CO2 over
         # dry_co2_release_ppm releases it (again with co2_hysteresis).
         "dry_co2_soft_enabled": False,
-        "dry_co2_release_ppm": 1000,
+        "dry_co2_release_ppm": 1200,
         # Vacation lowers the afterheat target by vacation_afterheat_drop_k
         # while it runs (off by default). Only the target changes: the
         # afterheat control and the frost floor work as always.

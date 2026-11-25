@@ -26,7 +26,7 @@ describe("SettingsPage", () => {
 
   it("groups settings into named sections with Danish help by default", () => {
     const markup = renderToStaticMarkup(<SettingsPage/>);
-    for (const label of ["Følere og målerum", "Trin og luftmængde", "Hus og luftmængde", "Fugt og CO₂", "Badeværelse og tør luft", "Eftervarme og frost", "Frikøling og bypass", "Pejs og brændeovn", "Brugerflade", "Sikkerhed"]) {
+    for (const label of ["Følere og målerum", "Trin og luftmængde", "Hus og luftmængde", "Fugt og CO₂", "Fugt og tør luft", "Eftervarme og frost", "Frikøling og bypass", "Pejs og brændeovn", "Brugerflade", "Sikkerhed"]) {
       expect(markup).toContain(label);
     }
     expect(markup).toContain("Grundtrin");

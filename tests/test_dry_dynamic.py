@@ -53,7 +53,7 @@ class DryDynamicTests(unittest.TestCase):
         self.assertFalse(data["dry_co2_soft_enabled"])
         self.assertEqual((data["dry_tier1_rh"], data["dry_tier1_level"], data["dry_tier2_rh"], data["dry_tier2_level"],
                           data["dry_dynamic_rh_hysteresis"], data["dry_min_level"], data["dry_co2_release_ppm"]),
-                         (32.0, 2, 36.0, 3, 2.5, 2, 1000))
+                         (32.0, 2, 36.0, 3, 2.5, 2, 1200))
         engine = ControllerEngine(state, HardwareAdapter())
         result = self.step(engine, T0, 34.0, t_out=0.0)
         # The old modes run as before: winter mode holds its base, the plain limit waits at 34 % (> 30 %).
@@ -181,13 +181,14 @@ class DryDynamicTests(unittest.TestCase):
         self.assertIn("løfter ét trin", result["dry_reason"])
         # 850 keeps the lift (not yet at setpoint - hysteresis = 700).
         self.assertEqual(self.step(engine, T0 + 10, 30.0, room_co2=850)["dry_cap_level"], 3)
-        result = self.step(engine, T0 + 15, 30.0, room_co2=1050)
+        self.assertEqual(self.step(engine, T0 + 12, 30.0, room_co2=1150)["dry_cap_level"], 3)
+        result = self.step(engine, T0 + 15, 30.0, room_co2=1250)
         self.assertEqual(result["dry_tier"], 0)
         self.assertEqual(result["dry_protection_state"], "co2_high")
-        # Restarts only at 1000 - 100 = 900 ppm.
+        # Restarts only at 1200 - 100 = 1100 ppm.
         later = T0 + 15 + 3600  # after the hold
-        self.assertEqual(self.step(engine, later, 30.0, room_co2=950)["dry_tier"], 0)
-        self.assertEqual(self.step(engine, later + 5, 30.0, room_co2=880)["dry_tier"], 1)
+        self.assertEqual(self.step(engine, later, 30.0, room_co2=1150)["dry_tier"], 0)
+        self.assertEqual(self.step(engine, later + 5, 30.0, room_co2=1080)["dry_tier"], 1)
         self.assertEqual(self.step(engine, later + 10, 30.0, room_co2=650)["dry_cap_level"], 2)
 
     def test_winter_mode_steps_aside(self):
