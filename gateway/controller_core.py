@@ -407,6 +407,8 @@ class ControllerState:
         "afterheat_room_value": None,
         # Night cooling from the weather forecast (night_cooling.py).
         "night_cool_enabled": False,
+        # Off: on six steps the top level chosen by hand has no end time.
+        "top_level_limit_enabled": False,
         "night_cool_start": "23:00",
         "night_cool_end": "07:00",
         "night_cool_forecast_c": 24.0,
@@ -606,7 +608,7 @@ class ControllerState:
             max_until = float(self.data["max_level_until"]) if self.data.get("max_level_until") else None
         except (TypeError, ValueError):
             max_until = None
-        if self.dantherm_steps() and self.data["mode"] == "manual" and self.data["manual_level"] == MAX_LEVEL:
+        if self.top_hold_active():
             # Step 4 by hand always has an end, also for files without one.
             self.data["max_level_until"] = max_until or time.time() + MAX_LEVEL_HOURS * 3600
         else:
@@ -750,7 +752,7 @@ class ControllerState:
     BOOL_KEYS = ("sizing_enabled", "afterheat_room_enabled", "fireplace_auto_enabled",
                  "humidity_smart_enabled", "dry_protection_enabled", "balance_enabled", "pm25_enabled",
                  "bathroom_night_drying", "winter_dry_enabled", "frost_lock_enabled",
-                 "afterheat_room_weighted", "night_cool_enabled")
+                 "afterheat_room_weighted", "night_cool_enabled", "top_level_limit_enabled")
     TIME_KEYS = (("night_cool_start", "Natkøling start", "23:00"), ("night_cool_end", "Natkøling slut", "07:00"))
 
     def _sanitize_advanced(self) -> None:
@@ -980,6 +982,20 @@ class ControllerState:
     def dantherm_steps(self) -> bool:
         return self.max_level() == MAX_LEVEL
 
+    def top_hold_active(self) -> bool:
+        """The top level chosen by hand, which ends by itself after MAX_LEVEL_HOURS.
+
+        Always on four Dantherm steps (like the HCP4 panel); on six steps only
+        with the setting "top_level_limit_enabled" (off by default).
+        """
+        timed = self.dantherm_steps() or self.data.get("top_level_limit_enabled") is True
+        return (timed and self.data.get("mode") == "manual"
+                and self.data.get("manual_level") == self.max_level())
+
+    def top_return_level(self) -> int:
+        """Where the timed top level returns to: step 3 on four steps, else one step down."""
+        return NOMINAL_LEVEL if self.dantherm_steps() else self.max_level() - 1
+
     def base_profiles(self) -> dict[int, dict[str, object]]:
         """Steps before the balance: the Dantherm ladder or the six-step table."""
         if self.dantherm_steps():
@@ -1178,8 +1194,7 @@ class ControllerState:
                     if not 1 <= value <= top:
                         raise ControllerError(f"{key} skal være 1..{top}")
                     self.data[key] = value
-            if self.dantherm_steps() and self.data["mode"] == "manual" and self.data["manual_level"] == MAX_LEVEL and (
-                    not was_max or "manual_level" in patch):
+            if self.top_hold_active() and (not was_max or "manual_level" in patch):
                 # Choosing step 4 (again) starts its four hours.
                 self.data["max_level_until"] = time.time() + MAX_LEVEL_HOURS * 3600
             for key, low, high in (
@@ -1442,7 +1457,7 @@ class ControllerState:
         "afterheat_pi_band", "afterheat_pi_min_dwell_ticks", "afterheat_algorithm",
         "afterheat_room_integral_minutes", "afterheat_room_max_step", "afterheat_room_weighted",
         "afterheat_room_band_k", "afterheat_room_offset_k",
-        "night_cool_enabled", "night_cool_start", "night_cool_end", "night_cool_forecast_c", "night_cool_today_c",
+        "night_cool_enabled", "top_level_limit_enabled", "night_cool_start", "night_cool_end", "night_cool_forecast_c", "night_cool_today_c",
         "night_cool_season_c", "night_cool_delta_k", "night_cool_min_indoor_c", "night_cool_level",
     )
     ADVANCED_LABELS = {
@@ -1759,8 +1774,8 @@ class ControllerState:
         except (TypeError, ValueError):
             active_until = 0.0
         if active_until <= now:
-            if self.dantherm_steps() and self.data["mode"] == "manual" and self.data["manual_level"] == MAX_LEVEL:
-                self.data["manual_level"] = NOMINAL_LEVEL
+            if self.top_hold_active():
+                self.data["manual_level"] = self.top_return_level()
             self.data["max_level_until"] = None
             self.data["updated_at"] = now
             self.save()
@@ -2809,9 +2824,10 @@ class ControllerEngine:
                 self.config.save()
             if d["mode"] == "manual":
                 source, level, reason = "manual", int(d["manual_level"]), "Manuelt valgt niveau"
-                if self.config.dantherm_steps() and level == MAX_LEVEL and d.get("max_level_until"):
+                if self.config.top_hold_active() and d.get("max_level_until"):
                     remaining = max(0, math.ceil((float(d["max_level_until"]) - now) / 60))
-                    reason = f"Trin 4 (maksimum) · tilbage til trin 3 om ca. {remaining} min"
+                    reason = (f"Trin {level} (maksimum) · tilbage til trin "
+                              f"{self.config.top_return_level()} om ca. {remaining} min")
             elif d["mode"] == "smart_auto":
                 seen = d.get("ha_last_seen")
                 lease = min(int(d["ha_timeout_seconds"]), int(d.get("ha_valid_for_seconds", d["ha_timeout_seconds"])))

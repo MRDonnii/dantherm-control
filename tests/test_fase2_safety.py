@@ -372,3 +372,20 @@ def test_captures_stop_by_themselves_and_old_ones_are_pruned(tmp_path):
     manager._ensure_capture_dir()
     assert manager._raw_fh is not None
     manager._close_files()
+
+
+def test_six_step_top_level_can_end_by_itself(tmp_path):
+    """runtime-11: an opt-in (off by default) time limit for the six-step top level."""
+    import time as _time
+
+    from controller_core import ControllerState
+
+    state = ControllerState(tmp_path / "controller.json")
+    state.configure({"fan_step_count": 6})
+    state.configure({"mode": "manual", "manual_level": 6})
+    assert state.data["top_level_limit_enabled"] is False
+    assert state.data["max_level_until"] is None
+    state.configure({"top_level_limit_enabled": True})
+    assert state.data["max_level_until"] is not None
+    state._expire_max_level(_time.time() + 5 * 3600)
+    assert state.data["manual_level"] == 5 and state.data["max_level_until"] is None
