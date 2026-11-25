@@ -130,3 +130,47 @@ def test_frost_release_ignores_a_wall_clock_step(tmp_path, monkeypatch):
     clock["mono"] += controller_core.FROST_LOCK_RELEASE_SECONDS + 1
     clock["wall"] += controller_core.FROST_LOCK_RELEASE_SECONDS + 1
     assert engine.resolve()["afterheat_frost_lock"] is False
+
+
+def _bare_gateway():
+    import queue
+
+    import pytest
+
+    module = pytest.importorskip("dantherm_gateway")
+    gateway = module.Gateway.__new__(module.Gateway)
+    gateway.controller_hardware_queue = queue.SimpleQueue()
+    return module, gateway
+
+
+def test_expired_hardware_request_is_not_executed_later():
+    """safety-8: a request the controller gave up on must not run later."""
+    import threading
+    import time as _time
+
+    module, gateway = _bare_gateway()
+    done = threading.Event()
+    result = {"deadline": _time.monotonic() - 0.1}
+    gateway.controller_hardware_queue.put(("afterheat_setpoint", 25, done, result))
+    written = []
+    gateway.write_afterheat_setpoint = lambda ser, value: written.append(value)
+    gateway.process_controller_hardware(None)
+    assert written == [] and result["error"] == "expired" and done.is_set()
+
+
+def test_main_loop_stall_is_detected():
+    """safety-4: nothing watched the serial main loop."""
+    module, gateway = _bare_gateway()
+    assert gateway.main_loop_stalled() is None
+    gateway.last_main_loop_monotonic = 100.0
+    assert gateway.main_loop_stalled(now=100.0 + module.MAIN_LOOP_STALL_SECONDS - 1) is None
+    assert gateway.main_loop_stalled(now=100.0 + module.MAIN_LOOP_STALL_SECONDS + 1) is not None
+
+
+def test_sniffer_duplicate_memory_is_bounded():
+    """safety-10: every distinct frame used to stay in last_seen forever."""
+    module, _gateway = _bare_gateway()
+    sniffer = module.RtuSniffer("/dev/null", 19200, "E", 0)
+    for value in range(2000):
+        list(sniffer.feed(_fc06(1, 66, value % 65536)))
+    assert len(sniffer.last_seen) <= module.SNIFFER_LAST_SEEN_PRUNE_AT + 1

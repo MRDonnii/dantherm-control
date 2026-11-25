@@ -42,6 +42,15 @@ LOG = logging.getLogger("dantherm_gateway")
 # cycle gets longer for MQTT and startup. After a watchdog exit the process is
 # killed hard if the cleanup has not finished in HARD_EXIT_SECONDS.
 CONTROLLER_STALL_SECONDS = 120.0
+# The serial main loop normally turns over in well under a second; its longest
+# legitimate step (a queued hardware action plus block reads) is a few seconds.
+MAIN_LOOP_STALL_SECONDS = 90.0
+MAIN_LOOP_WATCHDOG_INTERVAL_SECONDS = 5.0
+# A write on a healthy RS485 adapter takes milliseconds; never block forever.
+SERIAL_WRITE_TIMEOUT_SECONDS = 1.0
+CONTROLLER_HARDWARE_TIMEOUT_SECONDS = 4.0
+# The duplicate filter only needs frames from the last dedupe window.
+SNIFFER_LAST_SEEN_PRUNE_AT = 256
 CONTROLLER_FIRST_CYCLE_GRACE_SECONDS = 300.0
 HARD_EXIT_SECONDS = 20.0
 EXIT_LOCK_TIMEOUT_SECONDS = 2.0
@@ -595,6 +604,7 @@ class RtuSniffer:
             parity=serial.PARITY_EVEN if self.parity.upper() == "E" else serial.PARITY_NONE,
             stopbits=serial.STOPBITS_ONE,
             timeout=0.05,
+            write_timeout=SERIAL_WRITE_TIMEOUT_SECONDS,
             exclusive=True,
         )
         # FTDI control lines holdes passive. Der kaldes aldrig write().
@@ -647,6 +657,9 @@ class RtuSniffer:
             del self.buffer[:offset]
         if len(self.buffer) > 1024:
             del self.buffer[:-16]
+        if len(self.last_seen) > SNIFFER_LAST_SEEN_PRUNE_AT:
+            cutoff = time.monotonic() - self.dedupe_s
+            self.last_seen = {key: seen for key, seen in self.last_seen.items() if seen >= cutoff}
 
 
 class Gateway:
@@ -794,8 +807,11 @@ class Gateway:
         """Serialize controller writes onto the gateway's sole RS485 thread."""
         done = threading.Event()
         result: dict[str, object] = {}
+        # The caller gives up after the timeout; the serial thread must then
+        # not carry the stale request out later (result "expired").
+        result["deadline"] = time.monotonic() + CONTROLLER_HARDWARE_TIMEOUT_SECONDS
         self.controller_hardware_queue.put((action, value, done, result))
-        if not done.wait(4.0):
+        if not done.wait(CONTROLLER_HARDWARE_TIMEOUT_SECONDS):
             raise TimeoutError(f"controller hardware timeout: {action}")
         if result.get("error"):
             raise RuntimeError(str(result["error"]))
@@ -804,6 +820,13 @@ class Gateway:
     def process_controller_hardware(self, ser: serial.Serial):
         while not self.controller_hardware_queue.empty():
             action, value, done, result = self.controller_hardware_queue.get()
+            deadline = result.pop("deadline", None)
+            if deadline is not None and time.monotonic() > deadline:
+                result["error"] = "expired"
+                self.controller_hardware_expired = getattr(self, "controller_hardware_expired", 0) + 1
+                LOG.warning("Udløbet styrekommando sprunget over: %s", action)
+                done.set()
+                continue
             try:
                 bridge = getattr(self, "mk2_bridge", None)
                 if bridge is not None:
@@ -2699,6 +2722,35 @@ class Gateway:
             self.hard_exit_timer = timer
         return timer
 
+    def main_loop_stalled(self, now: float | None = None) -> float | None:
+        """Seconds since the serial main loop last turned over, when that is too long."""
+        stamp = getattr(self, "last_main_loop_monotonic", None)
+        if stamp is None:
+            return None
+        age = (time.monotonic() if now is None else now) - stamp
+        return age if age > MAIN_LOOP_STALL_SECONDS else None
+
+    def start_main_loop_watchdog(self) -> threading.Event:
+        """Watch the serial main loop from its own thread.
+
+        The main loop watches the controller thread, but nothing watched the
+        main loop: a blocked serial call would leave the process alive with
+        the bus dead. On a stall the hard exit is armed (systemd restarts).
+        """
+        stop = threading.Event()
+
+        def watch():
+            while not stop.wait(MAIN_LOOP_WATCHDOG_INTERVAL_SECONDS):
+                age = self.main_loop_stalled()
+                if age is not None:
+                    self.running = False
+                    self.watchdog_exit(f"Hovedløkken på RS485 har stået stille i {age:.0f} sekunder; genstarter gateway")
+                    return
+
+        thread = threading.Thread(target=watch, name="main-loop-watchdog", daemon=True)
+        thread.start()
+        return stop
+
     def restore_on_exit(self, ser: serial.Serial):
         # The last will runs for every entry point: the controller entry point
         # sets control_enabled=False, yet ControllerRuntime drives the HAC1
@@ -2868,6 +2920,8 @@ class Gateway:
             self.reader_started_at = time.monotonic()
             LOG.info("Aflæsning startet på %s", serial_cfg["port"])
             self.controller.start()
+            self.last_main_loop_monotonic = time.monotonic()
+            main_loop_watchdog = self.start_main_loop_watchdog()
             try:
                 if self.control_enabled and self.startup_mode is not None:
                     startup_mode = self.startup_mode
@@ -2877,6 +2931,7 @@ class Gateway:
                 if self.control_enabled:
                     self.resume_fireplace(ser)
                 while self.running:
+                    self.last_main_loop_monotonic = time.monotonic()
                     # A dead regulator must not be masked by a working HTTP server.
                     health = self.controller.loop_health()
                     if self.controller.thread is not None and not health["thread_alive"]:
@@ -2998,6 +3053,7 @@ class Gateway:
                     if time.monotonic() - self.last_filter_publish >= 60.0:
                         self.publish_filter_status()
             finally:
+                main_loop_watchdog.set()
                 self.controller.stop()
                 self.direction_capture.stop()
                 self.restore_on_exit(ser)
