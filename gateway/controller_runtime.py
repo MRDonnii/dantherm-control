@@ -23,7 +23,7 @@ from onewire_extras import OneWireExtras
 import room_setup
 from afterheat_pilot import robust_temperature
 from diagnostics import Diagnostics
-from controller_core import AFTERHEAT_OUTDOOR_CUTOFF_C, ControllerEngine, ControllerError, ControllerState, HardwareAdapter
+from controller_core import AFTERHEAT_OUTDOOR_CUTOFF_C, HA_LEASE_GRACE_SECONDS, ControllerEngine, ControllerError, ControllerState, HardwareAdapter
 from master_arbitration import MasterArbitrator, RtuFrameStream
 from sensor_freshness import fresh_sensor_value, sensor_sample_age, hide_stale_sensor_values
 from weather_bridge import humidity_at_t1, validate_weather
@@ -34,6 +34,14 @@ from operating_context import afterheat_context
 ROOM_T5_RANGE = (5.0, 40.0)
 
 LOG = logging.getLogger("passivelink-controller")
+# After the longest drying time a bathroom rests this long before RH over its
+# setpoint alone starts a new drying (a rise starts one at once).
+BATHROOM_REST_SECONDS = 1800
+# Fireplace cold guard (fireplace_cold_guard_enabled): with the extract fan
+# stopped there is no heat recovery. Below this supply temperature for this long
+# the fireplace mode ends (Dantherm allows fireplace only above about 9 °C).
+FIREPLACE_COLD_SUPPLY_C = 9.0
+FIREPLACE_COLD_SECONDS = 300
 VALID_PRIORITIES = {"auto", "low", "normal", "high", "critical"}
 # Weights per room priority when the rooms' average temperature is weighted.
 PRIORITY_WEIGHTS = {"low": 0.5, "auto": 1.0, "normal": 1.0, "high": 1.5, "critical": 2.0}
@@ -106,6 +114,12 @@ class ControllerRuntime:
         self._room_rh_history: dict[str, deque[tuple[float, float]]] = defaultdict(deque)
         # Bathroom drying episodes: peak RH and the RH at which the episode ends.
         self._bathroom_episodes: dict[str, dict[str, float]] = {}
+        # The level each room/metric band last asked for: a lower band needs the
+        # value to fall half the hysteresis below its limit (no flapping at 800 ppm).
+        self._band_levels: dict[tuple[str, str], int] = {}
+        # Gaps between HA room pushes longer than the lease (missed pushes).
+        self.smart_input_gap_seconds: float | None = None
+        self.smart_input_long_gaps = 0
         # Fan speed per steady percentage (both fans share one curve), for the airflow plan.
         self._fan_points: dict[int, float] = {}
         self._fan_steady: dict[str, tuple[int, float]] = {}
@@ -134,6 +148,8 @@ class ControllerRuntime:
         self.fireplace_auto_started_at: float | None = None
         self.fireplace_auto_blocked = False
         self.fireplace_auto_reason = "disabled"
+        self.fireplace_cold_since: float | None = None
+        self.fireplace_cold_stopped = False
         self.afterheat_room_source_used: str | None = None
         # Raw HAC1 T2AH readings (monotonic time, value) for the afterheat control.
         self._t2ah_raw_samples: deque[tuple[float, float]] = deque()
@@ -264,7 +280,7 @@ class ControllerRuntime:
             "today_high_c": self._climate_signal("today_high_c"),
             # The rooms' own temperature (the rooms the RH comes from), for the indoor absolute humidity.
             "indoor_temperature_average": self._indoor_room_temperature(),
-            "stove_temperature": self._source_value(self.config.data.get("fireplace_auto_source"), "temperature"),
+            "stove_temperature": self._source_value(self._measuring_source("fireplace_auto_source"), "temperature"),
             "max_room_co2": self._max_room_co2(),
             # The afterheat frost lock looks at T1, the attic and the water-side frost sensor.
             "outdoor_temperature": self._safe_number(self._first(state, "outdoor_temp", "outdoor_temperature"), -50, 60),
@@ -467,7 +483,8 @@ class ControllerRuntime:
         """HA rooms used as stove/outdoor sensors, never as indoor air quality."""
         names = set()
         for key in ("fireplace_auto_source", "outdoor_humidity_source", "duct_extract_source"):
-            name = source_room(self.config.data.get(key))
+            name = source_room(self._measuring_source(key) if key in self.MEASURING_SOURCE_TYPES
+                               else self.config.data.get(key))
             if name:
                 names.add(name)
         # Measuring rooms (stove, outdoor, extract) and excluded rooms from the room setup.
@@ -487,7 +504,7 @@ class ControllerRuntime:
         the weather: a leak or a poorly insulated duct shows as a steady share.
         The corrections are known sensor errors added to the rooms and T3.
         """
-        rooms = self._source_value(self.config.data.get("duct_extract_source"), "temperature")
+        rooms = self._source_value(self._measuring_source("duct_extract_source"), "temperature")
         t3 = self._safe_number(self._first(self._local_state(), "extract_temp", "extract_temperature"), -30, 60)
         if rooms is not None:
             rooms = round(rooms + float(self.config.data.get("duct_rooms_offset_k") or 0.0), 2)
@@ -498,6 +515,38 @@ class ControllerRuntime:
         span = rooms - loft if rooms is not None and isinstance(loft, (int, float)) else None
         share = round(loss / span * 100, 1) if loss is not None and span is not None and span >= 3 else None
         return {"extract_rooms_temperature": rooms, "extract_duct_loss_k": loss, "extract_duct_loss_percent": share}
+
+    # The room type on the page Rum that stands in for a measuring source whose
+    # named room has gone (e.g. renamed or removed and added again).
+    MEASURING_SOURCE_TYPES = {"fireplace_auto_source": "source", "duct_extract_source": "extract"}
+
+    def _measuring_source(self, key: str) -> str:
+        """The stove/extract source setting, resolved to a room that exists.
+
+        A named room that is neither set up on the page Rum nor sent by HA is
+        replaced by the one enabled room of the matching type, if there is
+        exactly one; otherwise the setting is returned as it is (no value).
+        """
+        source = str(self.config.data.get(key) or "")
+        name = source_room(source)
+        if not name:
+            return source
+        setup = self._room_setup()
+        if name.casefold() in setup or name in self.smart_rooms:
+            return source
+        wanted = self.MEASURING_SOURCE_TYPES.get(key)
+        matches = [room for room in setup.values() if room.get("type") == wanted and room.get("enabled", True)]
+        return f"room:{matches[0]['name']}" if len(matches) == 1 else source
+
+    def measuring_source_status(self, key: str) -> str:
+        """none (not chosen), missing (the room does not exist), no_data or ok."""
+        source = self._measuring_source(key)
+        name = source_room(source)
+        if not name:
+            return "none"
+        if name.casefold() not in self._room_setup() and name not in self.smart_rooms:
+            return "missing"
+        return "ok" if self._source_value(source, "temperature") is not None else "no_data"
 
     def _source_value(self, source: object, kind: str) -> float | None:
         name = source_room(source)
@@ -705,10 +754,51 @@ class ControllerRuntime:
             return False
         return self.fireplace_signal is True
 
+    def _fireplace_supply_temperature(self) -> float | None:
+        """The air going into the rooms: after the afterheat coil, else before it (1-Wire T2), else T1."""
+        for value in (fresh_sensor_value(self.gateway_state, "heating_coil_after_temperature"),
+                      self.onewire.by_role("t2"),
+                      self._first(self._local_state(), "outdoor_temp", "outdoor_temperature")):
+            number = self._safe_number(value, -40, 60)
+            if number is not None:
+                return number
+        return None
+
+    def _fireplace_cold_guard(self, now: float) -> bool:
+        """True when fireplace mode must stop or wait because the supply air is too cold."""
+        d = self.config.data
+        if not d.get("fireplace_cold_guard_enabled"):
+            self.fireplace_cold_since, self.fireplace_cold_stopped = None, False
+            return False
+        supply = self._fireplace_supply_temperature()
+        if supply is None or supply >= FIREPLACE_COLD_SUPPLY_C + (1.0 if self.fireplace_cold_stopped else 0.0):
+            self.fireplace_cold_since, self.fireplace_cold_stopped = None, False
+            return False
+        if not d.get("fireplace"):
+            # Only measured while it runs; after a stop the automatic start waits
+            # until the supply air is 1 K above the limit again.
+            self.fireplace_cold_since = None
+            return self.fireplace_cold_stopped
+        if self.fireplace_cold_since is None:
+            self.fireplace_cold_since = now
+        if now - self.fireplace_cold_since < FIREPLACE_COLD_SECONDS:
+            return self.fireplace_cold_stopped
+        self.fireplace_cold_stopped = True
+        self.fireplace_cold_since = None
+        with self.config.lock:
+            d["fireplace"] = False
+            d["fireplace_until"] = None
+            d["fireplace_duration_minutes"] = 0
+            self.config.save()
+        LOG.warning("Fireplace mode stopped: supply air %.1f °C below %.0f °C for %d min",
+                    supply, FIREPLACE_COLD_SUPPLY_C, FIREPLACE_COLD_SECONDS // 60)
+        return True
+
     def _update_fireplace_auto(self, now: float | None = None) -> None:
         """Hold the unit's fireplace mode while the stove is hot or the switch is on."""
         now = time.time() if now is None else now
         d = self.config.data
+        cold = self._fireplace_cold_guard(now)
         if not d.get("fireplace_auto_enabled"):
             if self.fireplace_auto_active:
                 self._release_fireplace_auto(now)
@@ -729,10 +819,17 @@ class ControllerRuntime:
             if self.fireplace_auto_active:
                 self._release_fireplace_auto(now)
             self.fireplace_auto_blocked = False
-            self.fireplace_auto_reason = "waiting" if stove is not None or d.get("fireplace_auto_source") == "" else "no_stove_temperature"
+            status = self.measuring_source_status("fireplace_auto_source")
+            self.fireplace_auto_reason = ("source_missing" if status == "missing" and stove is None
+                                          else "waiting" if stove is not None or status == "none" else "no_stove_temperature")
             return
         if self.fireplace_auto_blocked:
             self.fireplace_auto_reason = "blocked_until_clear"
+            return
+        if cold:
+            if self.fireplace_auto_active:
+                self._release_fireplace_auto(now)
+            self.fireplace_auto_reason = "cold_supply"
             return
         if not self.fireplace_auto_active:
             self.fireplace_auto_active = True
@@ -783,7 +880,7 @@ class ControllerRuntime:
         if self.smart_inputs_received_at is None:
             return False
         now = self._room_now() if now is None else now
-        return now - self.smart_inputs_received_at <= self.smart_inputs_valid_for
+        return now - self.smart_inputs_received_at <= self.smart_inputs_valid_for + HA_LEASE_GRACE_SECONDS
 
     def _expire_smart_lease(self, now: float | None = None) -> None:
         """Force Local Auto fallback as soon as the HA room lease expires."""
@@ -971,6 +1068,13 @@ class ControllerRuntime:
 
         self.smart_rooms = sanitized
         self.smart_missing_sensors, self.smart_missing_rooms = self._missing_setup_rooms(setup, sanitized, missing)
+        if self.smart_inputs_received_at is not None and getattr(self, "replay_time", None) is None:
+            gap = round(max(0.0, now - self.smart_inputs_received_at), 1)
+            self.smart_input_gap_seconds = gap
+            if gap > self.smart_inputs_valid_for:
+                self.smart_input_long_gaps += 1
+                LOG.warning("Home Assistant room data arrived after a gap of %.0f s (lease %d s)",
+                            gap, self.smart_inputs_valid_for)
         self.smart_inputs_received_at = now
         self.smart_inputs_received_monotonic = time.monotonic()
         self.smart_inputs_valid_for = valid_for
@@ -1019,6 +1123,11 @@ class ControllerRuntime:
                 LOG.warning("Moved %d rooms from the Home Assistant options flow to the room setup", len(rooms))
         return {**self.rooms_view(), "migrated_now": migrated}
 
+    def missing_source_rooms(self) -> list[str]:
+        """Rooms a stove/extract setting names that exist nowhere (see _measuring_source)."""
+        return [str(source_room(self.config.data.get(key)))
+                for key in self.MEASURING_SOURCE_TYPES if self.measuring_source_status(key) == "missing"]
+
     def rooms_view(self, *, include_catalog: bool = True) -> dict[str, object]:
         """The room setup, the HA catalogue and the room types, for HA and the WebUI.
 
@@ -1034,18 +1143,37 @@ class ControllerRuntime:
             "priorities": list(room_setup.PRIORITIES),
             "sensor_kinds": list(room_setup.SENSOR_KINDS),
             "max_rooms": room_setup.MAX_ROOMS,
+            # Stove/extract rooms a setting names that are not set up (shown on the page Rum).
+            "missing_source_rooms": self.missing_source_rooms(),
         }
 
-    def _priority_level(self, level: int, priority: str) -> int:
-        """Adjust response speed without allowing mild rooms to hide severe ones."""
+    def _priority_level(self, level: int, priority: str, normal: int | None = None) -> int:
+        """Adjust response speed without allowing mild rooms to hide severe ones.
+
+        Priority only changes real demand (above the base level): with clean air a
+        high-priority room asks for the base level like any other room.
+        """
         top = self.config.max_level()
-        if priority == "low" and level < top:
-            return max(1, level - 1)
-        if priority == "high" and level < top:
+        normal = self.config.normal_level() if normal is None else normal
+        if level <= normal or level >= top:
+            return level
+        if priority == "low":
+            return max(normal, level - 1)
+        if priority == "high":
             return min(top, level + 1)
-        if priority == "critical" and level < top:
+        if priority == "critical":
             return min(top, level + 2)
         return level
+
+    def _band_level(self, key: tuple[str, str], raw: int, value: float, setpoint: float, step: float,
+                    hysteresis: float, normal: int) -> int:
+        """Hold an upper band until the value is half the hysteresis below its limit."""
+        previous = self._band_levels.get(key)
+        if previous is not None and raw < previous and previous > normal:
+            held = self._metric_level(value + hysteresis / 2.0, setpoint, step, hysteresis, normal)
+            raw = max(raw, min(previous, held))
+        self._band_levels[key] = raw
+        return raw
 
     def _metric_level(self, value: float, setpoint: float, step: float,
                       hysteresis: float, normal: int) -> int:
@@ -1066,6 +1194,18 @@ class ControllerRuntime:
         folded = name.casefold()
         return any(marker in folded for marker in ("bad", "bath", "shower", "brus"))
 
+    # Ties at the same level go to the demand that matters most: a bathroom being
+    # dried, then a humidity rise, CO2, room humidity, fine dust. Values in different
+    # units (ppm, %, µg/m³) are never compared with each other.
+    METRIC_RANK = {"bathroom": 5, "rh_rise": 4, "co2": 3, "humidity": 2, "pm25": 1}
+
+    def _outdoor_pm25(self) -> float | None:
+        """Fresh PM2.5 of the outdoor room on the page Rum (e.g. Udeluft), if any."""
+        values = [float(v["pm25"]) for v in self._fresh_ha_rooms().values()
+                  if v.get("room_kind") == "outdoor" and isinstance(v.get("pm25"), (int, float))
+                  and not isinstance(v.get("pm25"), bool)]
+        return max(values) if values else None
+
     def _derive_smart_decision(
         self, now: float | None = None
     ) -> tuple[int, str, str, str | None, str | None]:
@@ -1074,9 +1214,15 @@ class ControllerRuntime:
         excluded = self._source_room_names()
         rooms = {n: v for n, v in self._rooms_with_unit_sensors().items() if n not in excluded}
         normal = self.config.normal_level()
+        top = self.config.max_level()
         air_cap = max(normal, int(d["air_quality_max_level"]))
+        # Fine dust may lift the level at least one step over the base level.
+        pm25_cap = min(top, max(normal + 1, int(d["pm25_max_level"])))
+        outdoor_pm25 = self._outdoor_pm25() if d.get("pm25_enabled") else None
+        rise_min_rh = float(d.get("humidity_rise_min_rh") or 0.0)
         candidates: list[tuple[int, int, float, str, str, str]] = []
         dry_rooms: set[str] = set()
+        seen_bands: set[tuple[str, str]] = set()
         for name, values in rooms.items():
             if not values.get("enabled", True) or not values.get("control", True):
                 continue
@@ -1087,24 +1233,24 @@ class ControllerRuntime:
 
             co2 = values.get("co2")
             if isinstance(co2, (int, float)):
-                raw = self._metric_level(
-                    float(co2), float(d["co2_setpoint"]), float(d["auto_step_co2"]),
-                    float(d["co2_hysteresis"]), normal,
-                )
-                adjusted = min(air_cap, self._priority_level(raw, priority))
+                setpoint, step, hysteresis = float(d["co2_setpoint"]), float(d["auto_step_co2"]), float(d["co2_hysteresis"])
+                raw = self._metric_level(float(co2), setpoint, step, hysteresis, normal)
+                raw = self._band_level((name, "co2"), raw, float(co2), setpoint, step, hysteresis, normal)
+                seen_bands.add((name, "co2"))
+                adjusted = min(air_cap, self._priority_level(raw, priority, normal))
                 candidates.append((adjusted, raw, float(co2), name, "co2", f"CO2 {name} {float(co2):.0f} ({priority})"))
 
             pm25 = values.get("pm25")
             if d.get("pm25_enabled") and isinstance(pm25, (int, float)) and name not in (d.get("pm25_ignored_rooms") or []):
-                raw = self._metric_level(
-                    float(pm25), float(d["pm25_setpoint"]), float(d["pm25_step"]),
-                    float(d["pm25_hysteresis"]), normal,
-                )
-                # Fine dust may lift the level (cooking, candles) but never lower it
-                # below what CO2/humidity want, and is capped on its own.
-                raw = min(int(d["pm25_max_level"]), raw) if raw > normal else normal
-                adjusted = min(max(normal, int(d["pm25_max_level"])), self._priority_level(raw, priority))
-                candidates.append((adjusted, raw, float(pm25), name, "pm25", f"PM2.5 {name} {float(pm25):.0f} µg/m³ ({priority})"))
+                setpoint, step, hysteresis = float(d["pm25_setpoint"]), float(d["pm25_step"]), float(d["pm25_hysteresis"])
+                raw = self._metric_level(float(pm25), setpoint, step, hysteresis, normal)
+                raw = self._band_level((name, "pm25"), raw, float(pm25), setpoint, step, hysteresis, normal)
+                seen_bands.add((name, "pm25"))
+                # Fine dust only votes over its limit (cooking, candles): clean air never
+                # holds the base level. Dirtier air outside is not pulled in.
+                if raw > normal and (outdoor_pm25 is None or outdoor_pm25 < float(pm25)):
+                    adjusted = min(pm25_cap, self._priority_level(min(pm25_cap, raw), priority, normal))
+                    candidates.append((adjusted, raw, float(pm25), name, "pm25", f"PM2.5 {name} {float(pm25):.0f} µg/m³ ({priority})"))
 
             humidity = values.get("humidity")
             if bathroom and isinstance(humidity, (int, float)) and name not in dry_rooms:
@@ -1117,7 +1263,10 @@ class ControllerRuntime:
                 raw = self._metric_level(
                     float(humidity), rh_setpoint, float(d["auto_step_rh"]), rh_hysteresis, normal,
                 )
-                adjusted = self._priority_level(raw, priority)
+                raw = self._band_level((name, "humidity"), raw, float(humidity), rh_setpoint,
+                                       float(d["auto_step_rh"]), rh_hysteresis, normal)
+                seen_bands.add((name, "humidity"))
+                adjusted = self._priority_level(raw, priority, normal)
                 if bathroom:
                     adjusted = min(adjusted, int(values.get("max_level") or d["bathroom_max_level"]))
                 else:
@@ -1125,6 +1274,8 @@ class ControllerRuntime:
                 label = "Badeværelse RH" if bathroom else "RH"
                 candidates.append((adjusted, raw, float(humidity), name, "humidity", f"{label} {name} {float(humidity):.1f}% / {rh_setpoint:.0f}% ({priority})"))
 
+        rise_percent = float(d.get("bathroom_rise_percent", 7.0))
+        rise_window = int(d.get("bathroom_rise_minutes", 10)) * 60
         for name, history in self._room_rh_history.items():
             if name not in rooms or name in dry_rooms:
                 continue
@@ -1133,30 +1284,45 @@ class ControllerRuntime:
                 continue
             if self._is_bathroom(name, values):
                 continue
-            if not isinstance(values.get("humidity"), (int, float)):
+            humidity = values.get("humidity")
+            if not isinstance(humidity, (int, float)):
                 continue
-            fresh = [(ts, value) for ts, value in history if now - ts <= 600]
+            if rise_min_rh and float(humidity) < rise_min_rh:
+                # Dry air: a rise (cooking) is moisture the house lacks.
+                continue
+            fresh = [(ts, value) for ts, value in history if now - ts <= rise_window]
             if len(fresh) >= 2:
                 rise = fresh[-1][1] - fresh[0][1]
-                if rise >= 7.0:
-                    raw = min(self.config.max_level(), normal + 3 + int((rise - 7.0) // 5.0))
+                if rise >= rise_percent:
+                    raw = min(top, normal + 3 + int((rise - rise_percent) // 5.0))
                     priority = str(values.get("priority", "auto"))
-                    adjusted = min(air_cap, self._priority_level(raw, priority))
-                    if self._is_bathroom(name, values):
-                        adjusted = min(adjusted, int(values.get("max_level") or d["bathroom_max_level"]))
+                    adjusted = min(air_cap, self._priority_level(raw, priority, normal))
                     candidates.append((
                         adjusted, raw, rise, name, "rh_rise",
-                        f"RH rise {name} +{rise:.1f}%/10m ({priority})",
+                        f"RH rise {name} +{rise:.1f}%/{rise_window // 60}m ({priority})",
                     ))
 
         for name in list(self._bathroom_episodes):
             if name not in rooms:
                 del self._bathroom_episodes[name]
+        for key in list(self._band_levels):
+            if key not in seen_bands:
+                del self._band_levels[key]
         if not candidates:
             return normal, "normal", "No enabled control measurements", None, None
-        adjusted, _raw, _value, room, metric, reason = max(candidates)
+
+        def rank(candidate: tuple[int, int, float, str, str, str]) -> tuple[int, int, float]:
+            level, _raw, value, room, metric, _reason = candidate
+            kind = "bathroom" if metric == "humidity" and room in self._bathroom_episodes else metric
+            return level, self.METRIC_RANK.get(kind, 0), value
+
+        adjusted, _raw, _value, room, metric, reason = max(candidates, key=rank)
         adjusted = min(int(d["local_max_level"]), max(int(d["local_min_level"]), adjusted))
-        demand = "low" if adjusted <= 2 else "normal" if adjusted == 3 else "boost" if adjusted >= self.config.max_level() else "high"
+        if adjusted == normal and not (metric == "humidity" and room in self._bathroom_episodes):
+            # Nothing asks for more than the base level: say so instead of naming
+            # the sensor with the largest number.
+            reason = "Luften er fin · normal ventilation"
+        demand = "low" if adjusted <= 2 else "normal" if adjusted == 3 else "boost" if adjusted >= top else "high"
         return adjusted, demand, reason, room, metric
 
     def _bathroom_candidate(
@@ -1179,6 +1345,9 @@ class ControllerRuntime:
             window = int(d.get("bathroom_rise_minutes", 10)) * 60
             fresh = [value for ts, value in self._room_rh_history.get(name, ()) if now - ts <= window]
             rising = len(fresh) >= 2 and fresh[-1] - fresh[0] >= float(d.get("bathroom_rise_percent", 7.0))
+            # Dry air (humidity_rise_min_rh): a rise below that RH is moisture the house lacks.
+            if humidity < float(d.get("humidity_rise_min_rh") or 0.0):
+                rising = False
             if humidity > setpoint:
                 episode = {"peak": humidity, "end": end, "started": now}
             elif rising:
@@ -1192,10 +1361,25 @@ class ControllerRuntime:
             del self._bathroom_episodes[name]
             return None
         # Safety if the sensor sticks high: stop after the longest drying time and
-        # stay quiet until humidity has been below the end point once.
+        # stay quiet while the value stays flat. A new shower (RH rising
+        # bathroom_rise_percent above the lowest value since then) or RH over the
+        # setpoint after a 30-minute rest starts a new drying.
         longest = int(d.get("bathroom_max_minutes", 0)) * 60
-        if episode.get("expired") or (longest and now - episode.get("started", now) > longest):
-            episode["expired"] = True
+        if episode.get("expired"):
+            episode["low"] = min(float(episode.get("low", humidity)), humidity)
+            episode["high"] = max(float(episode.get("high", humidity)), humidity)
+            rise = float(d.get("bathroom_rise_percent", 7.0))
+            # A stuck sensor repeats one value: only a moving value may restart.
+            moving = float(episode["high"]) - float(episode["low"]) >= 1.0
+            rested = now - float(episode.get("expired_at", now)) >= BATHROOM_REST_SECONDS
+            if humidity - float(episode["low"]) >= rise or (humidity > setpoint and rested and moving):
+                episode = {"peak": humidity, "end": min(end, float(episode["low"]) + hysteresis / 2)
+                           if humidity <= setpoint else end, "started": now}
+                self._bathroom_episodes[name] = episode
+            else:
+                return None
+        elif longest and now - episode.get("started", now) > longest:
+            episode.update(expired=True, expired_at=now, low=humidity, high=humidity)
             return None
         episode["peak"] = max(episode["peak"], humidity)
         span = max(0.1, episode["peak"] - episode["end"])
@@ -1269,6 +1453,9 @@ class ControllerRuntime:
             "smart_inputs_online": fresh,
             "smart_inputs_age_seconds": round(age, 1) if age is not None else None,
             "smart_inputs_valid_for_seconds": self.smart_inputs_valid_for,
+            # The last gap between HA room pushes and how many ran past the lease (missed pushes).
+            "smart_input_gap_seconds": self.smart_input_gap_seconds,
+            "smart_input_long_gaps": self.smart_input_long_gaps,
             "smart_rooms": rooms,
             "smart_ha_rooms": self.smart_rooms,
             "smart_missing_sensors": self.smart_missing_sensors,
@@ -1555,6 +1742,9 @@ class ControllerRuntime:
             "last_tick_at": self.last_tick_at,
             "fireplace_auto_active": self.fireplace_auto_active,
             "fireplace_auto_reason": self.fireplace_auto_reason,
+            "fireplace_auto_source_status": self.measuring_source_status("fireplace_auto_source"),
+            "fireplace_cold_stopped": self.fireplace_cold_stopped,
+            "duct_extract_source_status": self.measuring_source_status("duct_extract_source"),
             "fireplace_signal": self.fireplace_signal if self._fireplace_signal_active(time.time()) else None,
             "stove_temperature": self.engine.external.get("stove_temperature"),
             "measurement_rooms": sorted(set(self.smart_rooms) | {

@@ -1,10 +1,20 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { CONTROLLER_KEYS, SettingsPage } from "./SettingsPage";
+import { CONTROLLER_KEYS, SettingsPage, settingsPatch } from "./SettingsPage";
 
 describe("SettingsPage", () => {
   afterEach(() => localStorage.clear());
+
+  it("sends only the settings changed on the page, not a stale copy of the rest", () => {
+    const loaded = { afterheat_setpoint: 21, co2_setpoint: 800, local_normal_level: 4 };
+    // HA has since set the afterheat to 22; the page still shows 21 and only the CO2 limit was changed.
+    const form = { ...loaded, co2_setpoint: 850 };
+    expect(settingsPatch(form, loaded)).toEqual({ co2_setpoint: 850 });
+    expect(CONTROLLER_KEYS).toContain("upshift_delay_seconds");
+    expect(CONTROLLER_KEYS).toContain("humidity_rise_min_rh");
+    expect(CONTROLLER_KEYS).toContain("fireplace_cold_guard_enabled");
+  });
 
   it("saves every advanced controller feature", () => {
     for (const key of ["sizing_enabled", "house_area_m2", "ceiling_height_m", "airflow_measured", "afterheat_room_enabled",

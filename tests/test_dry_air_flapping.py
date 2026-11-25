@@ -314,7 +314,8 @@ class LevelChangeCounterTests(unittest.TestCase):
         return engine
 
     def test_counts_automatic_changes_in_the_last_hour(self):
-        engine = self.make_engine(downshift_delay_seconds=60)
+        # Level 4 is the top of four steps: its boost hold is kept short here.
+        engine = self.make_engine(downshift_delay_seconds=60, boost_hold_seconds=60)
         engine.update_measurements(co2=500)
         self.assertEqual(engine.resolve(T0)["level_changes_last_hour"], 0)
         engine.resolve(T0 + 1)  # same level again: no change
@@ -324,6 +325,8 @@ class LevelChangeCounterTests(unittest.TestCase):
         self.assertEqual(result["level_changes_last_hour"], 1)
         self.assertEqual(result["level_change_quiet_seconds"], 0)
         engine.update_measurements(co2=500)
+        # A step down needs the lower demand for the whole delay (from T0 + 140).
+        self.assertEqual(engine.resolve(T0 + 140)["level_changes_last_hour"], 1)
         self.assertEqual(engine.resolve(T0 + 200)["level_changes_last_hour"], 2)
         self.assertEqual(engine.resolve(T0 + 500)["level_change_quiet_seconds"], 300)
         self.assertEqual(engine.resolve(T0 + 3660)["level_changes_last_hour"], 1)

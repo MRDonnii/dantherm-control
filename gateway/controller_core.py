@@ -92,6 +92,11 @@ FROST_LOCK_OUTDOOR_WORD_CAP_C = 10.0
 FROST_LOCK_RETRY_MAX_SECONDS = 60.0
 # Longest pause between retries of a failed hardware command.
 RETRY_MAX_SECONDS = 300.0
+# After HA's room lease runs out, Smart Auto keeps its last level this much
+# longer before Local Auto takes over: a missed push or two must not flip the fan.
+HA_LEASE_GRACE_SECONDS = 120
+# How often a running fireplace mode is confirmed to the gateway (its timer is 15 min).
+FIREPLACE_REFRESH_SECONDS = 60.0
 FROST_LOCK_OFF_ERROR = "Frostsikring: eftervarmen kan ikke slukkes, mens det fryser."
 FROST_LOCK_FLOOR_ERROR = "Frostsikring: eftervarmen kan ikke sættes under {floor} °C, mens det fryser."
 FROST_LOCK_COOL_ERROR = "Frostsikring: Køl kan ikke startes, mens det fryser."
@@ -294,6 +299,10 @@ class ControllerState:
         "auto_step_rh": 5.0,
         "auto_step_co2": 200,
         "downshift_delay_seconds": 300,
+        # Smart Auto: a step up of one level waits until the demand has lasted
+        # this long (0 = at once, as before). Jumps of two levels or more and
+        # bathroom drying always go at once.
+        "upshift_delay_seconds": 0,
         "boost_hold_seconds": 600,
         "ha_demand": "normal",
         "ha_requested_level": 3,
@@ -446,6 +455,13 @@ class ControllerState:
         "fireplace_auto_off_temp": 24.0,
         "fireplace_afterrun_minutes": 15,
         "fireplace_max_hours": 6,
+        # Stop fireplace mode (and refuse to start it) while the air after the
+        # afterheat coil stays below FIREPLACE_COLD_SUPPLY_C: with the extract
+        # fan stopped there is no heat recovery. Off until chosen.
+        "fireplace_cold_guard_enabled": False,
+        # A humidity rise (shower, cooking) only boosts when the room RH is at
+        # least this high; 0 = any RH (as before). Saves moisture in dry air.
+        "humidity_rise_min_rh": 0.0,
         # Humidity demand only counts when outdoor air actually dries the house.
         "humidity_smart_enabled": False,
         "outdoor_humidity_source": "",
@@ -750,7 +766,7 @@ class ControllerState:
     BOOL_KEYS = ("sizing_enabled", "afterheat_room_enabled", "fireplace_auto_enabled",
                  "humidity_smart_enabled", "dry_protection_enabled", "balance_enabled", "pm25_enabled",
                  "bathroom_night_drying", "winter_dry_enabled", "frost_lock_enabled",
-                 "afterheat_room_weighted", "night_cool_enabled")
+                 "afterheat_room_weighted", "night_cool_enabled", "fireplace_cold_guard_enabled")
     TIME_KEYS = (("night_cool_start", "Natkøling start", "23:00"), ("night_cool_end", "Natkøling slut", "07:00"))
 
     def _sanitize_advanced(self) -> None:
@@ -838,7 +854,7 @@ class ControllerState:
         ("duct_rooms_offset_k", -3.0, 3.0), ("duct_t3_offset_k", -3.0, 3.0),
         ("t2_offset_k", -3.0, 3.0),
         ("pm25_setpoint", 5.0, 200.0), ("pm25_step", 2.0, 100.0), ("pm25_hysteresis", 1.0, 50.0),
-        ("bathroom_rise_percent", 3.0, 20.0),
+        ("bathroom_rise_percent", 3.0, 20.0), ("humidity_rise_min_rh", 0.0, 80.0),
         ("winter_outdoor_max", -25.0, 15.0), ("winter_outdoor_hysteresis", 0.5, 10.0),
         ("winter_rh_limit", 20.0, 55.0), ("winter_rh_hysteresis", 1.0, 10.0),
         ("frost_lock_outdoor_c", -10.0, 10.0), ("frost_lock_coil_c", 3.0, 15.0),
@@ -1134,7 +1150,7 @@ class ControllerState:
             allowed = {
                 "mode", "manual_level", "local_normal_level", "local_min_level", "local_max_level", "air_quality_max_level",
                 "rh_setpoint", "rh_hysteresis", "co2_setpoint", "co2_hysteresis", "co2_offset",
-                "auto_step_rh", "auto_step_co2", "downshift_delay_seconds",
+                "auto_step_rh", "auto_step_co2", "downshift_delay_seconds", "upshift_delay_seconds",
                 "boost_hold_seconds", "ha_timeout_seconds", "bypass", "fireplace",
                 "fireplace_minutes", "afterheat_setpoint", "afterheat_enabled", "afterheat_coil", "t3_setpoint", "t5_setpoint", "profiles", "fan_settings", "fan_step_count", "schedule_enabled",
                 "schedule", "night_enabled", "night_start", "night_end", "night_level",
@@ -1188,7 +1204,8 @@ class ControllerState:
             for key, low, high in (
                 ("co2_setpoint", 500, 2000), ("co2_hysteresis", 25, 500), ("co2_offset", -1000, 1000),
                 ("auto_step_co2", 50, 1000), ("ha_timeout_seconds", 60, 3600),
-                ("downshift_delay_seconds", 30, 3600), ("boost_hold_seconds", 60, 3600),
+                ("downshift_delay_seconds", 30, 3600), ("upshift_delay_seconds", 0, 1800),
+                ("boost_hold_seconds", 60, 3600),
                 ("cooling_start_delay_seconds", 0, 1800), ("cooling_min_on_seconds", 0, 3600),
                 ("cooling_min_off_seconds", 0, 3600), ("cooling_transition_timeout_seconds", 30, 300),
             ):
@@ -1418,7 +1435,7 @@ class ControllerState:
         "afterheat_room_min", "afterheat_room_max", "afterheat_room_step_minutes",
         "afterheat_room_source", "fireplace_auto_enabled", "fireplace_auto_source",
         "fireplace_auto_on_temp", "fireplace_auto_off_temp", "fireplace_afterrun_minutes",
-        "fireplace_max_hours", "humidity_smart_enabled", "outdoor_humidity_source", "duct_extract_source",
+        "fireplace_max_hours", "fireplace_cold_guard_enabled", "humidity_rise_min_rh", "humidity_smart_enabled", "outdoor_humidity_source", "duct_extract_source",
         "duct_rooms_offset_k", "duct_t3_offset_k",
         "t2_offset_k",
         "humidity_margin_gm3", "dry_protection_enabled", "dry_rh_limit", "dry_max_level",
@@ -1450,6 +1467,8 @@ class ControllerState:
         "night_cool_min_indoor_c": "Natkøling: inde mindst", "night_cool_level": "Natkøling: trin",
         "fireplace_auto_on_temp": "Pejs start", "fireplace_auto_off_temp": "Pejs stop",
         "fireplace_afterrun_minutes": "Efterløb", "fireplace_max_hours": "Maks. varighed",
+        "fireplace_cold_guard_enabled": "Pejs stopper ved kold indblæsning",
+        "humidity_rise_min_rh": "Fugtstigning tæller fra",
         "humidity_margin_gm3": "Fugtmargin", "dry_rh_limit": "Tør luft-grænse",
         "dry_max_level": "Maks. trin ved tør luft", "dry_hold_minutes": "Tør luft: mindste tid",
         "balance_extract_excess_percent": "Udsugning over indblæsning", "balance_duct_ratio": "Kanalforhold",
@@ -1802,7 +1821,7 @@ class ControllerState:
             result["schedule"] = _copy_schedule(self.data["schedule"])
             seen = result.get("ha_last_seen")
             lease = min(int(result["ha_timeout_seconds"]), int(result.get("ha_valid_for_seconds", result["ha_timeout_seconds"])))
-            result["ha_online"] = bool(seen and now - float(seen) <= lease)
+            result["ha_online"] = bool(seen and now - float(seen) <= lease + HA_LEASE_GRACE_SECONDS)
             result["ha_age_seconds"] = round(now - float(seen), 1) if seen else None
             until = result.get("fireplace_until")
             result["fireplace_remaining_seconds"] = max(0, int(float(until) - now)) if until else 0
@@ -1891,6 +1910,12 @@ class ControllerEngine:
         self.current_auto_level: int | None = None
         self.last_level_change = 0.0
         self.boost_until = 0.0
+        # Since when the wanted auto level has been below / above the current one
+        # (a step down needs the whole downshift delay of lower demand), and who
+        # set the current level: "ha" (Smart Auto) or "local" (the unit's sensors).
+        self.lower_since: float | None = None
+        self.higher_since: float | None = None
+        self.auto_level_owner: str | None = None
         self.cooling_active = False
         self.cooling_qualifying_since: float | None = None
         self.cooling_last_on_at: float | None = None
@@ -2011,7 +2036,11 @@ class ControllerEngine:
         wanted = min(int(d["local_max_level"]), air_cap, max(int(d["local_min_level"]), wanted))
         rh_clear = not isinstance(rh, (int, float)) or rh <= float(d["rh_setpoint"]) - float(d["rh_hysteresis"])
         co2_clear = not isinstance(co2, (int, float)) or co2 <= int(d["co2_setpoint"]) - int(d["co2_hysteresis"])
-        current, held = self._stabilize_auto_level(wanted, now, allow_downshift=rh_clear and co2_clear)
+        # The hysteresis hold is for a level the unit's own CO2/RH raised. A level
+        # inherited from Smart Auto (HA went away) steps down after the normal delay.
+        inherited = self.auto_level_owner == "ha"
+        current, held = self._stabilize_auto_level(
+            wanted, now, allow_downshift=(rh_clear and co2_clear) or inherited, owner="local")
         if current > air_cap:
             current = air_cap
             self.current_auto_level = current
@@ -2019,26 +2048,64 @@ class ControllerEngine:
             reasons.append(held)
         return current, ", ".join(reasons) if reasons else "RH/CO2 normal"
 
-    def _stabilize_auto_level(self, wanted: int, now: float, *, allow_downshift: bool = True) -> tuple[int, str | None]:
+    def _stabilize_auto_level(self, wanted: int, now: float, *, allow_downshift: bool = True,
+                              owner: str = "ha", urgent: bool = False) -> tuple[int, str | None]:
+        """Follow the wanted level calmly.
+
+        Up: at once, or after upshift_delay_seconds of steady demand for a single
+        step (two steps or more, and ``urgent`` such as bathroom drying, go at once).
+        Down: only when the wanted level has stayed lower for the whole downshift
+        delay and the delay since the last change has passed, so one low sample
+        right after a long steady spell does not step down.
+        """
         d = self.config.data
         wanted = min(6, max(1, int(wanted)))
-        current = self.current_auto_level if self.current_auto_level is not None else self.config.normal_level()
+        if self.current_auto_level is None:
+            # Nothing to hold yet (start-up, or after a gap in a replay): take it as it is.
+            self.lower_since = self.higher_since = None
+            self.auto_level_owner = owner
+            self.current_auto_level = wanted
+            if wanted != self.config.normal_level():
+                self.last_level_change = now
+            if wanted >= self.config.max_level():
+                self.boost_until = now + int(d["boost_hold_seconds"])
+            return wanted, None
+        current = self.current_auto_level
         held = None
         if wanted > current:
-            current = wanted
-            self.last_level_change = now
-            if current == 6:
-                self.boost_until = now + int(d["boost_hold_seconds"])
+            self.lower_since = None
+            if self.higher_since is None:
+                self.higher_since = now
+            delay = int(d.get("upshift_delay_seconds") or 0)
+            if urgent or delay <= 0 or wanted - current >= 2 or now - self.higher_since >= delay:
+                current = wanted
+                self.last_level_change = now
+                self.higher_since = None
+                self.auto_level_owner = owner
+                if current >= self.config.max_level():
+                    self.boost_until = now + int(d["boost_hold_seconds"])
+            else:
+                held = "Upshift delay"
         elif wanted < current:
+            self.higher_since = None
+            if self.lower_since is None:
+                self.lower_since = now
+            delay = int(d["downshift_delay_seconds"])
             if now < self.boost_until:
                 held = "Boost hold"
             elif not allow_downshift:
                 held = "Hysteresis"
-            elif now - self.last_level_change >= int(d["downshift_delay_seconds"]):
+            elif now - self.last_level_change >= delay and now - self.lower_since >= delay:
                 current = wanted
                 self.last_level_change = now
+                self.lower_since = None
+                self.auto_level_owner = owner
             else:
                 held = "Downshift delay"
+        else:
+            # The level is what this caller wants too: it owns it now.
+            self.lower_since = self.higher_since = None
+            self.auto_level_owner = owner
         self.current_auto_level = current
         return current, held
 
@@ -2091,7 +2158,9 @@ class ControllerEngine:
                 # demand may lift the night level for air quality, but only to a
                 # configurable ceiling. This prevents a humid bathroom from repeatedly
                 # forcing full boost while night mode simultaneously tries to reduce it.
-                ha_urgent = source == "ha_smart" and level > int(d["night_level"])
+                # Only real demand counts: the base level itself (good air) gets the
+                # night level, as the setting promises.
+                ha_urgent = source == "ha_smart" and level > self.config.normal_level()
                 if source == "ha_smart" and d.get("ha_bathroom_drying") and d.get("bathroom_night_drying", True):
                     # Drying a bathroom out after a shower is allowed at night too;
                     # it steps down by itself as humidity falls.
@@ -2099,10 +2168,12 @@ class ControllerEngine:
                     reason = f"{reason}; nat: badeværelse tørres ud"
                 elif local_urgent or ha_urgent:
                     night_cap = max(int(d["night_level"]), int(d["night_air_quality_max_level"]))
+                    source = "night_air_quality"
                     if level > night_cap:
                         level = night_cap
-                    source = "night_air_quality"
-                    reason = f"{reason}; nat: luftkvalitet begrænset til trin {night_cap}"
+                        reason = f"{reason}; nat: luftkvalitet begrænset til trin {night_cap}"
+                    else:
+                        reason = f"{reason}; nat: luften kræver trin {level}"
                 else:
                     level = min(level, int(d["night_level"]))
                     source = "night"
@@ -2411,7 +2482,7 @@ class ControllerEngine:
     def _ha_live(self, d: dict, now: float) -> bool:
         seen = d.get("ha_last_seen")
         lease = min(int(d["ha_timeout_seconds"]), int(d.get("ha_valid_for_seconds", d["ha_timeout_seconds"])))
-        return d["mode"] == "smart_auto" and bool(seen) and now - float(seen) <= lease
+        return d["mode"] == "smart_auto" and bool(seen) and now - float(seen) <= lease + HA_LEASE_GRACE_SECONDS
 
     def _winter_pause_trigger(self, d: dict, now: float) -> str | None:
         """Air-quality demand that suspends winter mode: it then ventilates as usual."""
@@ -2794,13 +2865,18 @@ class ControllerEngine:
             elif d["mode"] == "smart_auto":
                 seen = d.get("ha_last_seen")
                 lease = min(int(d["ha_timeout_seconds"]), int(d.get("ha_valid_for_seconds", d["ha_timeout_seconds"])))
-                if seen and now - float(seen) <= lease:
+                # A short gap in HA's pushes keeps the last Smart Auto level for a
+                # grace period instead of flipping to Local Auto for a few seconds.
+                if seen and now - float(seen) <= lease + HA_LEASE_GRACE_SECONDS:
                     wanted = int(d["ha_requested_level"])
-                    level, held = self._stabilize_auto_level(wanted, now)
+                    level, held = self._stabilize_auto_level(
+                        wanted, now, urgent=bool(d.get("ha_bathroom_drying")))
                     source = "ha_smart"
                     reason = str(d.get("ha_reason") or f"HA demand: {d['ha_demand']}")
                     if held:
                         reason = f"{reason}; {held}"
+                    if now - float(seen) > lease:
+                        reason = f"{reason}; venter på nye data fra HA"
                     level, reason = self._apply_winter(level, reason)
                 else:
                     level, reason = self._apply_winter(*self._local_auto_level(now))
@@ -3042,7 +3118,11 @@ class ControllerEngine:
                 self.last_applied.pop("fan_pair", None)
         fireplace = bool(snapshot["fireplace"])
         previous_fireplace = self.last_applied.get("fireplace")
-        self._call("fireplace", fireplace, self.hardware.set_fireplace, fireplace)
+        # Resent every minute while on: the gateway's own 15-minute fireplace
+        # timer is only a safety net if the controller stops, so it must not end
+        # a longer fireplace (auto mode holds it up to fireplace_max_hours).
+        self._call("fireplace", fireplace, self.hardware.set_fireplace, fireplace,
+                   refresh_seconds=FIREPLACE_REFRESH_SECONDS if fireplace else None)
         if previous_fireplace is True and not fireplace:
             self.last_applied.pop("fan_pair", None)
         bypass = str(snapshot.get("effective_bypass", snapshot["bypass"]))

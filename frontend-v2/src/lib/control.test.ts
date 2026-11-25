@@ -10,6 +10,13 @@ describe("describeControl", () => {
     expect(c.footer).toBe("Pi styrer");
   });
 
+  it("says fine dust and the calm-fan holds in plain words", () => {
+    expect(describeControl({ active_master: "pi", effective_source: "ha_smart", effective_level: 5, effective_reason: "PM2.5 Køkken 108 µg/m³ (auto); Upshift delay" }).reason)
+      .toBe("Fint støv 108 µg/m³ i Køkken; venter før optrapning");
+    expect(describeControl({ active_master: "pi", effective_source: "ha_smart", effective_level: 4, effective_reason: "Luften er fin · normal ventilation" }).reason)
+      .toBe("Luften er fin · normal ventilation");
+  });
+
   it("translates room humidity, rise and hold reasons", () => {
     expect(describeControl({ active_master: "pi", effective_source: "ha_smart", effective_level: 5, effective_reason: "Badeværelse RH Badeværelse 71.5% / 65% (high); Boost hold" }).reason)
       .toBe("Fugt 71,5 % i Badeværelse (grænse 65 %); holder boost");

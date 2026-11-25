@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.13.0-beta.12 — Luftstyringen gør det rigtige
+
+- **PM2.5:** stemmer kun over grænsen (ren luft holder ikke længere trin 4), kan altid hæve mindst ét trin over normaltrinnet, og der skrues ikke op, når udeluften har mere fint støv end rummet.
+- **Pejs:** brændeovnens og udsugningens rum findes igen via rumtypen, og siden siger tydeligt, når rummet mangler. Gatewayens 15-minutters-timer slutter ikke controllerens pejs, og en genstart efterlader ikke anlægget i pejsemønster. Ny indstilling (slået fra): stop pejsen ved for kold indblæsning.
+- **Natsænkning** virker, når luften er god (CO₂ 701–800 ppm sprang den over).
+- **Ro på blæseren:** rigtig hysterese i Smart Autos trin, ned i trin kun efter vedvarende lavere behov, korte HA-huller skifter ikke blæseren, og lokal reserve arver ikke Smart Autos trin i timevis. Ny indstilling (0 = fra): vent før ét trin op.
+- **Badeværelse:** udtørringen låses ikke ude efter maksimal tid, CO₂ slår ikke natlig udtørring ud, og ny indstilling (0 = fra) så en fugtstigning i tør luft ikke skruer op.
+- **Rum:** friskhed pr. måling (CO₂ 30 min, PM2.5 op til 12 t), prioritet giver kun ekstra trin ved behov, og begrundelserne er rigtige.
+- **Indstillinger:** gem sender kun ændrede felter og overskriver ikke ændringer fra HA eller Oversigten. Ændret af Claude AI.
+- Se [release notes](docs/releases/1.13.0-beta.12.md).
+
 ## 1.13.0-beta.11 — Eftervarmens model og ydelse som data til Home Assistant
 
 - **Nyt, kompakt datablok `afterheat_ha`** i controllerens tilstand (`/api/controller/state`, læsenøglen kan hente den): hvilken styring der kører, om modellen stadig lærer, hvor meget varme hvert trin giver, hvor hurtigt luften reagerer op og ned, forsinkelsen, rettelsen, hvad luften forventes at være om 1 og 10 minutter og den laveste forventede luft, forudsigelsesfejlen, seneste genberegning, varmen fra fladen i kW og i dag i kWh, PID-udgang og -afvigelse samt ydelsen for seneste time og døgn (middelafvigelse, laveste luft, tid under bunden, skift pr. time). Det er kun aflæsning: styringen er uændret.

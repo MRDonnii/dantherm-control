@@ -11,7 +11,7 @@ from controller_core import ControllerEngine, ControllerError, ControllerState, 
 
 REPLAY_SETTINGS = frozenset({"co2_setpoint", "rh_setpoint", "co2_hysteresis", "rh_hysteresis",
     "auto_step_co2", "auto_step_rh", "local_normal_level", "air_quality_max_level",
-    "downshift_delay_seconds", "boost_hold_seconds"})
+    "downshift_delay_seconds", "upshift_delay_seconds", "boost_hold_seconds"})
 
 # One replay at a time: each is CPU-heavy and shares the GIL with the live controller.
 REPLAY_LOCK = threading.Lock()
@@ -126,6 +126,7 @@ def replay_smart_auto(settings: dict, samples: list[dict], patch: dict) -> dict:
                     runtime.engine.boost_until = runtime.engine.last_level_change = 0
                     runtime._room_rh_history.clear()
                     runtime._bathroom_episodes.clear()
+                    runtime._band_levels.clear()
             decisions = []
             for index, runtime in enumerate(runtimes):
                 runtime.replay_time = ts

@@ -820,12 +820,22 @@ class Gateway:
                     self.publish("fan_supply_percent", actual[1])
                     result["value"] = actual
                 elif action == "fireplace":
-                    if value and not self.fireplace_gateway_active:
-                        self.start_fireplace(ser)
+                    if value and self.fireplace_gateway_active:
+                        # The controller confirms a running fireplace: push the
+                        # safety timer on, so it only ends one the controller forgot.
+                        self.extend_fireplace()
+                    elif value:
+                        self.adopt_or_clear_saved_fireplace(ser, keep=True)
+                        if not self.fireplace_gateway_active:
+                            self.start_fireplace(ser)
                         if not self.fireplace_gateway_active:
                             raise RuntimeError("verified fireplace sequence rejected")
-                    elif not value and self.fireplace_gateway_active:
+                    elif self.fireplace_gateway_active:
                         self.stop_fireplace(ser)
+                    else:
+                        # After a restart the unit may still be in a fireplace
+                        # pattern the gateway no longer knows: put it back.
+                        self.adopt_or_clear_saved_fireplace(ser, keep=False)
                     result["value"] = self.fireplace_gateway_active
                 elif action == "standby":
                     if value and not self.standby_gateway_active:
@@ -2569,6 +2579,64 @@ class Gateway:
         self.publish("control_status", "idle")
         LOG.info("Anlæg tændt igen efter standby")
 
+    def extend_fireplace(self):
+        self.fireplace_until_epoch = time.time() + FIREPLACE_DURATION_SECONDS
+        self.fireplace_until_monotonic = time.monotonic() + FIREPLACE_DURATION_SECONDS
+        self.save_fireplace_state()
+        self.publish_fireplace_timer()
+
+    def adopt_or_clear_saved_fireplace(self, ser: serial.Serial, *, keep: bool):
+        """Handle a fireplace pattern left on the unit by a restart (controller mode).
+
+        Uses the saved restore values when there are any, else accepts the plain
+        fireplace pattern read from the unit (76=1, extract 0, supply on). With
+        ``keep`` the fireplace carries on under the gateway; without it the unit
+        gets its fans back. A restart during standby (supply 0) is left alone.
+        """
+        saved, self.startup_fireplace = self.startup_fireplace, None
+        restore = tuple(saved["restore"]) if saved else None
+        if restore is None:
+            if getattr(self, "fireplace_pattern_checked", False):
+                return
+            self.fireplace_pattern_checked = True
+            pair = self.read_fan_pair(ser)
+            bypass_values = self.read_register_block(ser, 1, 68, 1)
+            reg76_values = self.read_register_block(ser, 1, 76, 1)
+            if pair is None or bypass_values is None or reg76_values is None:
+                return
+            extract, supply = pair
+            if reg76_values[0] != 1 or extract != 0 or not 0 < supply <= 100:
+                return
+            bypass = bypass_values[0] if bypass_values[0] in (0, 255) else 0
+            # The extract value before the restart is unknown: any valid pair does,
+            # the controller writes the wanted pair right after.
+            restore = (bypass, 0, supply, supply)
+        self.fireplace_pattern_checked = True
+        bypass_request, reg76, extract, supply = restore
+        if keep:
+            self.fireplace_restore = restore
+            self.fireplace_gateway_active = True
+            self.write_fireplace_pattern(ser, 0, 1, 0, supply)
+            self.last_fireplace_write = time.monotonic()
+            self.special_mode_flag = 1
+            self.extend_fireplace()
+            self.publish("fireplace_gateway", "ON")
+            self.publish("fireplace", True)
+            self.publish("operating_mode", "fireplace_gateway")
+            self.publish("control_status", "fireplace_active")
+            LOG.info("Pejs fra før genstarten fortsætter")
+            return
+        self.write_fireplace_pattern(ser, bypass_request, reg76, extract, supply)
+        time.sleep(0.15)
+        self.write_fireplace_pattern(ser, bypass_request, reg76, extract, supply)
+        self.fireplace_restore = None
+        self.save_fireplace_state()
+        self.special_mode_flag = 0
+        self.publish("fireplace_gateway", "OFF")
+        self.publish("fireplace", False)
+        self.publish("fireplace_remaining", 0)
+        LOG.warning("Pejsemønster fra før genstarten fjernet; ventilatorerne kører igen")
+
     def resume_fireplace(self, ser: serial.Serial):
         if self.startup_fireplace is None:
             return
@@ -2701,6 +2769,16 @@ class Gateway:
 
     def restore_on_exit(self, ser: serial.Serial):
         if not self.control_enabled:
+            # Controller mode: a fireplace the controller started is ended, so the
+            # unit never stays without extract while the Pi is down. The saved
+            # state lets the controller pick it up again after a restart.
+            controller = getattr(self, "controller", None)
+            master = getattr(controller, "master", None)
+            if self.fireplace_gateway_active and (master is None or master.writes_allowed()):
+                try:
+                    self.stop_fireplace(ser, clear_saved_state=False)
+                except Exception:
+                    LOG.exception("Kunne ikke gendanne Pejs-værdier ved stop")
             return
         self.restore_afterheat_on_exit(ser)
         if self.fireplace_gateway_active:

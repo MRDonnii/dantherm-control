@@ -25,13 +25,15 @@ const place = (room: string) => room.trim() === ROOM_UNIT ? "ved anlæggets egen
 
 // Controller reasons are compact; say them the way a person would.
 const PHRASES: [RegExp, (...groups: string[]) => string][] = [
-  [/RH rise (.+?) \+([\d.]+)%\/10m(?: \(\w+\))?/g, (room, rise) => `Fugten stiger ${rise.replace(".", ",")} % på 10 min ${place(room)}`],
+  [/RH rise (.+?) \+([\d.]+)%\/(\d+)m(?: \(\w+\))?/g, (room, rise, minutes) => `Fugten stiger ${rise.replace(".", ",")} % på ${minutes} min ${place(room)}`],
+  [/PM2\.5 (.+?) (\d+) µg\/m³(?: \(\w+\))?/g, (room, value) => `Fint støv ${value} µg/m³ ${place(room)}`],
   [/(?:Badeværelse )?RH (.+?) ([\d.]+)% \/ ([\d.]+)%(?: \(\w+\))?/g, (room, value, limit) => `Fugt ${value.replace(".", ",")} % ${place(room)} (grænse ${limit} %)`],
   [/CO2 (.+?) (\d+)(?: \(\w+\))?(?=;|$)/g, (room, value) => `CO₂ ${value} ppm ${place(room)}`],
 ];
 
 const HOLD_WORDS: [RegExp, string][] = [
   [/Downshift delay/g, "venter før nedgang"],
+  [/Upshift delay/g, "venter før optrapning"],
   [/Boost hold/g, "holder boost"],
   [/Hysteresis/g, "hysterese"],
   [/RH\/CO2 normal/g, "fugt og CO₂ normal"],

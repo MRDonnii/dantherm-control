@@ -12,9 +12,22 @@ def test_every_measurement_expires_on_report_age_not_transport_heartbeat():
           'temperature_age_s':20,'humidity_age_s':10801,'co2_age_s':10799,'pm25_age_s':10801}
     effective,q=quality_rooms({'Stue':room},elapsed=2)
     assert effective['Stue']['temperature']==22
-    assert 'humidity' not in effective['Stue'] and 'co2' not in effective['Stue'] and 'pm25' not in effective['Stue']
+    assert 'humidity' not in effective['Stue'] and 'co2' not in effective['Stue']
     assert q['Stue']['co2']['state']=='stale'
     assert room['co2']==1800
+    # PM2.5 reports on change: it counts while another value of the room is fresh.
+    assert effective['Stue']['pm25']==60
+
+
+def test_freshness_limits_per_kind():
+    # A silent CO2 sensor stops counting after 30 minutes, not 3 hours.
+    effective,q=quality_rooms({'Sov':{'measurement_age_version':1,'co2':1500,'co2_age_s':1801}})
+    assert 'co2' not in effective['Sov'] and q['Sov']['co2']['max_age_seconds']==1800
+    # PM2.5 alone: up to 12 hours.
+    effective,_=quality_rooms({'Sov':{'measurement_age_version':1,'pm25':2,'pm25_age_s':6*3600}})
+    assert effective['Sov']['pm25']==2
+    effective,_=quality_rooms({'Sov':{'measurement_age_version':1,'pm25':2,'pm25_age_s':12*3600+1}})
+    assert 'pm25' not in effective['Sov']
 
 
 def test_missing_and_invalid_ages_are_visible_and_never_refreshed_by_forwarding():
