@@ -254,7 +254,7 @@ export function SchedulePage() {
 
     <article className="surface panel-card schedule-card">
       <div className="pro-card-head compact">
-        <div><h2>Uge</h2><p>Farven viser trinnet. Perioder gælder i Local Auto og Smart Auto.</p></div>
+        <div><h2>Uge</h2><p>Farven viser trinnet. Perioder gælder i automatikken i anlægget og automatikken med rummene.</p></div>
         <label className="schedule-switch"><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)}/><span/><strong>{enabled ? "Ugeplan til" : "Ugeplan fra"}</strong></label>
       </div>
 

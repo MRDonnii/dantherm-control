@@ -33,9 +33,9 @@ export function haLinkText(link: HaLink): { label: string; detail: string; tone:
   switch (link.state) {
     case "online": return { label: "Forbundet", detail: `Seneste kontakt ${ago(link.age)}`, tone: "ok" };
     case "bad_token": return { label: "Forkert API-nøgle", detail: `Home Assistant${link.rejectedIp ? ` (${link.rejectedIp})` : ""} bruger en nøgle, der ikke længere gælder. Kopiér den nye nøgle ind i integrationen.`, tone: "bad" };
-    case "offline": return { label: "Ingen kontakt", detail: `Seneste kontakt ${ago(link.age)}${link.required ? ". Smart Auto kører på anlæggets egne følere." : "."}`, tone: link.required ? "bad" : "warn" };
+    case "offline": return { label: "Ingen kontakt", detail: `Seneste kontakt ${ago(link.age)}${link.required ? ". Automatikken med rummene kører på anlæggets egne følere." : "."}`, tone: link.required ? "bad" : "warn" };
     case "waiting": return { label: "Afventer", detail: "Controlleren er lige startet og venter på Home Assistant.", tone: "muted" };
-    case "never": return { label: "Ikke forbundet", detail: link.required ? "Home Assistant har ikke kontaktet controlleren. Smart Auto kører på anlæggets egne følere." : "Home Assistant har ikke kontaktet controlleren siden start.", tone: link.required ? "bad" : "muted" };
+    case "never": return { label: "Ikke forbundet", detail: link.required ? "Home Assistant har ikke kontaktet controlleren. Automatikken med rummene kører på anlæggets egne følere." : "Home Assistant har ikke kontaktet controlleren siden start.", tone: link.required ? "bad" : "muted" };
     default: return { label: "Ukendt", detail: "", tone: "muted" };
   }
 }

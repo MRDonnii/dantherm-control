@@ -217,10 +217,10 @@ export function HistoryPage() {
           <HistoryChart
             {...shared} samples={afterheatSamples} title="Indblæsning og eftervarme" unit="°C" height={layers.hasValve ? 310 : 270} minSpan={4}
             series={[
-              { key: AFTER, label: "Indblæsning · T2AH", slot: 1 },
-              { key: "extract_temp", label: "Udsugning · T3", slot: 2 },
+              { key: AFTER, label: "Luft efter varmefladen", slot: 1 },
+              { key: "extract_temp", label: "Udsugning", slot: 2 },
             ]}
-            band={{ seriesKey: AFTER, minKey: `${AFTER}_min`, maxKey: `${AFTER}_max`, label: "Udsving T2AH" }}
+            band={{ seriesKey: AFTER, minKey: `${AFTER}_min`, maxKey: `${AFTER}_max`, label: "Udsving" }}
             reference={AFTERHEAT_CHART.goal}
             command={layers.showSent ? AFTERHEAT_CHART.sent : undefined}
             valve={layers.hasValve ? AFTERHEAT_CHART.valve : undefined}
@@ -244,8 +244,8 @@ export function HistoryPage() {
           <HistoryChart
             {...shared} title="Ude og afkast" unit="°C" minSpan={4}
             series={[
-              { key: "outdoor_temp", label: "Udeluft · T1", slot: 1 },
-              { key: "exhaust_temp", label: "Afkast · T4", slot: 2 },
+              { key: "outdoor_temp", label: "Udeluft", slot: 1 },
+              { key: "exhaust_temp", label: "Afkast", slot: 2 },
             ]}
           />
         </ChartCard>
@@ -272,7 +272,7 @@ export function HistoryPage() {
           />
         </ChartCard>
 
-        <ChartCard title="Varmegenvinding" subtitle="Udsugningssiden, beregnet fra T1, T3 og T4" icon={<Recycle size={20}/>}>
+        <ChartCard title="Varmegenvinding" subtitle="Udsugningssiden, regnet ud fra temperaturerne ude, udsugning og afkast" icon={<Recycle size={20}/>}>
           <HistoryChart
             {...shared} title="Varmegenvinding" unit="%" decimals={0} minSpan={10}
             series={[{ key: "heat_recovery_efficiency", label: "Genvinding", slot: 1 }]}

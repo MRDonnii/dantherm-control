@@ -42,6 +42,12 @@ function bypassPosition(controller: Data) {
   const heading = run.direction === "opening" ? "Åbner" : run.direction === "closing" ? "Lukker" : "Bevæger sig";
   return run.percent === null || run.remainingSeconds === null ? heading : `${heading} · ${run.percent} % · ${formatRemaining(run.remainingSeconds)} tilbage`;
 }
+function demandText(value: unknown) {
+  return ({ low: "Lavt", normal: "Normalt", high: "Højt", boost: "Fuld kraft", stale: "Ingen friske data" } as Record<string, string>)[String(value)] ?? text(value);
+}
+function metricText(value: unknown) {
+  return ({ co2: "CO₂", humidity: "Fugt", pm25: "Støv", rh_rise: "Fugt stiger hurtigt" } as Record<string, string>)[String(value)] ?? text(value);
+}
 function masterLabel(value: unknown) {
   if (value === "pi") return "Raspberry Pi";
   if (value === "hcp4") return "HCP4";
@@ -161,14 +167,14 @@ export function TechniquePage() {
         </article>
 
         <article className="surface panel-card">
-          <div className="pro-card-head compact"><div><h2>Smart Auto input</h2><p>Room-data fra Home Assistant</p></div><Waves size={20}/></div>
+          <div className="pro-card-head compact"><div><h2>Rumdata til automatikken</h2><p>Det Home Assistant sender om rummene</p></div><Waves size={20}/></div>
           <InfoList rows={[
-            { label: "Input online", value: bool(controller.smart_inputs_online, "Ja", "Nej"), tone: controller.smart_inputs_online ? "ok" : "warn" },
-            { label: "Data alder", value: seconds(controller.smart_inputs_age_seconds) },
-            { label: "Demand", value: text(controller.smart_demand) },
-            { label: "Ønsket niveau", value: text(controller.smart_requested_level) },
-            { label: "Styrende rum", value: text(controller.smart_controlling_room) },
-            { label: "Styrende måling", value: text(controller.smart_controlling_metric) },
+            { label: "Rumdata modtages", value: bool(controller.smart_inputs_online, "Ja", "Nej"), tone: controller.smart_inputs_online ? "ok" : "warn" },
+            { label: "Dataenes alder", value: seconds(controller.smart_inputs_age_seconds) },
+            { label: "Behov", value: demandText(controller.smart_demand) },
+            { label: "Ønsket trin", value: text(controller.smart_requested_level) },
+            { label: "Rummet der bestemmer", value: text(controller.smart_controlling_room) },
+            { label: "Det der bestemmer", value: metricText(controller.smart_controlling_metric) },
             { label: "Højeste CO₂", value: controller.smart_max_co2 !== null && controller.smart_max_co2 !== undefined ? `${text(controller.smart_max_co2)} ppm (${text(controller.smart_max_co2_room)})` : "—" },
             { label: "Højeste RH", value: controller.smart_max_rh !== null && controller.smart_max_rh !== undefined ? `${text(controller.smart_max_rh)} % (${text(controller.smart_max_rh_room)})` : "—" },
             { label: "Begrundelse", value: text(controller.smart_reason) },
@@ -176,7 +182,7 @@ export function TechniquePage() {
         </article>
 
         <article className="surface panel-card" style={{ gridColumn: "1 / -1" }}>
-          <div className="pro-card-head compact"><div><h2>Readbacks</h2><p>Faktisk hardware-status læst fra bussen</p></div><Activity size={20}/></div>
+          <div className="pro-card-head compact"><div><h2>Aflæsninger</h2><p>Det anlægget faktisk melder tilbage</p></div><Activity size={20}/></div>
           <div className="panel-grid" style={{ marginTop: 6 }}>
             <InfoList rows={[
               { label: "Tilluft ventilator", value: `${text(controller.actual_fan_supply_rpm)} RPM · ${text(controller.actual_fan_supply_percent)}%` },
