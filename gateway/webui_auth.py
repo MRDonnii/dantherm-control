@@ -572,7 +572,7 @@ class AuthManager:
         try:
             cookie = SimpleCookie(header)
             sid = cookie["dantherm_session"].value
-        except (KeyError, AttributeError, Exception):  # noqa: BLE001 - a bad cookie is just no session
+        except Exception:  # noqa: BLE001 - a bad or missing cookie is just no session
             return None
         with self.lock:
             session = self.sessions.get(sid)
@@ -606,6 +606,6 @@ class AuthManager:
         try:
             cookie = SimpleCookie(header)
             sid = cookie["dantherm_session"].value
-        except (KeyError, AttributeError, Exception):  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - a bad or missing cookie
             return
         self._forget(sid)

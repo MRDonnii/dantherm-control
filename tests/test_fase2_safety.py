@@ -474,3 +474,23 @@ def test_update_sh_exit_3_is_shown_as_deferred_for_frost(tmp_path, monkeypatch):
     monkeypatch.setattr(admin, "_download_tarball", lambda ref, dest: dest.write_bytes(archive.read_bytes()))
     admin._install_update("beta")
     assert admin.UPDATE_STATE["phase"] == "deferred" and admin.UPDATE_STATE["running"] is False
+
+
+def test_drift_reassert_is_rate_limited():
+    """safety-5: a unit that keeps undoing the pair is not fought every 30 s."""
+    import types
+
+    from controller_runtime import ControllerRuntime
+
+    runtime = ControllerRuntime.__new__(ControllerRuntime)
+    runtime.engine = types.SimpleNamespace(last_applied={"fan_pair": (40, 40)})
+    runtime.gateway_state = {"fan_extract_percent": 30, "fan_supply_percent": 30}
+    runtime._reassert_drifted_outputs(now=0.0)
+    runtime._reassert_drifted_outputs(now=31.0)
+    assert "fan_pair" not in runtime.engine.last_applied
+    runtime.engine.last_applied["fan_pair"] = (40, 40)  # written again, then undone again
+    runtime._reassert_drifted_outputs(now=40.0)
+    runtime._reassert_drifted_outputs(now=80.0)
+    assert runtime.engine.last_applied == {"fan_pair": (40, 40)}
+    runtime._reassert_drifted_outputs(now=700.0)
+    assert runtime.engine.last_applied == {}

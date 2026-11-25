@@ -1720,6 +1720,8 @@ class ControllerRuntime:
     # The unit must show the written fan pair / bypass request this long
     # before the Pi writes it again (polls run every 3-10 s).
     DRIFT_REASSERT_SECONDS = 30.0
+    # A unit that keeps undoing the value is not fought: at most once per 10 min.
+    DRIFT_REASSERT_MIN_INTERVAL_SECONDS = 600.0
 
     def _reassert_drifted_outputs(self, now: float | None = None) -> None:
         """Write the fan pair and bypass again when the unit no longer shows them.
@@ -1761,8 +1763,11 @@ class ControllerRuntime:
                 drift.pop(key, None)
                 continue
             since = drift.setdefault(key, now)
-            if now - since >= self.DRIFT_REASSERT_SECONDS:
+            last = drift.get(f"{key}_reasserted")
+            if now - since >= self.DRIFT_REASSERT_SECONDS and (
+                    last is None or now - last >= self.DRIFT_REASSERT_MIN_INTERVAL_SECONDS):
                 drift.pop(key, None)
+                drift[f"{key}_reasserted"] = now
                 LOG.warning("Anlægget mistede indstillingen %s (Pi skrev %s, anlægget viser %s); skrives igen",
                             key, applied.get(key), shown)
                 applied.pop(key, None)
