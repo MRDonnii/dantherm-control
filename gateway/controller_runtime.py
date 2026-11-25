@@ -22,6 +22,7 @@ from air_balance import HeatBalanceLearner, adopt, balance_from_temperatures, su
 from onewire_extras import OneWireExtras
 import room_setup
 from afterheat_pilot import robust_temperature
+from history_analysis import LEVEL_SOURCES
 from diagnostics import Diagnostics
 from controller_core import AFTERHEAT_OUTDOOR_CUTOFF_C, ControllerEngine, ControllerError, ControllerState, HardwareAdapter
 from master_arbitration import MasterArbitrator, RtuFrameStream
@@ -29,6 +30,7 @@ from sensor_freshness import fresh_sensor_value, sensor_sample_age, hide_stale_s
 from weather_bridge import humidity_at_t1, validate_weather
 from room_quality import quality_rooms, age_observations
 from operating_context import afterheat_context
+from pi_health import PiHealth
 
 # Plausible T5 (HRC2 room sensor) range; anything else means no HRC2.
 ROOM_T5_RANGE = (5.0, 40.0)
@@ -48,6 +50,10 @@ def _round1(value):
     return None if value is None else round(value, 1)
 
 
+# Afterheat history values older than this are recorded as unknown.
+HISTORY_STALE_SECONDS = 180.0
+
+
 class ControllerRuntime:
     def __init__(self, *, gateway_state: dict[str, object], hardware: HardwareAdapter,
                  state_path: str | Path | None = None, tick_seconds: float = 2.0,
@@ -56,6 +62,12 @@ class ControllerRuntime:
         self.config = ControllerState(state_path)
         self.diagnostics = Diagnostics(self.config.path.parent / "diagnostics.json")
         self.diagnostics_at = 0.0
+        # Disk, undervoltage and clock of the Pi (checked at most once a minute) and the recording
+        # state of the history, which only the dashboard knows (set by the dashboard server).
+        self.pi_health = PiHealth()
+        self.history_status_provider = None
+        self._history_published_at: float | None = None
+        self._pilot_fallbacks_logged = 0
         # Controller enable is no longer a user option. The Pi is always ready
         # to take over when HCP4 is absent and the bus is healthy.
         if not self.config.data.get("enabled"):
@@ -324,9 +336,27 @@ class ControllerRuntime:
     HISTORY_KEYS = ("afterheat_level", "afterheat_level_target", "afterheat_level_wanted", "afterheat_target",
                     "afterheat_algorithm_code", "afterheat_algorithm_wanted", "afterheat_safety_override")
 
+    # Level, source, frost lock and the room values the controller steers by, for the history.
+    # None is stored for what is not known; level_source_code counts into history_analysis.LEVEL_SOURCES.
     def _publish_history_values(self, snapshot: dict[str, object]) -> None:
         for key in self.HISTORY_KEYS:
             self.gateway_state[key] = snapshot.get(key)
+        self._history_published_at = time.monotonic()
+        self.gateway_state["afterheat_status_stale"] = False
+        with self.engine.lock:
+            external = dict(self.engine.external)
+        source = snapshot.get("effective_source")
+        self.gateway_state.update({
+            "fan_level": snapshot.get("effective_level"),
+            "level_source_code": (LEVEL_SOURCES.index(source) if source in LEVEL_SOURCES else
+                                  None if source is None else len(LEVEL_SOURCES)),
+            "frost_lock_active": 1 if snapshot.get("afterheat_frost_lock") is True else 0,
+            "unit_power_w": snapshot.get("unit_power_w"),
+            "indoor_rh_average": external.get("indoor_rh_average"),
+            "indoor_rh_lowest": external.get("indoor_rh_lowest"),
+            "outdoor_rh": external.get("outdoor_rh"),
+            "max_room_co2": external.get("max_room_co2"),
+        })
         # Memory-only annotation. No extra polling, file I/O or actuator call.
         now = time.monotonic()
         pair = (self.gateway_state.get("fan_extract_percent"), self.gateway_state.get("fan_supply_percent"))
@@ -1764,6 +1794,7 @@ class ControllerRuntime:
                     LOG.exception("Controller cycle failed; will retry: %s", message)
                     self._loop_error_logged_at = time.monotonic()
                 self.loop_error = message
+            self._expire_history_values()
             self.stop_event.wait(self.tick_seconds)
         try:
             self.diagnostics.save()
@@ -1782,11 +1813,60 @@ class ControllerRuntime:
                 "exhaust_temperature": self._safe_number(self._first(state, "exhaust_temp", "exhaust_temperature"), -50, 60),
                 "filter_life_percent": state.get("filter_life_percent"),
                 "filter_hours_since_change": state.get("filter_hours_since_change"),
+                "unit_co2": self._safe_number(self._first(state, "co2"), 250, 10000),
+                "coil_frost_temperature": self._safe_number(
+                    fresh_sensor_value(state, "heating_coil_frost_temperature"), -50, 100),
+                "water_flow_temperature": self.onewire.by_role("water_flow"),
+                "water_return_temperature": self.onewire.by_role("water_return"),
+                "heating_coil_after_temperature": self._safe_number(
+                    state.get("heating_coil_after_temperature"), -30, 80),
+                "afterheat_status_stale": self.gateway_state.get("afterheat_status_stale") is True,
+                **self.pi_health.read(),
+                **self._history_recording(),
             })
+            self._note_pilot_events(feed)
             return self.diagnostics.update(feed, now)
         except Exception as error:  # diagnostics must never stop the controller
             LOG.warning("Diagnostics update failed: %s", error)
             return {}
+
+    def _history_recording(self) -> dict[str, object]:
+        """Whether the history is being recorded (None when the dashboard has not said)."""
+        provider = self.history_status_provider
+        if provider is None:
+            return {"history_recording_available": None}
+        try:
+            status = provider() or {}
+            return {"history_recording_available": status.get("available") is True}
+        except Exception:  # noqa: BLE001 - a status read never stops the diagnostics
+            return {"history_recording_available": None}
+
+    def _note_pilot_events(self, feed: dict[str, object]) -> None:
+        """Write each fall back to HAC1's own control to the change log (it was only in the journal)."""
+        pilot = getattr(self.engine, "afterheat_pilot", None)
+        times = getattr(pilot, "fallback_times", None)
+        if times is None:
+            return
+        total = len(times)
+        if total > self._pilot_fallbacks_logged:
+            self._log_change({"timestamp": time.time(), "source": "Eftervarme",
+                              "changes": {"afterheat_fallback": [False, True]},
+                              "reason": getattr(pilot, "fallback_reason", None) or "Tilbage til HAC1's egen styring"})
+        self._pilot_fallbacks_logged = total
+
+    def _expire_history_values(self) -> None:
+        """Mark the afterheat values in the history stale when they have not been refreshed.
+
+        They are published after every successful controller pass. If passes fail for a while
+        (an error in the write path) the last values would otherwise be recorded for hours
+        (56 h on 2026-11-22..24): None is recorded instead and the diagnostics say so.
+        """
+        at = self._history_published_at
+        if at is None or time.monotonic() - at <= max(HISTORY_STALE_SECONDS, 6 * self.tick_seconds):
+            return
+        for key in (*self.HISTORY_KEYS, "afterheat_context"):
+            self.gateway_state[key] = None
+        self.gateway_state["afterheat_status_stale"] = True
 
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
