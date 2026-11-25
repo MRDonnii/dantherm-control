@@ -41,6 +41,6 @@ describe("exchanger reading", () => {
     });
     render(<OverviewPage/>);
     expect(await screen.findByText("T2 ≈81%", { selector: "text" })).toBeTruthy();
-    expect(screen.getByText(/T2\/T2AH afviger/)).toBeTruthy();
+    expect(screen.getByText(/selvom eftervarmen er slukket/)).toBeTruthy();
   });
 });

@@ -53,7 +53,7 @@ export function afterheatControlRows(control: AfterheatControl): InfoRow[] {
   if (!control.known) return [];
   const pi = control.active === "pi";
   const level = control.level === null ? "—" : `${formatLevel(control.level)}/${control.levelMax}`;
-  const valve = control.valvePercent !== null ? ` · ${valveText(control.valvePercent).toLowerCase()}` : "";
+  const valve = "";
   const wanted = pi && control.levelTarget !== null
     ? ` · mål ${formatLevel(control.levelTarget)}${control.levelWanted !== null ? ` (${formatLevel(control.levelWanted, 1)})` : ""}`
     : "";
@@ -186,8 +186,8 @@ export function TechniquePage() {
             ]}/>
             <InfoList rows={[
               { label: "Eftervarme aktiv", value: bool(controller.actual_afterheat, "Ja", "Nej") },
-              // HAC1's level × 10 % (0-10 V to the valve); register 209 above is only on/off.
-              { label: "Ventilåbning", value: formatPercent(readValvePercent(controller)) },
+              // HAC1's step 0..10; the valve is quick-opening, so this is not an opening in %.
+              { label: "Eftervarmens trin", value: valveText(readValvePercent(controller)) },
               // The Pi holds a water coil on while it freezes; see the settings.
               { label: "Frostlås", value: frostLockStatus(readFrostLock(controller)) },
               ...afterheatControlRows(readAfterheatControl(controller)),

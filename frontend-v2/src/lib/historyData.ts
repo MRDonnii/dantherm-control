@@ -87,12 +87,13 @@ export const AFTERHEAT_CHART = {
   goal: { key: "afterheat_goal", label: "Mål", decimals: 1 },
   sent: { key: "afterheat_sent", label: "Sendt til HAC1", decimals: 1 },
   valve: {
-    key: "afterheat_valve_percent", label: "Ventilåbning (faktisk)",
+    key: "afterheat_valve_percent", label: "Trin (0-10)", steps: true,
     decisionKey: "afterheat_decision_percent", decisionLabel: "Styringens beslutning", decisionIdle: "HAC1 styrer selv",
   },
   strip: { key: "afterheat_active", label: "Ventil åben" },
   note: "Mål er den temperatur, du har valgt. Sendt til HAC1 er det setpunkt, styringen giver HAC1; med Pi-styring "
     + "flyttes det nogle grader for at få HAC1 til at skifte trin, så luften rammer målet. Nederst i grafen (skala "
-    + "0-100 % til højre) viser det fyldte felt den faktiske ventilåbning, HAC1's trin × 10 % (0-10 V til ventilen), "
-    + "og den stiplede linje styringens beslutning. Uden Pi-styring styrer HAC1 selv, og der er ingen beslutningslinje.",
+    + "0-10 til højre) viser det fyldte felt, hvilket trin HAC1 kører på, "
+    + "og den stiplede linje, hvilket trin styringen vil have. Trinnet er ikke det samme som, hvor meget ventilen er åben: ventilen åbner hurtigt, så allerede de første trin giver meget varme. "
+    + " Uden Pi-styring styrer HAC1 selv, og der er ingen beslutningslinje.",
 } as const;

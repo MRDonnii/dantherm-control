@@ -60,7 +60,7 @@ it("shows the measured step size and return water per level for the chosen fan",
   expect(api.requestJson).toHaveBeenCalledWith("/api/afterheat/scale?hours=168", { timeoutMs: 20000 });
   const rows = within(table).getAllByRole("row");
   expect(rows).toHaveLength(3);
-  expect(rows[2].textContent).toContain("20 %");
+  expect(rows[2].textContent).toContain("2");
   expect(rows[2].textContent).toContain("+2,4 K/trin");
   expect(rows[2].textContent).toContain("25,1 °C");
   expect(screen.getByText(/anslået ud fra ude-/)).toBeTruthy();

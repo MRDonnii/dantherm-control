@@ -55,7 +55,7 @@ describe("afterheat history lines", () => {
   it("names the layers in Danish", () => {
     expect(AFTERHEAT_CHART.goal.label).toBe("Mål");
     expect(AFTERHEAT_CHART.sent.label).toBe("Sendt til HAC1");
-    expect(AFTERHEAT_CHART.valve.label).toBe("Ventilåbning (faktisk)");
+    expect(AFTERHEAT_CHART.valve.label).toBe("Trin (0-10)");
     expect(AFTERHEAT_CHART.valve.decisionLabel).toBe("Styringens beslutning");
     expect(AFTERHEAT_CHART.valve.decisionIdle).toBe("HAC1 styrer selv");
   });

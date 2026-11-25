@@ -60,8 +60,8 @@ describe("valve opening", () => {
   });
 
   it("reads as Danish text", () => {
-    expect(valveText(30)).toBe("Ventilåbning 30 %");
-    expect(valveText(null)).toBe("Ventilåbning —");
+    expect(valveText(30)).toBe("Trin 3 af 10");
+    expect(valveText(null)).toBe("Trin — af 10");
   });
 });
 

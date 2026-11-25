@@ -157,7 +157,7 @@ export function HistoryPage() {
   const span = (item: ReturnType<typeof summary>, decimals: number, unit: string) =>
     item.low === null ? "Ingen data" : `${format(item.low, decimals)}–${format(item.high, decimals)}${unit} i perioden`;
   const shared = { samples, range: window_, hoverTs: hover, onHover: setHover, loading };
-  // Gateway 1.9.0 logs HAC1's level (valve opening = level × 10 %) and the user's
+  // Gateway 1.9.0 logs HAC1's level (step 0-10) and the user's
   // target; older history has neither, and its whole-degree setpoint was the target then.
   const afterheatSamples = useMemo(() => withAfterheatLines(samples), [samples]);
   const layers = afterheatLayers(afterheatSamples);
@@ -193,7 +193,7 @@ export function HistoryPage() {
         <StatTile label="CO₂" value={format(co2.latest, 0)} unit=" ppm" detail={span(co2, 0, " ppm")}/>
         <StatTile label="Genvinding" value={format(recovery.latest, 0)} unit="%" detail={recovery.mean === null ? "Ingen data" : `Gns. ${format(recovery.mean, 0)}% i perioden`}/>
         {layers.hasValve
-          ? <StatTile label="Ventilåbning" value={format(opening.latest, 0)} unit=" %" detail={opening.mean === null ? "Ingen data" : `Gns. ${format(opening.mean, 0)} % i perioden`}/>
+          ? <StatTile label="Eftervarmens trin" value={opening.latest === null ? "–" : format(opening.latest / 10, 0)} unit=" af 10" detail={opening.mean === null ? "Ingen data" : `Gns. ${format(opening.mean / 10, 1)} i perioden`}/>
           : <StatTile label="Eftervarme" value={valve.mean === null ? "–" : format(valve.mean * 100, 0)} unit="%" detail={`af tiden med åben ventil · ${label}`}/>}
       </div>
 

@@ -8,14 +8,14 @@ export interface ControlSummary {
 }
 
 const SOURCE_TITLES: Record<string, string> = {
-  local_auto: "Local Auto",
-  local_fallback: "Local Auto · HA offline",
-  ha_smart: "Smart Auto",
+  local_auto: "Automatik i anlægget",
+  local_fallback: "Automatik i anlægget · Home Assistant mangler",
+  ha_smart: "Automatik med rummene",
   manual: "Manuel",
   night: "Natsænkning",
   night_air_quality: "Nat · luftkvalitet",
   vacation: "Ferie",
-  quick_boost: "Quick Boost",
+  quick_boost: "Kort boost",
   free_cooling: "Frikøling",
   dry_protection: "Tør luft-beskyttelse",
 };
@@ -28,12 +28,13 @@ const PHRASES: [RegExp, (...groups: string[]) => string][] = [
   [/RH rise (.+?) \+([\d.]+)%\/10m(?: \(\w+\))?/g, (room, rise) => `Fugten stiger ${rise.replace(".", ",")} % på 10 min ${place(room)}`],
   [/(?:Badeværelse )?RH (.+?) ([\d.]+)% \/ ([\d.]+)%(?: \(\w+\))?/g, (room, value, limit) => `Fugt ${value.replace(".", ",")} % ${place(room)} (grænse ${limit} %)`],
   [/CO2 (.+?) (\d+)(?: \(\w+\))?(?=;|$)/g, (room, value) => `CO₂ ${value} ppm ${place(room)}`],
+  [/PM2\.5 (.+?) ([\d.]+) µg\/m³(?: \(\w+\))?(?=;|$)/g, (room, value) => `Støv ${value.replace(".", ",")} µg/m³ ${place(room)}`],
 ];
 
 const HOLD_WORDS: [RegExp, string][] = [
   [/Downshift delay/g, "venter før nedgang"],
   [/Boost hold/g, "holder boost"],
-  [/Hysteresis/g, "hysterese"],
+  [/Hysteresis/g, "holder igen et øjeblik"],
   [/RH\/CO2 normal/g, "fugt og CO₂ normal"],
   [/HA offline/g, "HA offline"],
   [/\(auto\)|\(low\)|\(normal\)|\(high\)|\(critical\)/g, ""],
@@ -46,12 +47,36 @@ function tidy(reason: string) {
   return text.replace(/\s+;/g, ";").replace(/\s{2,}/g, " ").trim();
 }
 
+function num(value: unknown): number | null {
+  if (value === null || value === undefined || value === "" || typeof value === "boolean") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * When the smart control sits on the normal step, no room decides anything: the
+ * controller still names the room that is closest to its limit, which reads
+ * like a cause. Say instead that the air is good, and how close it is.
+ */
+function calmAirText(state: Record<string, unknown>, level: number): string | null {
+  const normal = num(state.effective_normal_level);
+  if (normal === null || level !== normal) return null;
+  const co2 = num(state.smart_max_co2);
+  const limit = num(state.co2_setpoint);
+  if (co2 !== null && limit !== null && co2 > limit) return null; // over the limit: the stored reason is the true one
+  const base = `Normaltrin ${level} · luften er god i alle rum`;
+  if (co2 === null || limit === null) return base;
+  const room = typeof state.smart_max_co2_room === "string" && state.smart_max_co2_room.trim() !== "" ? state.smart_max_co2_room.trim() : null;
+  const where = room === null ? "" : room === ROOM_UNIT ? " ved anlæggets egen føler" : ` i ${room}`;
+  return `${base} (højest CO₂ ${Math.round(co2)} ppm${where}, grænsen er ${Math.round(limit)})`;
+}
+
 export function describeControl(state: Record<string, unknown>): ControlSummary {
   const master = String(state.active_master ?? "");
   const levelValue = Number(state.effective_level);
   const level = Number.isFinite(levelValue) && levelValue > 0 ? levelValue : null;
   const source = String(state.effective_source ?? "");
-  const reason = tidy(String(state.effective_reason ?? ""));
+  let reason = tidy(String(state.effective_reason ?? ""));
   const masterText = master === "pi" ? "Pi styrer" : master === "hcp4" ? "HCP4 styrer" : "Afventer master";
 
   if (master === "hcp4") {
@@ -67,6 +92,7 @@ export function describeControl(state: Record<string, unknown>): ControlSummary 
       tone: "boost",
     };
   }
+  if (source === "ha_smart" && level !== null) reason = calmAirText(state, level) ?? reason;
   const title = SOURCE_TITLES[source] ?? (source ? source.replaceAll("_", " ") : "Afventer controller");
   const tone = source === "quick_boost" || (level !== null && level >= 5) ? "boost"
     : ["night", "night_air_quality", "vacation", "dry_protection"].includes(source) ? "reduced" : "normal";

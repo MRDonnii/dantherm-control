@@ -25,20 +25,20 @@ describe("Afterheat chart and valve opening in the history", () => {
   const afterheatChart = () => screen.findByRole("img", { name: /^Indblæsning og eftervarme/ });
   const legendValue = (chart: Element, label: string) => within(chart.closest(".hx-chart") as HTMLElement).getByText(label).nextElementSibling?.textContent;
 
-  it("draws the valve opening and the decision in % inside the afterheat plot", async () => {
+  it("draws the step and the decision as steps inside the afterheat plot", async () => {
     serve(index => ({ afterheat_level: index < 3 ? 2 : 3, afterheat_level_target: 3, afterheat_target: 21.5 }));
     render(<HistoryPage/>);
     const chart = await afterheatChart();
-    expect(chart.getAttribute("aria-label")).toMatch(/Ventilåbning \(faktisk\), Styringens beslutning/);
-    expect([...chart.querySelectorAll("text.hx-tick-valve")].map(node => node.textContent)).toEqual(["0 %", "50 %", "100 %"]);
+    expect(chart.getAttribute("aria-label")).toMatch(/Trin \(0-10\), Styringens beslutning/);
+    expect([...chart.querySelectorAll("text.hx-tick-valve")].map(node => node.textContent)).toEqual(["0", "5", "10"]);
     // Steps, not slopes.
     expect(chart.querySelector("path.hx-valve-edge")?.getAttribute("d")).toMatch(/H[\d.]+V/);
     expect(chart.querySelector("path.hx-decision")?.getAttribute("d")).toMatch(/^M[\d.]+ [\d.]+H/);
     // Level 3 is 30 %; the old on/off strip and the separate level chart are gone.
-    expect(legendValue(chart, "Ventilåbning (faktisk)")).toBe("30 %");
-    expect(legendValue(chart, "Styringens beslutning")).toBe("30 %");
+    expect(legendValue(chart, "Trin (0-10)")).toBe("3");
+    expect(legendValue(chart, "Styringens beslutning")).toBe("3");
     expect(screen.queryByText("Ventil åben")).toBeNull();
-    expect(screen.queryByRole("img", { name: /^Ventilåbning/ })).toBeNull();
+    expect(screen.queryByRole("img", { name: /^Trin \(0-10\)/ })).toBeNull();
     // The reference is the user's target with decimals.
     expect(legendValue(chart, "Mål")).toBe("21,5°C");
   });
