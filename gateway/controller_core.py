@@ -1123,6 +1123,15 @@ class ControllerState:
             backup = copy.deepcopy(self.data)
             try:
                 return self._configure(patch)
+            except ControllerError:
+                self.data = backup
+                raise
+            except (TypeError, ValueError, OverflowError, AttributeError) as error:
+                # A value of the wrong type (None, a list, "x", inf) is the
+                # caller's mistake: answer 400, never drop the connection.
+                self.data = backup
+                field = next(iter(patch), "?") if len(patch) == 1 else "en af værdierne"
+                raise ControllerError(f"Ugyldig værdi for {field}") from error
             except Exception:
                 self.data = backup
                 raise

@@ -217,3 +217,71 @@ def test_drifted_fan_pair_and_bypass_are_written_again():
     runtime._reassert_drifted_outputs(now=100.0)
     runtime._reassert_drifted_outputs(now=200.0)
     assert runtime.engine.last_applied == {"fan_pair": (40, 40)}
+
+
+def test_bad_typed_settings_become_controller_errors(tmp_path):
+    """runtime-12: wrong types must give a 400 (ControllerError), not a dropped connection."""
+    import pytest
+
+    from controller_core import ControllerError, ControllerState
+
+    state = ControllerState(tmp_path / "controller.json")
+    before = dict(state.data)
+    for patch in ({"rh_setpoint": None}, {"co2_setpoint": "x"}, {"co2_setpoint": float("inf")},
+                  {"downshift_delay_seconds": []}, {"manual_level": None}):
+        with pytest.raises(ControllerError):
+            state.configure(patch)
+    assert state.data == before
+
+
+class _FakeRuntime:
+    def __init__(self):
+        self.calls = []
+
+    def snapshot(self):
+        return {"enabled": True, "active_master": "unknown"}
+
+    def configure(self, patch, source="api"):
+        self.calls.append(patch)
+        return {"enabled": True, **patch}
+
+
+def _server(tmp_path, monkeypatch):
+    monkeypatch.setenv("DANTHERM_CONTROLLER_TOKEN", "test-machine-token")
+    from controller_dashboard_server import ControllerDashboardHttpServer
+
+    runtime = _FakeRuntime()
+    server = ControllerDashboardHttpServer(
+        "127.0.0.1", 0, {}, "Test", None, web_root=ROOT / "gateway/webui",
+        history_path=tmp_path / "history.sqlite3", controller_runtime=runtime,
+    )
+    server.auth.path = tmp_path / "auth.json"
+    server.start()
+    return server, runtime, server.server.server_address[1]
+
+
+def _post(port, path, payload, headers=None):
+    import json
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}", data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", **(headers or {})}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=10) as answer:
+            return answer.status
+    except urllib.error.HTTPError as error:
+        return error.code
+
+
+def test_control_key_cannot_change_safety_settings(tmp_path, monkeypatch):
+    """runtime-3: the HA (control) key may not switch off the frost lock."""
+    server, runtime, port = _server(tmp_path, monkeypatch)
+    try:
+        bearer = {"Authorization": "Bearer test-machine-token"}
+        assert _post(port, "/api/controller/command", {"frost_lock_enabled": False}, bearer) == 403
+        assert _post(port, "/api/controller/command", {"mode": "smart_auto"}, bearer) == 200
+        assert runtime.calls == [{"mode": "smart_auto"}]
+    finally:
+        server.stop()

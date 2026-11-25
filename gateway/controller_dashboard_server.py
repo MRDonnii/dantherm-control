@@ -38,6 +38,14 @@ from webui_permissions import admin_action_allowed, can, capabilities, config_al
 
 LOG = logging.getLogger("passivelink-controller-web")
 
+# Safety settings a "control" API key (Home Assistant) never sends: the frost
+# lock, the sensor roles and room setup, and the coil type. Only an
+# administrator key, or a logged-in user, may change them.
+API_ADMIN_ONLY_KEYS = frozenset({
+    "frost_lock_enabled", "frost_lock_outdoor_c", "frost_lock_coil_c", "frost_lock_min_setpoint_c",
+    "onewire_roles", "room_setup", "afterheat_coil",
+})
+
 # Sign-in from Kontrolrum is an extra. If the module cannot be loaded the WebUI
 # and the ventilation control carry on, and the endpoint just answers 404.
 try:
@@ -665,6 +673,10 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                         if self.path == "/api/controller/heartbeat":
                             return self._json(dashboard.controller_runtime.heartbeat(str(data.get("demand", "normal"))))
                         if self.path in ("/api/controller/command", "/api/controller/config"):
+                            locked = sorted(API_ADMIN_ONLY_KEYS & set(data)) if result.scope != "admin" else []
+                            if locked:
+                                return self._json_error(
+                                    403, f"Denne nøgle må ikke ændre sikkerhedsindstillingen {locked[0]}; brug en administratornøgle")
                             return self._json(dashboard.controller_runtime.configure(data, source=result.source))
                         if self.path == "/api/controller/signals":
                             return self._json(dashboard.controller_runtime.external_signals(data))
