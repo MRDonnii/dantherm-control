@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.13.0-beta.14 — Eftervarmens MPC skifter roligere
+
+- **Ingen skift frem og tilbage hvert minut:** MPC'en bliver nu mindst 2 minutter på det nederste trin, før den går op igen, og den planlægger skiftene som en rolig takt (et kort pust på trin 2, så flere minutter på trin 1). Før kunne den kun planlægge et pust "nu", så den pustede for tidligt, mens luften stadig var varm.
+- **HAC1's egne trin:** setpunktet, der skal holde trinnet, vælges nu ud fra modellens bud på luften ved HAC1's næste tick, og den fejl, buddet plejer at have, læres. Hvor intet helt setpunkt holder sikkert, vælges det trin, der gør mindst skade. Et trin, HAC1 tager af sig selv, tæller ikke som MPC'ens eget, og sikkerhedens ping-pong-vagt tvinger ikke længere selv et skift igennem.
+- **Bedre model:** varmen fra et trin afhænger kun lidt af blæseren (målt 26, 36 og 50 %), ikke omvendt proportionalt. Genberegningen kan også lære det, og en lille, men reel forbedring flytter nu modellen en tredjedel af vejen (før blev den forkastet). Sikkerhedsmargen over gulvet er det halve af modellens fejl, højst 0,3 °C.
+- Standardstyringen er uændret. Ændret af Claude AI.
+- Se [release notes](docs/releases/1.13.0-beta.14.md).
+
 ## 1.13.0-beta.13 — Driftssikkerhed, alarmer, brugerflade og udbygninger
 
 - **Driftssikkerhed (fase 2):** eftervarme og pejs sættes tilbage hver gang tjenesten stopper, også i styringstilstand og ved vagthundens genstart (HCP4 som master vinder stadig). Ny vagthund på RS485-løkken (90 s), gamle styrekommandoer udføres ikke for sent, og blæsere og bypass skrives igen, hvis anlægget mister dem. Loggen har rigtige alvorsgrader, frostlåsens tider følger ikke uret, HA's nøgle kan ikke ændre sikkerhedsindstillinger, login og WebUI er bedre beskyttet, og opdateringer ruller rigtigt tilbage, venter mens det fryser og tjekker SHA256SUMS. Ny indstilling (slået fra): trin 6 slutter efter 4 timer.

@@ -16,6 +16,7 @@ import json
 import logging
 import math
 import os
+from collections import deque
 from dataclasses import replace
 from pathlib import Path
 
@@ -24,7 +25,7 @@ from afterheat_data import Telemetry, build_block, predict
 from afterheat_control import (ALGORITHM_CODES, ALGORITHM_DEFAULT, ALGORITHM_LABELS, ALGORITHMS, DIRECT_SPEC,
                                FROST_MARGIN_K, HAC1_SPEC, OVERRIDE_FAULT, OVERRIDE_NONE, CoilModel, ControlView,
                                Decision, OutputSpec, SafetyFacts, SafetyLayer, SafetyResult, clamp, danish, num)
-from afterheat_pilot import (HAC1_DOWN_BAND_K, LEVEL_MAX, PHASE_UNCERTAINTY_S, SETPOINT_MAX, SETPOINT_MIN,
+from afterheat_pilot import (HAC1_DOWN_BAND_K, LEVEL_MAX, SETPOINT_MAX, SETPOINT_MIN,
                              STEP_COST_FORBIDDEN, TICK_PERIOD_S, AfterheatPilot, PilotInputs)
 
 LOG = logging.getLogger("afterheat-control")
@@ -35,13 +36,20 @@ SAVE_EVERY_S = 10 * 60.0
 REUSE_DECISION_S = 20.0
 FAULT_LIMIT = 3
 FAULT_PAUSE_S = 30 * 60.0
-# The hold setpoint under an algorithm (AlgorithmPilot._model_hold): the spread (K) of the
-# air HAC1 reads at its tick around the model's guess, and what a step HAC1 takes by itself
-# costs (in "ticks early" of a step the plan takes anyway; a step the plan does not want).
+# The MPC's hold setpoint (AlgorithmPilot._model_hold): the spread (K) of the air HAC1 reads
+# at its tick around the model's guess, and the least a step HAC1 takes by itself costs.
 HOLD_SPREAD_K = 0.12
 HOLD_SPREAD_SHARE = 0.15
-UNASKED_EARLY_TICK = 1.5
-UNASKED_UNWANTED = 8.0
+# HAC1's tick is known to a few seconds while the levels change often (TickClock).
+HOLD_PHASE_S = 4.0
+UNASKED_MIN_COST = 0.5
+# The model's air at the tick is checked against the air read just after it, per phase
+# (rising, near a peak or trough, falling): the mean miss is learned and taken off (the model's
+# lag and dead time are fitted on minutes, the peaks after a pulse were ~0.35 K lower).
+HOLD_BIAS_SPLIT_K = 0.3
+HOLD_BIAS_WEIGHT = 0.2
+HOLD_BIAS_LIMIT_K = 1.0
+HOLD_CHECK_AFTER_S = 3.0
 
 
 class AlgorithmControl:
@@ -138,6 +146,9 @@ class AlgorithmControl:
             self.faults = 0
             self.decision, self.decided_at, self.decided_output = decision, view.now, view.output
         self.result = self.safety.apply(view, self.decision.output, facts)
+        note = getattr(algorithm, "note_sent", None)
+        if note is not None:
+            note(self.result.output, view.now)
         return self.decision, self.result
 
     # ------------------------------------------------------------ persistence
@@ -220,6 +231,8 @@ class AlgorithmPilot(AfterheatPilot):
         self.control = AlgorithmControl(replace(HAC1_SPEC, period=period), store_path)
         self.algo_wish: float | None = None
         self.prediction: dict[str, object] = {}
+        self.hold_bias = {"rise": 0.0, "flat": 0.0, "fall": 0.0}
+        self.hold_checks: deque[tuple[float, float, str]] = deque()
         super().__init__(period)
 
     @property
@@ -236,8 +249,19 @@ class AlgorithmPilot(AfterheatPilot):
                 self._deactivate()  # the next update starts the pilot and the algorithm bumplessly
         self._feed_model(inp)
         result = super().update(inp)
+        self._check_holds(inp.now)
         self.control.save(inp.now)
         return result
+
+    def _check_holds(self, now: float) -> None:
+        """Learn how far the model's air at the tick missed (see HOLD_BIAS_WEIGHT)."""
+        while self.hold_checks and now >= self.hold_checks[0][0] + HOLD_CHECK_AFTER_S:
+            at, predicted, phase = self.hold_checks.popleft()
+            seen = [v for t, v in self.raw_history if abs(t - at - HOLD_CHECK_AFTER_S) <= HOLD_CHECK_AFTER_S]
+            if seen and now - at <= 4 * HOLD_CHECK_AFTER_S:
+                miss = clamp(seen[0] - predicted, -2 * HOLD_BIAS_LIMIT_K, 2 * HOLD_BIAS_LIMIT_K)
+                bias = self.hold_bias[phase] + HOLD_BIAS_WEIGHT * (miss - self.hold_bias[phase])
+                self.hold_bias[phase] = clamp(bias, -HOLD_BIAS_LIMIT_K, HOLD_BIAS_LIMIT_K)
 
     def _feed_model(self, inp: PilotInputs) -> None:
         """Every fresh look at the coil teaches the shared model, whoever steers (also HAC1 alone)."""
@@ -288,7 +312,8 @@ class AlgorithmPilot(AfterheatPilot):
 
     def _choose_setpoint(self, inp: PilotInputs, action: str, wanted: float, low: int,
                          ahead: float = 0.0) -> tuple[str, int, str | None, float, str]:
-        if action == "hold" and ahead > 0 and self._steering() and self.control.decision is not None:
+        if (action == "hold" and ahead > 0 and self._steering() and self.control.name == "mpc"
+                and self.control.decision is not None):
             chosen = self._model_hold(inp, low, ahead)
             if chosen is not None:
                 return chosen
@@ -298,11 +323,14 @@ class AlgorithmPilot(AfterheatPilot):
         """The hold setpoint from the shared model's air at HAC1's tick and the algorithm's plan.
 
         HAC1 holds for T2AH in [sp, sp + 0.95) at its tick. Taking turns between levels ~8 K
-        apart the air sweeps 1-3 K a minute, and the pilot's guess (the trend of the last
+        apart the air sweeps 1-5 K a minute, and the pilot's guess (the trend of the last
         30 s) misses the turn at the peak or the trough: live 2026-11-25 HAC1 stepped by
         itself on most ticks. The model knows the levels on their way (dead time, lag), so
-        its air at the tick is the guess; the step HAC1 might take is weighed by the plan: a
-        step the plan takes a tick later anyway costs little, one it does not want a lot.
+        its air at the tick is the guess. Where no setpoint is safe, the step HAC1 may take
+        is weighed by what it costs by the MPC's own measure (MpcAlgorithm.unasked_cost: a
+        pulse cut short is cheap, a step on to 3 or down to 0 is not), plus a move when it
+        would end a level still in its minimum dwell. The guess's usual miss is learned per
+        phase (_check_holds).
         """
         level = int(inp.level)
         model = self.control.model
@@ -313,20 +341,22 @@ class AlgorithmPilot(AfterheatPilot):
         spec = OutputSpec(period=ahead, apply_delay_s=ahead)  # only the outputs already given count
         path = model.simulate(inp.now, [float(level)], spec, scale, base, step_s=5.0)
         change = path[-1] - model.x if path else 0.0
-        air = self._raw(inp) + change
-        spread = HOLD_SPREAD_K + HOLD_SPREAD_SHARE * abs(change) + abs(change) / ahead * PHASE_UNCERTAINTY_S
-        plan = self.control.decision.plan or (float(level),)
+        phase = "rise" if change > HOLD_BIAS_SPLIT_K else ("fall" if change < -HOLD_BIAS_SPLIT_K else "flat")
+        guess = self._raw(inp) + change
+        self.hold_checks.append((inp.now + ahead, guess, phase))
+        air = guess + self.hold_bias[phase]
+        spread = HOLD_SPREAD_K + HOLD_SPREAD_SHARE * abs(change) + abs(change) / ahead * HOLD_PHASE_S
         algorithm = self.control.algorithm()
-        dwell = getattr(algorithm, "dwell_left", None)
-        kept = dwell is not None and dwell(self._view(inp, low, LEVEL_MAX)) > 0
+        view = self._view(inp, low, LEVEL_MAX)
+        plan = tuple(self.control.decision.plan) or (float(level),) * algorithm.HORIZON_TICKS
+        # A level still in its minimum dwell left after one tick is the per-tick turn that must not be.
+        kept = algorithm.dwell_left(view) > 0
 
         def harm(direction: int) -> float:
             if direction < 0 and self._step_cost(inp, low, -1) >= STEP_COST_FORBIDDEN:
                 return STEP_COST_FORBIDDEN
-            when = next((k for k, value in enumerate(plan) if (value - level) * direction > 0), None)
-            if when is None or kept:
-                return UNASKED_UNWANTED  # (a level still in its minimum dwell: a one-tick visit)
-            return 1.0 + UNASKED_EARLY_TICK * when
+            extra = algorithm.unasked_cost(view, plan, direction)
+            return max(UNASKED_MIN_COST, extra) + (algorithm.MOVE_COST if kept else 0.0)
         harm_up, harm_down = harm(1), harm(-1)
         floor_sp = max(SETPOINT_MIN, math.ceil(inp.frost_floor) if inp.frost_lock else SETPOINT_MIN)
 

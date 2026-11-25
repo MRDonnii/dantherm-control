@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "gateway"), str(ROOT / "tests")]
 
 from afterheat_actuators import AlgorithmControl, AlgorithmPilot, DirectValveController  # noqa: E402
-from afterheat_algorithms import ALGORITHM_CLASSES, Algorithm  # noqa: E402
+from afterheat_algorithms import ALGORITHM_CLASSES, Algorithm, MpcAlgorithm  # noqa: E402
 from afterheat_control import (DIRECT_SPEC, HAC1_SPEC, OVERRIDE_FAULT, OVERRIDE_FLOOR, OVERRIDE_FROST,  # noqa: E402
                                OVERRIDE_MOVE, CoilModel, ControlView, Decision, SafetyFacts, SafetyLayer)
 from afterheat_pilot import AfterheatPilot  # noqa: E402
@@ -149,6 +149,52 @@ class Diagnostics(unittest.TestCase):
         self.assertEqual([e["algorithm"] for e in result["1h"]["algorithms"]], ["mpc"])
         self.assertTrue(row_matches(rows[-1], "algo:mpc"))
         self.assertFalse(row_matches(rows[0], "algo:mpc"))
+
+
+class MpcTakesTurnsSlowly(unittest.TestCase):
+    """Live 2026-11-25: the MPC took turns 1<->2 every tick (39.5 changes an hour, the air +1.7 K warm)."""
+
+    def test_a_level_is_kept_its_minimum_dwell_but_not_one_hac1_took_by_itself(self):
+        model = warm_model(air=24.0, output=2.0)
+        model.observe(NOW - 40, 24.5, 1.0, 36.0, 44.0, 17.9)  # 2 -> 1 shown 40 s ago (the tick ~55 s ago)
+        mpc = MpcAlgorithm()
+        mpc.note_sent(1.0, NOW - 55)  # ... as asked
+        here = view(model, air=24.5, output=1.0)
+        self.assertEqual(mpc.dwell_left(here), 1)
+        self.assertTrue(all(plan[0] == 1.0 for plan in mpc._discrete_plans(here, mpc.HORIZON_TICKS)))
+        self.assertEqual(mpc.decide(here).output, 1.0)
+        mpc.note_sent(2.0, NOW - 55)  # the Pi asked to hold 2: HAC1 stepped down by itself
+        self.assertEqual(mpc.dwell_left(here), 0)
+
+    def test_duty_cycle_on_the_rlv2_coil_without_per_tick_turns(self):
+        # The levels as asked (a direct actuator, no HAC1 hold window): step 1 alone settles
+        # below the floor at 36 % fan and step 2 ~6 K over, so it must take turns.
+        rows = run_direct(DirectValveController("mpc", spec=HAC1_SPEC), DirectValvePlant(**RLV2_VALVES, level=1, seed=3),
+                          target=22.0, minutes=80, sensors=True)
+        kept = [r for r in rows if r["t"] >= 20 * 60]
+        ticks, next_at = [], kept[0]["t"]
+        for r in kept:
+            if r["t"] >= next_at:
+                ticks.append(r["level"])
+                next_at += HAC1_SPEC.period
+        visits, run_length = [], 1
+        for a, b in zip(ticks, ticks[1:]):
+            if a == b:
+                run_length += 1
+            else:
+                visits.append((a, run_length))
+                run_length = 1
+        changes = len(visits)
+        self.assertGreater(changes, 4)  # it does take turns
+        self.assertLess(changes / ((kept[-1]["t"] - kept[0]["t"]) / 3600), 30)
+        # The lower level of a turn is never visited for a single tick.
+        lows = [length for k, (level, length) in enumerate(visits[1:-1], 1)
+                if visits[k - 1][0] > level < visits[k + 1][0]]
+        self.assertTrue(lows and min(lows) >= MpcAlgorithm.MIN_DWELL_TICKS, visits)
+        errors = [r["air"] - 22.0 for r in kept]
+        mean = sum(errors) / len(errors)
+        self.assertTrue(0.0 <= mean <= 1.6, mean)
+        self.assertLess(sum(e < -0.5 for e in errors) / len(errors), 0.03)
 
 
 if __name__ == "__main__":

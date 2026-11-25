@@ -102,6 +102,12 @@ REID_SEGMENT_S = 10 * 60.0
 REID_HOLDOUT_SHARE = 0.25
 REID_REL_GAIN = 0.10
 REID_ABS_GAIN_K = 0.03
+# A smaller but real gain on the holdout moves the parameters this share of the way (in log
+# terms for the lags): live 2026-11-25 the re-fits kept finding tau down ~166 s against the
+# 119 s in use (holdout 0.368 -> 0.356 K, under the 10 % for a full adoption), so the model
+# kept expecting the air to fall faster than it did and raised early.
+REID_PARTIAL_GAIN = 0.02
+REID_PARTIAL_SHARE = 1 / 3
 
 # Safety layer.
 SOFT_FLOOR_K = 0.5
@@ -111,6 +117,12 @@ PINGPONG_CHANGES = 3
 PINGPONG_HOLD_TICKS = 4
 WARM_BIAS_K = 0.3
 FROST_MARGIN_K = 0.2
+# The soft floor is judged this far higher for a model that predicts only so well: a share of
+# its minute-ahead error, within limits. (That error is mostly the fast sweeps right after a
+# turn; the trough, where the floor is decided, is predicted better: live 2026-11-25 the full
+# 0.7 K error held the trough ~0.4 K up and every raise came a tick early.)
+FLOOR_MARGIN_SHARE = 0.5
+FLOOR_MARGIN_K = (0.1, 0.3)
 
 
 def num(value: object) -> float | None:
@@ -331,6 +343,11 @@ class CoilModel:
                                      scale, base, step_s=15.0)
                 self.checks.append((now + CHECK_AHEAD_S, path[-1]))
 
+    def floor_margin(self) -> float:
+        """K added to the soft floor for the model's own uncertainty (see FLOOR_MARGIN_SHARE)."""
+        error = self.prediction_error()
+        return clamp(FLOOR_MARGIN_SHARE * (0.4 if error is None else error), *FLOOR_MARGIN_K)
+
     def prediction_error(self) -> float | None:
         """Root mean square (K) of the minute-ahead predictions over the last hour."""
         if len(self.check_errors) < 5:
@@ -510,10 +527,21 @@ class CoilModel:
                         best, params = value, trial
         prior = fit(start, holdout)
         fitted = fit(params, holdout)
-        accepted = (math.isfinite(prior) and math.isfinite(fitted) and fitted <= (1 - REID_REL_GAIN) * prior
-                    and prior - fitted >= REID_ABS_GAIN_K)
+        finite = math.isfinite(prior) and math.isfinite(fitted)
+        accepted = finite and fitted <= (1 - REID_REL_GAIN) * prior and prior - fitted >= REID_ABS_GAIN_K
+        partly = finite and not accepted and fitted <= (1 - REID_PARTIAL_GAIN) * prior
         self.reid_last = {"at": rows[-1][0], "prior_rmse": round(prior, 3), "fitted_rmse": round(fitted, 3),
-                          "accepted": 1.0 if accepted else 0.0, **{k: round(v, 3) for k, v in params.items()}}
+                          "accepted": 1.0 if accepted else (0.5 if partly else 0.0),
+                          **{k: round(v, 3) for k, v in params.items()}}
+        if partly:
+            share = REID_PARTIAL_SHARE
+            self.tau_up *= (params["tau_up"] / self.tau_up) ** share
+            self.tau_down *= (params["tau_down"] / self.tau_down) ** share
+            self.dead *= (params["dead"] / self.dead) ** share
+            self.fan_exp += share * (params["fan_exp"] - self.fan_exp)
+            LOG.info("Afterheat model moved toward a re-fit: tau up %.0f s, down %.0f s, dead time %.0f s, "
+                     "fan exponent %.2f (holdout %.2f -> %.2f K)", self.tau_up, self.tau_down, self.dead,
+                     self.fan_exp, prior, fitted)
         if accepted:
             self.tau_up, self.tau_down, self.dead = params["tau_up"], params["tau_down"], params["dead"]
             self.fan_exp = params["fan_exp"]
@@ -708,7 +736,7 @@ class SafetyLayer:
         floor = view.target - SOFT_FLOOR_K
         model = view.model
         # The model's predictions are only so good: judged with its recent error as a margin.
-        margin = clamp(model.prediction_error() or 0.2, 0.1, 0.4)
+        margin = model.floor_margin()
         cold = view.air < floor or self._heading_below(view, floor + margin)
         # (By the model a raise on its way is in the prediction; by the trend alone it is given time.)
         raise_pending = (model.x is None and self.last_raise_at is not None
