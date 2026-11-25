@@ -64,28 +64,35 @@ LEVEL_MAX = 10
 FAN_REF = 36.0
 WATER_LIFT_REF = 26.0
 SCALE_RANGE = (0.2, 5.0)
-# Prior lift (K at the reference) per level unit, and the prior dynamics (live RLV-2 fit 2026-11-25).
-PRIOR_LIFT_PER_LEVEL = 1.2
+# Prior lift (K at the reference) per level and the prior dynamics: the live RLV-2 fit 2026-11-25
+# (balancing valve at 2 turns, 36 % fan, water ~44 C over ~18 C air). Learned from there.
+PRIOR_LIFT = (0.0, 2.4, 8.6, 9.6, 10.3, 10.8, 11.2, 11.5, 11.7, 11.9, 12.0)
 TAU_UP_PRIOR_S, TAU_DOWN_PRIOR_S, DEAD_PRIOR_S = 110.0, 240.0, 60.0
 TAU_RANGE_S = (40.0, 600.0)
 DEAD_RANGE_S = (15.0, 150.0)
 LIFT_MAX_K = 40.0
 # Kalman filter on [air, offset]: process noise per second (K^2/s) and the sensor variance (K^2).
-KF_Q_AIR = 4e-4
-KF_Q_OFFSET = 2e-4
+KF_Q_AIR = 2e-5
+KF_Q_OFFSET = 1e-5
 KF_R = 0.05 ** 2
 KF_SUBSTEP_S = 15.0
 OFFSET_LIMIT_K = 8.0
 # Learning the lift per output from the offset, once the output has shown (dead time + this).
 LEARN_AFTER_S = 45.0
-LEARN_TIME_S = 600.0
-# Holdout-gated re-identification of the lag, the dead time and the overall lift.
+LEARN_TIME_S = 300.0
+# The lift of each output is also learned from transients (a short turn on a level never
+# settles): normalised LMS on the model's sensitivity to each lift node, this slow.
+LMS_TIME_S = 300.0
+# The model's own score: the air predicted CHECK_AHEAD_S ahead against what came, last hour.
+CHECK_AHEAD_S = 60.0
+CHECK_MEMORY_S = 3600.0
+# Holdout-gated re-identification of the lag and the dead time.
 REID_EVERY_S = 30 * 60.0
 REID_BUFFER_S = 3 * 3600.0
 REID_SAMPLE_S = 10.0
 REID_MIN_S = 60 * 60.0
 REID_MIN_CHANGES = 4
-REID_SEGMENT_S = 20 * 60.0
+REID_SEGMENT_S = 10 * 60.0
 REID_HOLDOUT_SHARE = 0.25
 REID_REL_GAIN = 0.10
 REID_ABS_GAIN_K = 0.03
@@ -219,7 +226,7 @@ class CoilModel:
     VERSION = 1
 
     def __init__(self) -> None:
-        self.lift = [PRIOR_LIFT_PER_LEVEL * level for level in range(LEVEL_MAX + 1)]
+        self.lift = list(PRIOR_LIFT)
         self.tau_up, self.tau_down, self.dead = TAU_UP_PRIOR_S, TAU_DOWN_PRIOR_S, DEAD_PRIOR_S
         self.learned_s = 0.0
         self.reid_accepted = 0
@@ -232,8 +239,13 @@ class CoilModel:
         self.last_sample: float | None = None
         self.reid_at: float | None = None
         self.seeded = False
+        # Open-loop checks (due at, predicted air) and the errors seen (when, K).
+        self.checks: deque[tuple[float, float]] = deque()
+        self.check_errors: deque[tuple[float, float]] = deque()
+        self.samples = 0
 
     def _reset_filter(self) -> None:
+        self.sens = [0.0] * (LEVEL_MAX + 1)
         self.x: float | None = None
         self.offset = 0.0
         self.p = [[1.0, 0.0], [0.0, 1.0]]
@@ -298,18 +310,45 @@ class CoilModel:
             t = start = self.updated
             while t < now - 1e-6:
                 dt = min(KF_SUBSTEP_S, now - t)
-                self._predict(dt, base + scale * interp(self.lift, self.output_at(t + dt / 2 - self.dead)))
+                self._predict(dt, base, scale, self.output_at(t + dt / 2 - self.dead))
                 t += dt
             self.updated = now
-            self._correct(air)
+            innovation = self._correct(air)
+            self._lms(innovation, now - start)
             self._learn(now, now - start, scale)
+        self._check(now, air, scale, base)
         self._log(now, air, output, scale, base)
 
-    def _predict(self, dt: float, drive: float) -> None:
-        steady = drive + self.offset
+    def _check(self, now: float, air: float, scale: float, base: float) -> None:
+        """Score the model: the air it said CHECK_AHEAD_S ago against the air now."""
+        while self.checks and self.checks[0][0] <= now + 1.0:
+            due, predicted = self.checks.popleft()
+            if now - due <= 10.0:
+                self.check_errors.append((now, air - predicted))
+        while self.check_errors and now - self.check_errors[0][0] > CHECK_MEMORY_S:
+            self.check_errors.popleft()
+        if not self.checks or now - (self.checks[-1][0] - CHECK_AHEAD_S) >= CHECK_AHEAD_S:
+            if self.x is not None:
+                path = self.simulate(now, [self.output_at(now)], OutputSpec(period=CHECK_AHEAD_S, apply_delay_s=0.0),
+                                     scale, base, step_s=15.0)
+                self.checks.append((now + CHECK_AHEAD_S, path[-1]))
+
+    def prediction_error(self) -> float | None:
+        """Root mean square (K) of the minute-ahead predictions over the last hour."""
+        if len(self.check_errors) < 5:
+            return None
+        return math.sqrt(sum(e * e for _t, e in self.check_errors) / len(self.check_errors))
+
+    def _predict(self, dt: float, base: float, scale: float, shown: float) -> None:
+        steady = base + scale * interp(self.lift, shown) + self.offset
         tau = self.tau_up if steady >= self.x else self.tau_down
         a = math.exp(-dt / tau)
         self.x = a * self.x + (1 - a) * steady
+        lower = int(clamp(math.floor(shown), 0, LEVEL_MAX - 1))
+        fraction = clamp(shown - lower, 0.0, 1.0)
+        for node in range(1, LEVEL_MAX + 1):
+            weight = (1 - fraction if node == lower else 0.0) + (fraction if node == lower + 1 else 0.0)
+            self.sens[node] = a * self.sens[node] + (1 - a) * scale * weight
         p = self.p
         # F = [[a, 1 - a], [0, 1]]
         p00 = a * a * p[0][0] + 2 * a * (1 - a) * p[0][1] + (1 - a) ** 2 * p[1][1] + KF_Q_AIR * dt
@@ -317,7 +356,7 @@ class CoilModel:
         p11 = p[1][1] + KF_Q_OFFSET * dt
         self.p = [[p00, p01], [p01, p11]]
 
-    def _correct(self, air: float) -> None:
+    def _correct(self, air: float) -> float:
         p = self.p
         s = p[0][0] + KF_R
         k0, k1 = p[0][0] / s, p[0][1] / s
@@ -326,6 +365,22 @@ class CoilModel:
         self.offset = clamp(self.offset + k1 * innovation, -OFFSET_LIMIT_K, OFFSET_LIMIT_K)
         self.p = [[(1 - k0) * p[0][0], (1 - k0) * p[0][1]],
                   [(1 - k0) * p[0][1], p[1][1] - k1 * p[0][1]]]
+        return innovation
+
+    def _lms(self, innovation: float, dt: float) -> None:
+        """Normalised LMS on the lift nodes the air is still feeling (also short turns)."""
+        energy = sum(v * v for v in self.sens)
+        if dt <= 0 or energy < 0.05:
+            return
+        gain = min(1.0, dt / LMS_TIME_S) * clamp(innovation, -2.0, 2.0) / (energy + 0.5)
+        touched = None
+        for node in range(1, LEVEL_MAX + 1):
+            if self.sens[node] > 0.02:
+                self.lift[node] = clamp(self.lift[node] + gain * self.sens[node], 0.0, LIFT_MAX_K)
+                touched = node if touched is None else touched
+        if touched is not None:
+            self._monotone(touched)
+        self.samples += 1
 
     def _learn(self, now: float, dt: float, scale: float) -> None:
         """Move the offset into the lift of the output that has shown for a while."""
@@ -398,14 +453,19 @@ class CoilModel:
                 tau = tau_up if steady >= x else tau_down
                 x += (steady - x) * (1 - math.exp(-dt / tau))
                 residuals.append(row[1] - x)
-            if residuals:
-                mean = sum(residuals) / len(residuals)
-                total += sum((r - mean) ** 2 for r in residuals)
-                count += len(residuals)
+            if len(residuals) >= 3:
+                # The unmeasured drift (e.g. the water's swing) as a straight line per segment.
+                n = len(residuals)
+                xs = range(n)
+                mx, my = (n - 1) / 2, sum(residuals) / n
+                den = sum((x - mx) ** 2 for x in xs)
+                slope = sum((x - mx) * (r - my) for x, r in zip(xs, residuals)) / den if den else 0.0
+                total += sum((r - my - slope * (x - mx)) ** 2 for x, r in zip(xs, residuals))
+                count += n
         return math.sqrt(total / count) if count else None
 
     def reidentify(self) -> dict[str, float] | None:
-        """Fit lag, dead time and overall lift on the training minutes; adopt only on a clearly better holdout."""
+        """Fit the lags and the dead time on the training minutes; adopt only on a clearly better holdout."""
         rows = list(self.buffer)
         if len(rows) < 2 or rows[-1][0] - rows[0][0] < REID_MIN_S:
             return None
@@ -427,7 +487,8 @@ class CoilModel:
 
         best = fit(params, training)
         for _round in range(2):
-            for key in ("gain", "tau_up", "tau_down", "dead"):
+            # (The lift itself is learned online per output; a common factor here would undo that.)
+            for key in ("tau_up", "tau_down", "dead"):
                 for factor in factors:
                     trial = dict(params)
                     trial[key] = clamp(params[key] * factor, *ranges[key])
@@ -444,8 +505,8 @@ class CoilModel:
             self.tau_up, self.tau_down, self.dead = params["tau_up"], params["tau_down"], params["dead"]
             self.lift = [clamp(value * params["gain"], 0.0, LIFT_MAX_K) for value in self.lift]
             self.reid_accepted += 1
-            LOG.info("Afterheat model re-fitted: tau up %.0f s, down %.0f s, dead time %.0f s, lift x%.2f "
-                     "(holdout %.2f -> %.2f K)", self.tau_up, self.tau_down, self.dead, params["gain"], prior, fitted)
+            LOG.info("Afterheat model re-fitted: tau up %.0f s, down %.0f s, dead time %.0f s "
+                     "(holdout %.2f -> %.2f K)", self.tau_up, self.tau_down, self.dead, prior, fitted)
         return self.reid_last
 
     # ----------------------------------------------------------- prediction
@@ -613,21 +674,28 @@ class SafetyLayer:
             keep = spec.limit(self.hold_output, current, view.low, view.high)
             if keep != out:
                 out, override = keep, OVERRIDE_PINGPONG
-        if out != current and self.recent_changes(now) >= RATE_LIMIT_CHANGES:
+        if out != current and self.recent_changes(now) >= RATE_LIMIT_CHANGES and not (
+                (out > current and view.air < view.target) or (out < current and view.air > view.target + 1.0)):
+            # Too many changes lately: only a change toward the target (cold: up, clearly warm: down).
             out, override = current, OVERRIDE_RATE
         # The soft floor: air below (or within a decision of) target - 0.5 K gets more heat,
         # never less; a raise already on its way is given time to show first.
         floor = view.target - SOFT_FLOOR_K
-        cold = view.air < floor or self._heading_below(view, floor)
         model = view.model
-        raise_pending = (self.last_raise_at is not None
+        # The model's predictions are only so good: judged with its recent error as a margin.
+        margin = clamp(model.prediction_error() or 0.2, 0.1, 0.4)
+        cold = view.air < floor or self._heading_below(view, floor + margin)
+        # (By the model a raise on its way is in the prediction; by the trend alone it is given time.)
+        raise_pending = (model.x is None and self.last_raise_at is not None
                          and now - self.last_raise_at < model.dead + 0.5 * model.tau_up + spec.apply_delay_s)
         if cold and current < view.high:
             if out < current:
                 out, override = current, OVERRIDE_FLOOR
-            elif out == current and not raise_pending:
+            if out == current and not raise_pending:
                 out = spec.limit(self._raise(view), current, view.low, view.high)
                 override = OVERRIDE_FLOOR if out != current else override
+        elif out < current and self._lower_dips(view, out, floor + margin):
+            out, override = current, OVERRIDE_FLOOR
         if facts.frost_raise and current < view.high and out <= current:
             out, override = spec.limit(current + max(spec.resolution, 1.0), current, view.low, view.high), OVERRIDE_FROST
         elif facts.frost_no_lower and out < current:
@@ -643,17 +711,35 @@ class SafetyLayer:
 
     @staticmethod
     def _heading_below(view: ControlView, floor: float) -> bool:
-        """The air a decision from now (by the model, by the trend while it has no state) is below ``floor``."""
+        """Waiting one more decision to raise would let the air fall below ``floor``.
+
+        By the model: the air with the output kept one decision and raised after it (the
+        dead time and the lag make the air go on falling for a while after any raise).
+        Without a model state, by the measured trend a decision ahead.
+        """
         model = view.model
         if model.x is not None:
             scale = model.scale(view.fan, view.water, view.air_in)
-            path = model.simulate(view.now, [view.output, view.output], view.spec, scale, model.base(view.air_in))
-            ahead = path[min(len(path) - 1, max(0, int(round(view.spec.period / 20.0)) - 1))]
-        elif view.trend is not None:
-            ahead = view.air + view.trend * view.spec.period
-        else:
+            raised = view.spec.limit(SafetyLayer._raise(view), view.output, view.low, view.high)
+            if raised <= view.output:
+                return False
+            path = model.simulate(view.now, [view.output, raised, raised, raised], view.spec, scale,
+                                  model.base(view.air_in))
+            return min(path) < floor
+        if view.trend is not None:
+            return view.air + view.trend * view.spec.period < floor
+        return False
+
+    @staticmethod
+    def _lower_dips(view: ControlView, lower: float, floor: float) -> bool:
+        """Lowering to ``lower`` now, even if raised back a decision later, lets the air fall below ``floor``."""
+        model = view.model
+        if model.x is None:
             return False
-        return ahead < floor
+        scale = model.scale(view.fan, view.water, view.air_in)
+        path = model.simulate(view.now, [lower, view.output, view.output, view.output, view.output], view.spec,
+                              scale, model.base(view.air_in))
+        return min(path) < floor
 
     @staticmethod
     def _raise(view: ControlView) -> float:

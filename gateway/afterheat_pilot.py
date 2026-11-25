@@ -540,6 +540,8 @@ class PilotInputs:
     integral_minutes: float = PI_INTEGRAL_MINUTES_DEFAULT
     band: float = PI_BAND_DEFAULT
     min_dwell_ticks: int = PI_MIN_DWELL_TICKS_DEFAULT
+    # The selectable algorithm (afterheat_actuators.AlgorithmPilot); this class is "standard".
+    algorithm: str = "standard"
 
 
 class AfterheatPilot:
@@ -643,6 +645,9 @@ class AfterheatPilot:
         self.note_at = 0.0
         self.changes: deque[float] = deque()
         self.rate_warned_at: float | None = None
+        # A step a selectable algorithm's safety layer has already rate limited (afterheat_actuators):
+        # not held back again by the setpoint rate limit. Always False for the standard pilot.
+        self.step_cleared = False
         self.result: dict[str, object] = self._snapshot(PilotInputs(now=0.0), "native", None, "HAC1 styrer selv")
 
     # ----------------------------------------------------------------- inputs
@@ -1922,7 +1927,8 @@ class AfterheatPilot:
             setpoint, note = self.setpoint, "Begrænser ændringer af HAC1-setpunktet"
         if (setpoint != self.setpoint and self.setpoint is not None and len(self.changes) >= RATE_LIMIT_CHANGES
                 and rule != "hold"
-                and not ((self.urgent or self.pwm_low is not None or self.frost_up) and action != "hold")):
+                and not ((self.urgent or self.pwm_low is not None or self.frost_up or self.step_cleared)
+                         and action != "hold")):
             # (A hold setpoint already changes only for a clearly better bet, see _hold_setpoint.)
             # Rate limit: keep the setpoint unless it would make HAC1 step the wrong way (or the air is far off).
             current = hac1_action(self.setpoint, temperature)

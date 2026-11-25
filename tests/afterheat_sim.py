@@ -178,10 +178,13 @@ RLV2_VALVES = dict(gain=1.0, level_heat=[lift / 0.9 for lift in RLV2_LIFT_AT_36]
 def run(pilot, plant: Hac1Plant, *, target: float, minutes: float, events=None,
         frost_lock: bool = False, frost_floor: float = 18.0, gain: float | None = None,
         integral_minutes: float | None = None, band: float | None = None,
-        min_dwell_ticks: int | None = None, update_every: float = 2.0, inputs_hook=None):
+        min_dwell_ticks: int | None = None, update_every: float = 2.0, inputs_hook=None,
+        algorithm: str = "standard", sensors: bool = False):
     """Close the loop for ``minutes``; returns one row per pilot update.
 
     ``events`` maps seconds since start to a callable(plant, gateway) run once.
+    ``algorithm`` picks the selectable algorithm (afterheat_actuators.AlgorithmPilot);
+    ``sensors`` also gives the pilot the water flow and the air before the coil.
     """
     from afterheat_pilot import (PI_BAND_DEFAULT, PI_GAIN_DEFAULT, PI_INTEGRAL_MINUTES_DEFAULT,
                                  PI_MIN_DWELL_TICKS_DEFAULT, PilotInputs)
@@ -208,12 +211,14 @@ def run(pilot, plant: Hac1Plant, *, target: float, minutes: float, events=None,
             level=gateway.level, level_age=None if gateway.level_at is None else now - gateway.level_at,
             level_changed_at=gateway.level_changed_at,
             t2ah=gateway.filtered, t2ah_age=None if gateway.raw_at is None else now - gateway.raw_at,
-            t2ah_raw=gateway.robust_raw(now), fan_supply=plant.fan, water_flow=None,
+            t2ah_raw=gateway.robust_raw(now), fan_supply=plant.fan,
+            water_flow=plant.water() if sensors else None, before_heater=plant.air_in() if sensors else None,
             outdoor=5.0, extract=21.0, master=True,
             gain=PI_GAIN_DEFAULT if gain is None else gain,
             integral_minutes=PI_INTEGRAL_MINUTES_DEFAULT if integral_minutes is None else integral_minutes,
             band=PI_BAND_DEFAULT if band is None else band,
             min_dwell_ticks=PI_MIN_DWELL_TICKS_DEFAULT if min_dwell_ticks is None else min_dwell_ticks,
+            algorithm=algorithm,
         )
         if inputs_hook is not None:
             inputs_hook(inp, plant, gateway)
@@ -228,6 +233,68 @@ def run(pilot, plant: Hac1Plant, *, target: float, minutes: float, events=None,
             "fan": plant.fan,
         })
     return rows
+
+
+class DirectValvePlant(Hac1Plant):
+    """The same coil with a stepless 0-10 V valve (0-100 %) set directly; no HAC1 in between.
+
+    The lift is interpolated between the whole-level values (a valve opening of 37 % lifts
+    like level 3.7), the output is applied at once and kept until changed.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.ignore_setpoint = True
+        self.level = float(self.level)
+
+    def curve(self, level: float) -> float:
+        level = max(0.0, min(10.0, float(level)))
+        if self.level_heat is None:
+            return level_curve(level, self.curvature)
+        whole = min(9, int(level))
+        return self.level_heat[whole] + (level - whole) * (self.level_heat[whole + 1] - self.level_heat[whole])
+
+
+def run_direct(controller, plant: DirectValvePlant, *, target: float, minutes: float, events=None,
+               frost_lock: bool = False, frost_floor: float = 18.0, sensors: bool = False,
+               update_every: float = 2.0):
+    """Close the loop of a DirectValveController on a DirectValvePlant; one row per update."""
+    start = plant.now
+    events = dict(events or {})
+    rows, raw = [], deque()
+    next_update = plant.now
+    while plant.now - start < minutes * 60:
+        plant.step(1.0)
+        raw.append((plant.now, plant.raw))
+        while raw and plant.now - raw[0][0] > 30.0:
+            raw.popleft()
+        elapsed = plant.now - start
+        for at in [at for at in events if at <= elapsed]:
+            events.pop(at)(plant, None)
+        if plant.now < next_update:
+            continue
+        next_update = plant.now + update_every
+        from afterheat_pilot import robust_temperature
+        air = robust_temperature([v for t, v in raw if plant.now - t <= 10.0])
+        result = controller.update(now=plant.now, air=air, output=plant.level * 10.0, target=target,
+                                   fan=plant.fan, water=plant.water() if sensors else None,
+                                   air_in=plant.air_in() if sensors else None,
+                                   frost_lock=frost_lock, frost_floor=frost_floor)
+        plant.level = result["output_percent"] / 10.0
+        rows.append({"t": elapsed, "level": plant.level, "air": plant.x, "wanted": result["wanted_percent"] / 10.0,
+                     "override": result["override"], "reason": result["why"], "fan": plant.fan})
+    return rows
+
+
+def quality(rows, target: float, *, skip_minutes: float = 15.0) -> dict[str, float]:
+    """Mean error, mean absolute error, lowest air, share under target - 0.5 K, output changes an hour."""
+    kept = [r for r in rows if r["t"] >= skip_minutes * 60]
+    errors = [r["air"] - target for r in kept]
+    hours = (kept[-1]["t"] - kept[0]["t"]) / 3600 if len(kept) > 1 else 0.0
+    changes = sum(1 for a, b in zip(kept, kept[1:]) if a["level"] != b["level"])
+    return {"mean": sum(errors) / len(errors), "mae": sum(abs(e) for e in errors) / len(errors),
+            "lowest": min(r["air"] for r in kept), "under": 100 * sum(e < -0.5 for e in errors) / len(errors),
+            "changes_h": changes / hours if hours else 0.0}
 
 
 def load_experiment(name: str) -> list[dict[str, float]]:
