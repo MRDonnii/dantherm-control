@@ -24,7 +24,8 @@ from afterheat_data import Telemetry, build_block, predict
 from afterheat_control import (ALGORITHM_CODES, ALGORITHM_DEFAULT, ALGORITHM_LABELS, ALGORITHMS, DIRECT_SPEC,
                                FROST_MARGIN_K, HAC1_SPEC, OVERRIDE_FAULT, OVERRIDE_NONE, CoilModel, ControlView,
                                Decision, OutputSpec, SafetyFacts, SafetyLayer, SafetyResult, clamp, danish, num)
-from afterheat_pilot import LEVEL_MAX, TICK_PERIOD_S, AfterheatPilot, PilotInputs
+from afterheat_pilot import (HAC1_DOWN_BAND_K, LEVEL_MAX, PHASE_UNCERTAINTY_S, SETPOINT_MAX, SETPOINT_MIN,
+                             STEP_COST_FORBIDDEN, TICK_PERIOD_S, AfterheatPilot, PilotInputs)
 
 LOG = logging.getLogger("afterheat-control")
 
@@ -34,6 +35,13 @@ SAVE_EVERY_S = 10 * 60.0
 REUSE_DECISION_S = 20.0
 FAULT_LIMIT = 3
 FAULT_PAUSE_S = 30 * 60.0
+# The hold setpoint under an algorithm (AlgorithmPilot._model_hold): the spread (K) of the
+# air HAC1 reads at its tick around the model's guess, and what a step HAC1 takes by itself
+# costs (in "ticks early" of a step the plan takes anyway; a step the plan does not want).
+HOLD_SPREAD_K = 0.12
+HOLD_SPREAD_SHARE = 0.15
+UNASKED_EARLY_TICK = 1.5
+UNASKED_UNWANTED = 8.0
 
 
 class AlgorithmControl:
@@ -277,6 +285,65 @@ class AlgorithmPilot(AfterheatPilot):
         if target < level:
             return "down", target
         return "hold", level
+
+    def _choose_setpoint(self, inp: PilotInputs, action: str, wanted: float, low: int,
+                         ahead: float = 0.0) -> tuple[str, int, str | None, float, str]:
+        if action == "hold" and ahead > 0 and self._steering() and self.control.decision is not None:
+            chosen = self._model_hold(inp, low, ahead)
+            if chosen is not None:
+                return chosen
+        return super()._choose_setpoint(inp, action, wanted, low, ahead)
+
+    def _model_hold(self, inp: PilotInputs, low: int, ahead: float) -> tuple[str, int, None, float, str] | None:
+        """The hold setpoint from the shared model's air at HAC1's tick and the algorithm's plan.
+
+        HAC1 holds for T2AH in [sp, sp + 0.95) at its tick. Taking turns between levels ~8 K
+        apart the air sweeps 1-3 K a minute, and the pilot's guess (the trend of the last
+        30 s) misses the turn at the peak or the trough: live 2026-11-25 HAC1 stepped by
+        itself on most ticks. The model knows the levels on their way (dead time, lag), so
+        its air at the tick is the guess; the step HAC1 might take is weighed by the plan: a
+        step the plan takes a tick later anyway costs little, one it does not want a lot.
+        """
+        level = int(inp.level)
+        model = self.control.model
+        if model.x is None or level <= 0 or level >= LEVEL_MAX:
+            return None  # (the pilot's own rules for the ends: a hold there is asked for as a step)
+        scale = model.scale(_fan(inp.fan_supply), num(inp.water_flow), num(inp.before_heater))
+        base = model.base(num(inp.before_heater))
+        spec = OutputSpec(period=ahead, apply_delay_s=ahead)  # only the outputs already given count
+        path = model.simulate(inp.now, [float(level)], spec, scale, base, step_s=5.0)
+        change = path[-1] - model.x if path else 0.0
+        air = self._raw(inp) + change
+        spread = HOLD_SPREAD_K + HOLD_SPREAD_SHARE * abs(change) + abs(change) / ahead * PHASE_UNCERTAINTY_S
+        plan = self.control.decision.plan or (float(level),)
+        algorithm = self.control.algorithm()
+        dwell = getattr(algorithm, "dwell_left", None)
+        kept = dwell is not None and dwell(self._view(inp, low, LEVEL_MAX)) > 0
+
+        def harm(direction: int) -> float:
+            if direction < 0 and self._step_cost(inp, low, -1) >= STEP_COST_FORBIDDEN:
+                return STEP_COST_FORBIDDEN
+            when = next((k for k, value in enumerate(plan) if (value - level) * direction > 0), None)
+            if when is None or kept:
+                return UNASKED_UNWANTED  # (a level still in its minimum dwell: a one-tick visit)
+            return 1.0 + UNASKED_EARLY_TICK * when
+        harm_up, harm_down = harm(1), harm(-1)
+        floor_sp = max(SETPOINT_MIN, math.ceil(inp.frost_floor) if inp.frost_lock else SETPOINT_MIN)
+
+        def likely(z: float) -> float:
+            return 0.5 * (1 + math.erf(z / math.sqrt(2)))
+
+        def risk(candidate: int) -> float:
+            return (likely((candidate - air) / spread) * harm_up
+                    + likely((air - candidate - HAC1_DOWN_BAND_K) / spread) * harm_down)
+        candidates = [c for c in range(math.floor(air - 2 * spread) - 1, math.floor(air + 2 * spread) + 2)
+                      if floor_sp <= c <= SETPOINT_MAX]
+        if not candidates:
+            return None
+        best = min(candidates, key=risk)
+        if self.setpoint in candidates and risk(self.setpoint) <= risk(best) + 0.02:
+            best = self.setpoint  # fewest setpoint changes
+        return "hold", int(best), None, air, "hold"
 
     def ha_block(self, state: dict, now: float) -> dict[str, object]:
         """The compact read-only block for Home Assistant (see afterheat_data); ``state`` is the controller snapshot."""

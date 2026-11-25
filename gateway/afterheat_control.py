@@ -64,6 +64,12 @@ LEVEL_MAX = 10
 FAN_REF = 36.0
 WATER_LIFT_REF = 26.0
 SCALE_RANGE = (0.2, 5.0)
+# How the lift follows the fan: (FAN_REF / fan) ** exponent. The live RLV-2 minutes
+# 2026-11-23..25 at 26, 36 and 50 % fan fit ~0.18 (the throttled water, not the air, limits
+# the heat: a level lifts nearly the same at any fan). 1.0 (all the heat into less air) made
+# the model expect ~40 % too much at 26 % and ~30 % too little at 50 %. Re-fitted with the lags.
+FAN_EXP_PRIOR = 0.2
+FAN_EXP_RANGE = (0.0, 1.2)
 # Prior lift (K at the reference) per level and the prior dynamics: the live RLV-2 fit 2026-11-25
 # (balancing valve at 2 turns, 36 % fan, water ~44 C over ~18 C air). Learned from there.
 PRIOR_LIFT = (0.0, 2.4, 8.6, 9.6, 10.3, 10.8, 11.2, 11.5, 11.7, 11.9, 12.0)
@@ -220,7 +226,7 @@ class CoilModel:
 
     The offset (K) is a random walk in a Kalman filter on [air, offset]; once an output has
     shown, the offset is moved slowly into that output's lift (online learning). Every
-    REID_EVERY_S the lag, the dead time and the overall lift are re-fitted on the logged
+    REID_EVERY_S the lag, the dead time and the fan exponent are re-fitted on the logged
     minutes and adopted only when they predict the newest (held-out) part clearly better.
     """
 
@@ -229,6 +235,7 @@ class CoilModel:
     def __init__(self) -> None:
         self.lift = list(PRIOR_LIFT)
         self.tau_up, self.tau_down, self.dead = TAU_UP_PRIOR_S, TAU_DOWN_PRIOR_S, DEAD_PRIOR_S
+        self.fan_exp = FAN_EXP_PRIOR
         self.learned_s = 0.0
         self.reid_accepted = 0
         self.reid_tried = 0
@@ -236,7 +243,8 @@ class CoilModel:
         self.air_in_last: float | None = None
         self._reset_filter()
         self.outputs: deque[tuple[float, float]] = deque()
-        self.buffer: deque[tuple[float, float, float, float, float]] = deque()
+        # (time, air, output, scale, base, fan) every REID_SAMPLE_S, for the re-fit.
+        self.buffer: deque[tuple[float, float, float, float, float, float]] = deque()
         self.last_sample: float | None = None
         self.reid_at: float | None = None
         # Open-loop checks (due at, predicted air) and the errors seen (when, K).
@@ -253,10 +261,9 @@ class CoilModel:
         self.updated: float | None = None
 
     # -------------------------------------------------------------- inputs
-    @staticmethod
-    def scale(fan: float | None, water: float | None, air_in: float | None) -> float:
+    def scale(self, fan: float | None, water: float | None, air_in: float | None) -> float:
         fan = clamp(num(fan) or FAN_REF, 10.0, 100.0)
-        value = FAN_REF / fan
+        value = (FAN_REF / fan) ** self.fan_exp
         water, air_in = num(water), num(air_in)
         if water is not None and air_in is not None and 5.0 <= water - air_in <= 80.0:
             value *= (water - air_in) / WATER_LIFT_REF
@@ -308,7 +315,7 @@ class CoilModel:
             self._lms(innovation, now - start)
             self._learn(now, now - start, scale)
         self._check(now, air, scale, base)
-        self._log(now, air, output, scale, base)
+        self._log(now, air, output, scale, base, clamp(num(fan) or FAN_REF, 10.0, 100.0))
 
     def _check(self, now: float, air: float, scale: float, base: float) -> None:
         """Score the model: the air it said CHECK_AHEAD_S ago against the air now."""
@@ -401,11 +408,11 @@ class CoilModel:
         self.lift[0] = 0.0
 
     # --------------------------------------------------------------- re-ID
-    def _log(self, now: float, air: float, output: float, scale: float, base: float) -> None:
+    def _log(self, now: float, air: float, output: float, scale: float, base: float, fan: float = FAN_REF) -> None:
         if self.last_sample is not None and now - self.last_sample < REID_SAMPLE_S:
             return
         self.last_sample = now
-        self.buffer.append((now, air, float(output), scale, base))
+        self.buffer.append((now, air, float(output), scale, base, fan))
         while self.buffer and self.buffer[0][0] < now - REID_BUFFER_S:
             self.buffer.popleft()
         if self.reid_at is None:
@@ -414,7 +421,7 @@ class CoilModel:
             self.reid_at = now
             self.reidentify()
 
-    def _segments(self, rows: list[tuple[float, float, float, float, float]]) -> list[list]:
+    def _segments(self, rows: list[tuple[float, float, float, float, float, float]]) -> list[list]:
         segments, current = [], []
         for row in rows:
             if current and (row[0] - current[-1][0] > 3 * REID_SAMPLE_S or row[0] - current[0][0] > REID_SEGMENT_S):
@@ -426,10 +433,15 @@ class CoilModel:
             segments.append(current)
         return segments
 
-    def _rmse(self, segments: list[list], tau_up: float, tau_down: float, dead: float, gain: float) -> float | None:
+    def _rmse(self, segments: list[list], tau_up: float, tau_down: float, dead: float, gain: float,
+              fan_exp: float | None = None) -> float | None:
         """Free-run error (K) of the model on ``segments``, each with its own constant offset."""
         total, count = 0.0, 0
+        change = 0.0 if fan_exp is None else fan_exp - self.fan_exp
         for segment in segments:
+            if change:
+                # The scale each row had, with the fan's part at the trial exponent.
+                segment = [(*row[:3], row[3] * (FAN_REF / row[5]) ** change, *row[4:]) for row in segment]
             times = [row[0] for row in segment]
             x = segment[0][1]
             offset = x - segment[0][4] - segment[0][3] * gain * interp(self.lift, segment[0][2])
@@ -468,25 +480,35 @@ class CoilModel:
         if changes < REID_MIN_CHANGES or not training or not holdout or holdout_changes < 1:
             return None
         self.reid_tried += 1
-        params = {"tau_up": self.tau_up, "tau_down": self.tau_down, "dead": self.dead, "gain": 1.0}
-        ranges = {"tau_up": TAU_RANGE_S, "tau_down": TAU_RANGE_S, "dead": DEAD_RANGE_S, "gain": (0.5, 2.0)}
+        start = {"tau_up": self.tau_up, "tau_down": self.tau_down, "dead": self.dead, "gain": 1.0,
+                 "fan_exp": self.fan_exp}
+        params = dict(start)
+        ranges = {"tau_up": TAU_RANGE_S, "tau_down": TAU_RANGE_S, "dead": DEAD_RANGE_S, "gain": (0.5, 2.0),
+                  "fan_exp": FAN_EXP_RANGE}
         factors = (0.7, 0.85, 1.0, 1.18, 1.4)
+        keys = ["tau_up", "tau_down", "dead"]
+        fans = [row[5] for row in rows]
+        if max(fans) - min(fans) >= 8.0:
+            keys.append("fan_exp")  # (only identifiable when the fan has moved in the buffer)
 
         def fit(p: dict[str, float], segments: list[list]) -> float:
-            value = self._rmse(segments, p["tau_up"], p["tau_down"], p["dead"], p["gain"])
+            value = self._rmse(segments, p["tau_up"], p["tau_down"], p["dead"], p["gain"], p["fan_exp"])
             return math.inf if value is None else value
 
         best = fit(params, training)
         for _round in range(2):
             # (The lift itself is learned online per output; a common factor here would undo that.)
-            for key in ("tau_up", "tau_down", "dead"):
+            for key in keys:
                 for factor in factors:
                     trial = dict(params)
-                    trial[key] = clamp(params[key] * factor, *ranges[key])
+                    if key == "fan_exp":
+                        trial[key] = clamp(params[key] + (factor - 1.0), *ranges[key])
+                    else:
+                        trial[key] = clamp(params[key] * factor, *ranges[key])
                     value = fit(trial, training)
                     if value < best - 1e-6:
                         best, params = value, trial
-        prior = fit({"tau_up": self.tau_up, "tau_down": self.tau_down, "dead": self.dead, "gain": 1.0}, holdout)
+        prior = fit(start, holdout)
         fitted = fit(params, holdout)
         accepted = (math.isfinite(prior) and math.isfinite(fitted) and fitted <= (1 - REID_REL_GAIN) * prior
                     and prior - fitted >= REID_ABS_GAIN_K)
@@ -494,10 +516,11 @@ class CoilModel:
                           "accepted": 1.0 if accepted else 0.0, **{k: round(v, 3) for k, v in params.items()}}
         if accepted:
             self.tau_up, self.tau_down, self.dead = params["tau_up"], params["tau_down"], params["dead"]
+            self.fan_exp = params["fan_exp"]
             self.lift = [clamp(value * params["gain"], 0.0, LIFT_MAX_K) for value in self.lift]
             self.reid_accepted += 1
-            LOG.info("Afterheat model re-fitted: tau up %.0f s, down %.0f s, dead time %.0f s "
-                     "(holdout %.2f -> %.2f K)", self.tau_up, self.tau_down, self.dead, prior, fitted)
+            LOG.info("Afterheat model re-fitted: tau up %.0f s, down %.0f s, dead time %.0f s, fan exponent %.2f "
+                     "(holdout %.2f -> %.2f K)", self.tau_up, self.tau_down, self.dead, self.fan_exp, prior, fitted)
         return self.reid_last
 
     # ----------------------------------------------------------- prediction
@@ -540,7 +563,8 @@ class CoilModel:
     # ----------------------------------------------------------- persistence
     def to_dict(self) -> dict[str, object]:
         return {"version": self.VERSION, "lift": [round(v, 4) for v in self.lift], "tau_up": round(self.tau_up, 2),
-                "tau_down": round(self.tau_down, 2), "dead": round(self.dead, 2), "learned_s": round(self.learned_s),
+                "tau_down": round(self.tau_down, 2), "dead": round(self.dead, 2),
+                "fan_exp": round(self.fan_exp, 3), "learned_s": round(self.learned_s),
                 "reid_accepted": self.reid_accepted, "reid_tried": self.reid_tried,
                 "offset": round(self.offset, 3), "air_in": self.air_in_last, "samples": self.samples,
                 "reid_last": self.reid_last}
@@ -562,6 +586,8 @@ class CoilModel:
         model.tau_up = clamp(taus[0], *TAU_RANGE_S)
         model.tau_down = clamp(taus[1], *TAU_RANGE_S)
         model.dead = clamp(taus[2], *DEAD_RANGE_S)
+        fan_exp = num(data.get("fan_exp"))
+        model.fan_exp = FAN_EXP_PRIOR if fan_exp is None else clamp(fan_exp, *FAN_EXP_RANGE)
         model.learned_s = max(0.0, num(data.get("learned_s")) or 0.0)
         model.reid_accepted = int(num(data.get("reid_accepted")) or 0)
         model.reid_tried = int(num(data.get("reid_tried")) or 0)
@@ -666,7 +692,10 @@ class SafetyLayer:
             return self._result(now, SafetyResult(out, OVERRIDE_LIMIT))
         if self.hold_until is not None and now >= self.hold_until:
             self.hold_output = self.hold_until = None
-        if self.hold_output is not None and view.low <= self.hold_output <= view.high:
+        if self.hold_output is not None and view.low <= self.hold_output <= view.high and out != current:
+            # The guard stops moves; it never makes one of its own against an output being kept
+            # (that move was itself a one-tick visit: live 2026-11-25 it forced step 2 -> 1 while
+            # the MPC kept step 2, and HAC1's next step started it all over again).
             keep = spec.limit(self.hold_output, current, view.low, view.high)
             if keep != out:
                 out, override = keep, OVERRIDE_PINGPONG

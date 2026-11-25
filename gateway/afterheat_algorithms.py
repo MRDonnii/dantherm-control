@@ -113,10 +113,19 @@ class MpcAlgorithm(Algorithm):
     The shared CoilModel (lift per output scaled by fan and water, dead time, heating and
     cooling lag, Kalman offset, online and holdout-gated learning) predicts the air for
     every candidate plan over HORIZON_TICKS decisions. Plans are move-blocked (go to one
-    output, after k decisions to another, ramping at most max_move a decision), which
-    covers taking turns between two levels. Cost: asymmetric tracking (tracking_cost),
-    a penalty per change and a little for the heat used. The first output of the best
-    plan is used and the search runs again at the next decision (receding horizon).
+    output, after k decisions to another, ramping at most max_move a decision). Cost:
+    asymmetric tracking (tracking_cost), a penalty per change and a little for the heat
+    used. The first output of the best plan is used and the search runs again at the next
+    decision (receding horizon).
+
+    HAC1 levels (discrete): no level is left again before it has been in force
+    MIN_DWELL_TICKS (also one HAC1 took by itself), and no plan has a shorter out-and-back
+    visit, so the levels never take turns every tick. Taking turns is planned as a slow
+    duty cycle instead (stay, then the neighbour level for some ticks, back, and so on:
+    TPI-like, a period of 4-12 min), which may also start later: live 2026-11-25 the only
+    way to plan a pulse was "now", so the MPC pulsed step 2 for one tick with the air still
+    ~1 K over the target. The soft floor (safety layer) and the frost lock may still raise
+    at once.
     """
     name = "mpc"
     HORIZON_TICKS = 12
@@ -124,6 +133,12 @@ class MpcAlgorithm(Algorithm):
     SWITCH_AFTER = (1, 2, 3, 4, 6, 8)
     # Per change: a HAC1 level step is a felt jump; a stepless valve's small move is not.
     MOVE_COST = 4.0
+    # HAC1 levels: the shortest visit, and the duty-cycle plans (ticks on the start level
+    # before the first turn; ticks on the other level; ticks back).
+    MIN_DWELL_TICKS = 2
+    CYCLE_START = (0, 1, 2, 3, 4, 6)
+    CYCLE_OUT = (2, 3, 4, 6)
+    CYCLE_BACK = (2, 3, 4, 6, 8)
     MOVE_COST_STEPLESS = 0.3
     MOVE_COST_SQUARED = 0.2
     EFFORT_COST = 0.01
@@ -139,6 +154,44 @@ class MpcAlgorithm(Algorithm):
                 values.append(value)
             k += 1
         return values
+
+    def dwell_left(self, view: ControlView) -> int:
+        """Ticks the output in force must still be kept (MIN_DWELL_TICKS from its last change)."""
+        outputs = view.model.outputs
+        if not view.spec.discrete or len(outputs) < 2 or outputs[-1][1] != view.output:
+            return 0
+        in_force = (view.now - outputs[-1][0] + view.spec.apply_delay_s) / view.spec.period
+        return max(0, self.MIN_DWELL_TICKS - int(round(in_force)))
+
+    def _discrete_plans(self, view: ControlView, ticks: int) -> list[tuple[float, ...]]:
+        """HAC1 plans: stay; go to a level (ramping) after the dwell; or a duty cycle between two neighbours."""
+        spec, current = view.spec, view.output
+        wait = self.dwell_left(view)
+        plans: list[tuple[float, ...]] = [tuple([current] * ticks)]
+        starts = sorted({wait + k for k in (0, *self.SWITCH_AFTER) if wait + k < ticks})
+        for goal in self._candidates(view, current, fine=True):
+            if goal == current:
+                continue
+            for k in starts:
+                plans.append(_ramp(current, [(0, current), (k, goal)], ticks, spec))
+        step = spec.resolution
+        for first in (current - step, current + step):
+            if not view.low <= first <= view.high:
+                continue
+            for second in (first - step, first + step):
+                if not view.low <= second <= view.high:
+                    continue
+                for k in self.CYCLE_START:
+                    k += wait
+                    if k >= ticks:
+                        continue
+                    for out in self.CYCLE_OUT:
+                        for back in self.CYCLE_BACK:
+                            plan = [current] * k
+                            while len(plan) < ticks:
+                                plan += [first] * out + [second] * back
+                            plans.append(tuple(plan[:ticks]))
+        return plans
 
     def cost(self, view: ControlView, plan: tuple[float, ...], scale: float, base: float) -> tuple[float, float]:
         """(cost, lowest air) of ``plan``."""
@@ -167,12 +220,16 @@ class MpcAlgorithm(Algorithm):
             if best is None or cost < best[0] - 1e-9:
                 best = (cost, plan, lowest)
 
-        for first in self._candidates(view, view.output, fine=True):
-            consider(_ramp(view.output, [(0, first)], ticks, view.spec))
-            for k in self.SWITCH_AFTER:
-                for second in self._candidates(view, first, fine=False):
-                    if second != first:
-                        consider(_ramp(view.output, [(0, first), (k, second)], ticks, view.spec))
+        if view.spec.discrete:
+            for plan in self._discrete_plans(view, ticks):
+                consider(plan)
+        else:
+            for first in self._candidates(view, view.output, fine=True):
+                consider(_ramp(view.output, [(0, first)], ticks, view.spec))
+                for k in self.SWITCH_AFTER:
+                    for second in self._candidates(view, first, fine=False):
+                        if second != first:
+                            consider(_ramp(view.output, [(0, first), (k, second)], ticks, view.spec))
         if not view.spec.discrete and best is not None:
             # Stepless: refine the first output in 1 % steps with the rest of the plan kept.
             plan = best[1]
