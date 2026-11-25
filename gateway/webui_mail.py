@@ -240,6 +240,12 @@ class MailService:
         self.send_async([email], "HCH5 Control: nulstil adgangskode", body, kind="reset")
 
 
+# An alarm that comes back is not mailed as new within this long of its last mail, and "løst"
+# is mailed only after the alarm has stayed away this long (a wobbling value mailed 5 times in 36 h).
+MAIL_MIN_GAP_SECONDS = 3600.0
+RESOLVE_DELAY_SECONDS = 900.0
+
+
 class AlarmMailer:
     """Watches the controller snapshot and mails new and resolved alarms."""
 
@@ -250,6 +256,9 @@ class AlarmMailer:
         self.interval = interval
         self.site_name = site_name
         self.sent: dict[str, float] = {}
+        self.last_mailed: dict[str, float] = {}
+        self.clearing: dict[str, float] = {}
+        self.held: set[str] = set()
         self.known: dict[str, dict] = {}
         self.hcp4_since: float | None = None
         self.ha_since: float | None = None
@@ -298,16 +307,35 @@ class AlarmMailer:
             severity = alarm.get("severity")
             if severity not in SEVERITIES or SEVERITIES.index(severity) < threshold:
                 continue
+            # Back before the "løst" mail went out: it never happened, and nothing new is mailed.
+            self.clearing.pop(code, None)
             last = self.sent.get(code)
-            if last is None or (repeat and now - last >= repeat):
-                events.append(("raised" if code not in self.known else "reminder", alarm))
-                self.sent[code] = now
+            if last is None:
+                # A new alarm is not mailed again within MAIL_MIN_GAP_SECONDS of the last mail for the
+                # same code (it goes out when the hour has passed, if it is still active).
+                if now - self.last_mailed.get(code, -MAIL_MIN_GAP_SECONDS) < MAIL_MIN_GAP_SECONDS:
+                    self.held.add(code)
+                    continue
+                events.append(("raised" if code not in self.known or code in self.held else "reminder", alarm))
+                self.held.discard(code)
+                self.sent[code] = self.last_mailed[code] = now
+            elif repeat and now - last >= repeat:
+                events.append(("reminder", alarm))
+                self.sent[code] = self.last_mailed[code] = now
+        pending: dict[str, dict] = {}
         for code, alarm in list(self.known.items()):
             if code not in alarms:
-                if code in self.sent and settings.get("alert_resolved", True):
-                    events.append(("resolved", alarm))
+                if code in self.sent:
+                    # "Løst" goes out after the alarm has been gone for RESOLVE_DELAY_SECONDS.
+                    gone = self.clearing.setdefault(code, now)
+                    if now - gone < RESOLVE_DELAY_SECONDS:
+                        pending[code] = alarm
+                        continue
+                    self.clearing.pop(code, None)
+                    if settings.get("alert_resolved", True):
+                        events.append(("resolved", alarm))
                 self.sent.pop(code, None)
-        self.known = alarms
+        self.known = {**pending, **alarms}
         if events:
             self.mail.send_async(list(settings["recipients"]), self._subject(events), self._body(events, state), kind="alarm")
         return events

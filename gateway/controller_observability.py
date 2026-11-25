@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from room_quality import quality_rooms
+from sensor_freshness import UNIT_RH_MIN_PLAUSIBLE
 
 
 class ControllerObservability:
@@ -163,9 +164,14 @@ class ControllerObservability:
             "room": (snapshot.get("measurements") or {}).get("room"),
             "supply": snapshot.get("actual_supply_air_temperature"),
         }
+        # The unit's RH sensor reads far too low (9-14 % against 30 % in the rooms): below
+        # UNIT_RH_MIN_PLAUSIBLE it is not counted as a working measurement.
+        rh_value = self._number(local.get("rh"))
+        implausible_rh = rh_value is not None and rh_value < UNIT_RH_MIN_PLAUSIBLE
         sensors = {
             key: {
-                "available": value is not None,
+                "available": value is not None and not (key == "rh" and implausible_rh),
+                **({"implausible": True} if key == "rh" and implausible_rh else {}),
                 "fresh": bool(value is not None and bus_fresh),
                 "value": value,
                 "source": (snapshot.get("afterheat_room_source_used") or "hch5") if key == "room" else "hch5",
@@ -174,7 +180,8 @@ class ControllerObservability:
         }
         sensors["ha_rooms"] = self._ha_rooms_health(snapshot)
 
-        required = [sensors["rh"], sensors["outdoor"], sensors["room"]]
+        # A unit RH that reads implausibly low is a known fault of the sensor, not a data problem.
+        required = [sensors[k] for k in ("rh", "outdoor", "room") if not (k == "rh" and implausible_rh)]
         if not bus_fresh:
             overall = "stale"
         elif all(item["available"] for item in required):
@@ -250,6 +257,8 @@ class ControllerObservability:
             "fireplace": bool(snapshot.get("fireplace")),
             "controlling_room": snapshot.get("smart_controlling_room"),
             "controlling_metric": snapshot.get("smart_controlling_metric"),
+            # Everything that wanted more air at the time, with the winner first.
+            "candidates": snapshot.get("smart_candidates") or [],
         }
         with self.lock:
             self.events.append(event)

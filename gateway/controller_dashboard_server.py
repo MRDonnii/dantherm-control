@@ -109,7 +109,24 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
         self.kontrolrum_sso = self._create_kontrolrum_sso()
         self.auth.session_guard = self._kontrolrum_session_problem
         self.alarm_mailer = AlarmMailer(self.mail, lambda: {**controller_runtime.snapshot(), **self.ha_link()}, events=self.events)
+        # A restart loses today's outdoor season values: rebuild them from the stored minutes (T1).
+        if hasattr(controller_runtime, "restore_outdoor_history"):
+            try:
+                rows = self.history.rows(6 * 86400, ("outdoor_temp",))
+                controller_runtime.restore_outdoor_history([(r["ts"], r.get("outdoor_temp")) for r in rows])
+            except Exception as error:  # noqa: BLE001
+                LOG.warning("Outdoor season not rebuilt: %s", error)
+        # The runtime's diagnostics raise an alarm when the history stops recording.
+        if hasattr(controller_runtime, "history_status_provider"):
+            controller_runtime.history_status_provider = self.history.status
         self._record_version()
+
+    def t2_offset_k(self) -> float:
+        """The known error of the 1-Wire T2 sensor (setting "Korrektion T2"): the history stores it raw."""
+        try:
+            return float(self.controller_runtime.config.data.get("t2_offset_k") or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            return 0.0
 
     def _create_kontrolrum_sso(self):
         if KontrolrumSso is None:
@@ -263,7 +280,7 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
         now = time.time()
         rows = self.history.rows(seconds, (*SCALE_FIELDS, "afterheat_active"), now=now)
         scale = afterheat_scale(self.history.rows(AFTERHEAT_REPLAY_SCALE_SECONDS, SCALE_FIELDS, now=now),
-                                AFTERHEAT_REPLAY_SCALE_SECONDS / 3600)
+                                AFTERHEAT_REPLAY_SCALE_SECONDS / 3600, self.t2_offset_k())
         pilot = getattr(getattr(self.controller_runtime, "engine", None), "afterheat_pilot", None)
         return replay_afterheat(settings, rows, patch, scale["reference_steps"],
                                 learned_steps(pilot) if pilot is not None else None)
@@ -509,7 +526,7 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                         hours = 0
                     if hours not in AFTERHEAT_SCALE_HOURS:
                         return self._json_error(400, "Ugyldig periode")
-                    self._json(afterheat_scale(dashboard.history.rows(hours * 3600, SCALE_FIELDS), hours))
+                    self._json(afterheat_scale(dashboard.history.rows(hours * 3600, SCALE_FIELDS), hours, dashboard.t2_offset_k()))
                 elif parsed.path == "/api/health/weekly":
                     if self._require("diagnostics") is not None:
                         context = parse_qs(parsed.query).get("context", ["all"])[0]

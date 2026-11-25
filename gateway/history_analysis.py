@@ -19,8 +19,17 @@ from collections import defaultdict
 from afterheat_pilot import FAN_REFERENCE_PERCENT, LEVEL_MAX, WATER_MIN_LIFT_K, WATER_REFERENCE_LIFT_K
 from advanced_control import supply_after_core
 
-# A level counts as settled after this many one-minute samples on it at the same fan.
-SETTLE_MINUTES = 3
+# A level counts as settled after this many one-minute samples on it at the same fan. A step
+# response needs about 6 minutes to arrive (dead time 60-90 s, time constant 2.3-2.6 min):
+# 3 minutes counted a level as settled at 61 % of its final change.
+SETTLE_MINUTES = 6
+# Plausible range of a temperature in the history. The 655 C rows of 2026-11-17..19 (an unsigned
+# decode of a negative T1, fixed since) fall outside it and are read as missing.
+TEMPERATURE_RANGE = (-50.0, 60.0)
+# effective_source as the history stores it: the index in this tuple (one past the end: other).
+LEVEL_SOURCES = ("local_auto", "ha_smart", "local_fallback", "vacation", "night", "night_air_quality",
+                 "free_cooling", "night_cooling", "dry_protection", "quick_boost", "cool_boost", "bonfire",
+                 "standby", "schedule", "fireplace", "manual")
 # Fewer settled minutes than this on a level: no value is shown.
 MIN_POINTS = 3
 # Consecutive samples further apart than this are a gap.
@@ -34,7 +43,14 @@ SCALE_FIELDS = ("afterheat_level", "heating_coil_after_temperature", "afterheat_
                 "return_temperature", "flow_temperature", "afterheat_target", "afterheat_context")
 MAX_FAN_GROUPS = 6
 HEALTH_FIELDS = ("heating_coil_after_temperature", "afterheat_target", "afterheat_active",
-                 "afterheat_level", "fan_supply_percent", "afterheat_context", "afterheat_algorithm_code")
+                 "afterheat_level", "fan_supply_percent", "afterheat_context", "afterheat_algorithm_code",
+                 # The comfort part of the report (new columns are empty in older rows).
+                 "max_room_co2", "indoor_rh_average", "unit_frost_protection", "outdoor_temp",
+                 "extract_temp", "exhaust_temp", "bypass_active")
+CO2_LIMITS = (900, 1000)
+DRY_RH_PERCENT = 30.0
+# Heat recovery is only meaningful with this much difference between extract and outdoor air.
+RECOVERY_MIN_SPAN_K = 8.0
 HEALTH_DAYS = 7
 IN_BAND_K = 0.5
 # The combined HA-room status that the weekly report repeats.
@@ -77,12 +93,19 @@ def _mean(values: list[float]) -> float | None:
     return round(statistics.fmean(values), 2) if values else None
 
 
-def before_coil(row: dict) -> tuple[float | None, str | None]:
-    """Air before the coil: the 1-Wire T2 when recorded, else estimated from T1, T3 and T4."""
-    measured = _number(row.get("afterheat_before_temperature"))
+def _temperature(row: dict, key: str) -> float | None:
+    """A recorded temperature, None when missing or outside TEMPERATURE_RANGE (a sensor glitch)."""
+    value = _number(row.get(key))
+    return value if value is not None and TEMPERATURE_RANGE[0] <= value <= TEMPERATURE_RANGE[1] else None
+
+
+def before_coil(row: dict, t2_offset_k: float = 0.0) -> tuple[float | None, str | None]:
+    """Air before the coil: the 1-Wire T2 (plus its known error ``t2_offset_k``, as in the
+    live lift and kWh) when recorded, else estimated from T1, T3 and T4."""
+    measured = _temperature(row, "afterheat_before_temperature")
     if measured is not None:
-        return measured, "measured"
-    t1, t3, t4 = (_number(row.get(key)) for key in ("outdoor_temp", "extract_temp", "exhaust_temp"))
+        return measured + t2_offset_k, "measured"
+    t1, t3, t4 = (_temperature(row, key) for key in ("outdoor_temp", "extract_temp", "exhaust_temp"))
     if t1 is None or t3 is None or t4 is None or abs(t3 - t1) < 0.5:
         return None, None
     recovery = (t3 - t4) / (t3 - t1) * 100
@@ -105,7 +128,7 @@ def _settled(rows: list[dict]):
     for row in rows:
         level, fan, ts = _number(row.get("afterheat_level")), _number(row.get("fan_supply_percent")), _number(row.get("ts"))
         context = row.get("afterheat_context")
-        outdoor = _number(row.get("outdoor_temp"))
+        outdoor = _temperature(row, "outdoor_temp")
         usable = (level is not None and fan is not None and fan > 0 and ts is not None
                   and _number(row.get("heating_coil_after_temperature")) is not None
                   and context not in SCALE_SKIP_CONTEXTS and (outdoor is None or outdoor < SUMMER_OUTDOOR_C))
@@ -132,7 +155,7 @@ def _steps(lifts: dict[int, float]) -> dict[int, float]:
     return steps
 
 
-def afterheat_scale(rows: list[dict], hours: float) -> dict:
+def afterheat_scale(rows: list[dict], hours: float, t2_offset_k: float = 0.0) -> dict:
     cells: dict[tuple[int, int], dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     reference: dict[int, list[float]] = defaultdict(list)
     sources: set[str] = set()
@@ -142,7 +165,7 @@ def afterheat_scale(rows: list[dict], hours: float) -> dict:
         cell = cells[(fan, level)]
         air = float(row["heating_coil_after_temperature"])
         cell["air"].append(air)
-        before, source = before_coil(row)
+        before, source = before_coil(row, t2_offset_k)
         if before is not None:
             sources.add(source)
             cell["lift"].append(air - before)
@@ -318,6 +341,44 @@ def _scan(rows: list[dict], *, since: float, until: float, context: str, total: 
     return previous["_ts"] if previous is not None else None
 
 
+def comfort_report(rows: list[dict], since: float) -> dict:
+    """What the week felt like, from the stored minutes: CO2, dry air, the unit's own frost
+    protection and the heat recovery. One sample is one minute; a field that was not recorded
+    (older rows) is left out, never counted as fine. ``lines`` is the plain-Danish list."""
+    co2 = [v for r in rows if (_number(r.get("ts")) or 0) >= since and (v := _number(r.get("max_room_co2"))) is not None]
+    rh = [v for r in rows if (_number(r.get("ts")) or 0) >= since and (v := _number(r.get("indoor_rh_average"))) is not None]
+    frost = [v for r in rows if (_number(r.get("ts")) or 0) >= since and (v := _number(r.get("unit_frost_protection"))) is not None]
+    recovery = []
+    for r in rows:
+        if (_number(r.get("ts")) or 0) < since or _number(r.get("bypass_active")):
+            continue
+        t1, t3, t4 = (_temperature(r, k) for k in ("outdoor_temp", "extract_temp", "exhaust_temp"))
+        if t1 is not None and t3 is not None and t4 is not None and t3 - t1 >= RECOVERY_MIN_SPAN_K:
+            share = (t3 - t4) / (t3 - t1) * 100
+            if 0 <= share <= 105:
+                recovery.append(share)
+    result: dict = {
+        "co2_minutes_known": len(co2),
+        "co2_over_900_minutes": sum(1 for v in co2 if v > CO2_LIMITS[0]) if co2 else None,
+        "co2_over_1000_minutes": sum(1 for v in co2 if v > CO2_LIMITS[1]) if co2 else None,
+        "dry_air_hours": round(sum(1 for v in rh if v < DRY_RH_PERCENT) / 60, 1) if rh else None,
+        "unit_frost_minutes": round(sum(1 for v in frost if v >= 0.5)) if frost else None,
+        "recovery_median_percent": round(statistics.median(recovery), 1) if len(recovery) >= 30 else None,
+    }
+    lines = []
+    if result["co2_over_1000_minutes"] is not None:
+        lines.append(f"CO₂ over 1000 ppm i det mest belastede rum: {result['co2_over_1000_minutes']} minutter "
+                     f"(over 900 ppm: {result['co2_over_900_minutes']} minutter)")
+    if result["dry_air_hours"] is not None:
+        lines.append(f"Tør luft (under 30 % fugt indenfor): {result['dry_air_hours']} timer")
+    if result["unit_frost_minutes"] is not None:
+        lines.append(f"Anlæggets egen frostsikring har skåret ned på indblæsningen i {result['unit_frost_minutes']} minutter")
+    if result["recovery_median_percent"] is not None:
+        lines.append(f"Varmegenvinding (midterste værdi): {result['recovery_median_percent']} %")
+    result["lines"] = lines
+    return result
+
+
 def weekly_health(rows: list[dict], *, events: list[dict], restarts: list[dict], controller: dict,
                   now: float | None = None, days: int = HEALTH_DAYS, context: str = "all",
                   history: dict | None = None) -> dict:
@@ -363,6 +424,7 @@ def weekly_health(rows: list[dict], *, events: list[dict], restarts: list[dict],
             "error": recording.get("error") or recording.get("read_error"),
         },
         "total": total.result(),
+        "comfort": comfort_report(rows, since),
         "last_sample_age_minutes": round((now - last_ts) / 60, 1) if last_ts is not None else None,
         "open_gap_minutes": round(open_gap_s / 60),
         "per_day": [{"date": day, **period.result()} for day, period in sorted(per_day.items())],

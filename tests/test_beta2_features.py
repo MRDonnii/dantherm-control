@@ -27,7 +27,7 @@ from history_analysis import SCALE_FIELDS, afterheat_scale, before_coil, weekly_
 START = 1_000_020  # a whole minute
 
 
-def scale_rows(lifts=(0.0, 2.0, 10.0), minutes=6, fan=36, before=18.0, **extra):
+def scale_rows(lifts=(0.0, 2.0, 10.0), minutes=9, fan=36, before=18.0, **extra):
     """Each level held ``minutes`` minutes; the air settles at once (the analysis skips the first minutes anyway)."""
     rows, ts = [], START
     for level, lift in enumerate(lifts):
@@ -49,7 +49,7 @@ class AfterheatScaleTests(unittest.TestCase):
         levels = fan["levels"]
         self.assertEqual(len(levels), 11)
         self.assertEqual([levels[i]["valve_percent"] for i in (0, 5, 10)], [0, 50, 100])
-        # Six minutes on a level, of which the last four count as settled.
+        # Nine minutes on a level, of which the last four count as settled (a step needs six minutes to arrive).
         self.assertEqual([levels[i]["minutes"] for i in range(3)], [4, 4, 4])
         self.assertEqual([levels[i]["lift"] for i in range(3)], [0.0, 2.0, 10.0])
         self.assertEqual([levels[i]["step_k"] for i in range(3)], [None, 2.0, 8.0])
@@ -62,19 +62,20 @@ class AfterheatScaleTests(unittest.TestCase):
         self.assertIsNone(result["reference_steps"][2])
 
     def test_too_few_minutes_switched_off_or_summer_minutes_give_no_value(self):
-        self.assertEqual(afterheat_scale(scale_rows(minutes=4), 24)["fans"][0]["levels"][1]["lift"], None)
+        self.assertEqual(afterheat_scale(scale_rows(minutes=7), 24)["fans"][0]["levels"][1]["lift"], None)
         self.assertEqual(afterheat_scale(scale_rows(afterheat_context=4), 24)["fans"], [])
         self.assertEqual(afterheat_scale(scale_rows(outdoor_temp=18.0), 24)["fans"], [])
 
     def test_gap_and_fan_change_restart_the_settling(self):
-        rows = scale_rows(minutes=6)
-        for row in rows[3:]:
+        rows = scale_rows(minutes=12)
+        for row in rows[8:]:
             row["ts"] += 600
-        # Three minutes either side of the gap: one settled minute each instead of four in all.
-        self.assertEqual(afterheat_scale(rows, 24)["fans"][0]["levels"][0]["minutes"], 2)
-        rows = scale_rows(minutes=6)
+        # Eight minutes before the gap (three settled) and four after it (not yet settled).
+        self.assertEqual(afterheat_scale(rows, 24)["fans"][0]["levels"][0]["minutes"], 3)
+        rows = scale_rows(minutes=12)
         rows[2]["fan_supply_percent"] = 50
-        self.assertEqual(afterheat_scale(rows, 24)["fans"][0]["levels"][0]["minutes"], 1)
+        # The fan change restarts the count: nine minutes remain, four of them settled.
+        self.assertEqual(afterheat_scale(rows, 24)["fans"][0]["levels"][0]["minutes"], 4)
 
     def test_before_coil_falls_back_to_the_estimate_from_t1_t3_t4(self):
         self.assertEqual(before_coil({"afterheat_before_temperature": 17.5}), (17.5, "measured"))

@@ -101,6 +101,42 @@ class OutdoorHistory:
         self.high = value if self.high is None else max(self.high, value)
         return completed
 
+    def rebuild(self, samples: list[tuple[float, float | None]], now: float) -> bool:
+        """Fill in the season from stored outdoor samples ((time, T1) oldest first, e.g. the history).
+
+        A restart loses today's partial day (and a day that ended with less than MIN_DAY_HOURS
+        after a restart): completed days that are missing are added, and today so far is picked
+        up again when it holds more than what is in memory. Returns True when the saved days
+        changed (the caller saves them).
+        """
+        days: dict[str, list[float]] = {}
+        previous: tuple[float, str] | None = None
+        for at, value in samples:
+            if value is None or not math.isfinite(value) or not -50 <= value <= 60:
+                previous = None
+                continue
+            date = datetime.fromtimestamp(at).astimezone().date().isoformat()
+            acc = days.setdefault(date, [0.0, 0.0, value])
+            if previous is not None and previous[1] == date:
+                weight = min(self.MAX_GAP_SECONDS, max(0.0, at - previous[0]))
+                acc[0] += value * weight
+                acc[1] += weight
+            acc[2] = max(acc[2], value)
+            previous = (at, date)
+        today = datetime.fromtimestamp(now).astimezone().date().isoformat()
+        known = {str(day[0]) for day in self.days}
+        changed = False
+        for date, (total, seconds, _high) in sorted(days.items()):
+            if date < today and date not in known and seconds / 3600 >= MIN_DAY_HOURS:
+                self.days.append([date, round(total / seconds, 2), round(seconds / 3600, 2)])
+                changed = True
+        if changed:
+            self.days = sorted(self.days, key=lambda day: str(day[0]))[-SEASON_DAYS:]
+        acc = days.get(today)
+        if acc is not None and acc[1] > self.seconds and self.today in (None, today):
+            self.today, self.weighted_sum, self.seconds, self.high, self.last_at = today, acc[0], acc[1], acc[2], None
+        return changed
+
     def running_mean(self) -> float | None:
         """Mean of the last completed days plus today so far (if long enough)."""
         means = [float(day[1]) for day in self.days[-SEASON_DAYS:]]

@@ -4,6 +4,9 @@ from __future__ import annotations
 import time
 import math
 
+# The unit's own humidity below this is a sensor that reads too low (9-14 % where the rooms have 30 %), not dry air.
+UNIT_RH_MIN_PLAUSIBLE = 20.0
+
 SENSOR_FRESHNESS_SECONDS = 45.0
 
 # Added in 1.13. Gateways opt in so older embedded producers keep working;

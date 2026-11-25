@@ -55,6 +55,25 @@ ALARM_DELAYS = {
     "level_flapping": 0,
     # The restart file already spans 30 minutes.
     "watchdog_restarts": 0,
+    # Thresholds below come from the 30 days of live data: none of them would have fired on it
+    # except the one afterheat event on 2026-11-21 (water cold at step 8-10).
+    "coil_frost": 120,
+    "afterheat_water_cold": 900,
+    "room_sensor_missing": 1800,
+    # The count already spans 6 h / 1 h.
+    "afterheat_pilot_fallback": 0,
+    "afterheat_rate_high": 0,
+    "fan_speed_mismatch": 600,
+    "level_not_followed": 600,
+    # The sensor has already been constant for hours.
+    "sensor_frozen": 0,
+    "afterheat_status_stale": 120,
+    "pi_disk_full": 300,
+    "pi_undervoltage": 60,
+    "history_paused": 1800,
+    "clock_unsynced": 1800,
+    # The seven-day median already spans days.
+    "recovery_trend": 0,
 }
 ALARM_TEXT = {
     "controller_command_failed": "En styrekommando er ikke gennemført; Pi forsøger igen med pause",
@@ -70,6 +89,20 @@ ALARM_TEXT = {
     "balance_overpressure": "Overtryk i huset: indblæsningen giver mere luft end udsugningen, så fugtig luft kan presses ud i konstruktionen. Slå luftbalancen til",
     "level_flapping": "Automatikken skifter trin for tit (over 12 gange i timen): en grænse eller en føler svinger",
     "watchdog_restarts": "Vagthunden har genstartet styringen 3 gange eller mere inden for 30 min: se loggen på Pi'en",
+    "coil_frost": "Vandfladen er tæt på frost: tjek fjernvarmen og ventilen",
+    "afterheat_water_cold": "Eftervarmen kalder, men vandet i fladen er koldt: tjek fjernvarmen, ventilen og pumpen",
+    "room_sensor_missing": "En CO₂- eller fugtmåler i et rum med styring mangler eller har ikke sendt længe",
+    "afterheat_pilot_fallback": "Eftervarmen er faldet tilbage til anlæggets egen styring 3 gange eller mere inden for 6 timer",
+    "afterheat_rate_high": "Eftervarmen skifter trin meget ofte",
+    "fan_speed_mismatch": "En ventilators omdrejninger passer ikke til trinnet: tjek ventilatoren",
+    "level_not_followed": "Anlægget følger ikke det beordrede trin: ventilatorerne kører ikke som bestilt",
+    "sensor_frozen": "En måler står stille på samme værdi i flere timer",
+    "afterheat_status_stale": "Eftervarmens status opdateres ikke: styringen kan have en fejl",
+    "pi_disk_full": "Pi'ens disk er næsten fuld (90 % eller mere)",
+    "pi_undervoltage": "Pi'en melder for lav spænding: tjek strømforsyningen",
+    "history_paused": "Optagelsen af historik er sat på pause: tjek disken",
+    "clock_unsynced": "Pi'ens ur er ikke synkroniseret med netværket",
+    "recovery_trend": "Varmegenvindingen er faldet over den seneste uge: veksleren kan være ved at blive snavset",
 }
 ALARM_SEVERITY = {
     "controller_command_failed": "critical",
@@ -85,7 +118,28 @@ ALARM_SEVERITY = {
     "balance_overpressure": "info",
     "level_flapping": "warning",
     "watchdog_restarts": "critical",
+    "coil_frost": "critical",
+    "afterheat_water_cold": "warning",
+    "room_sensor_missing": "warning",
+    "afterheat_pilot_fallback": "warning",
+    "afterheat_rate_high": "info",
+    "fan_speed_mismatch": "warning",
+    "level_not_followed": "warning",
+    "sensor_frozen": "info",
+    "afterheat_status_stale": "info",
+    "pi_disk_full": "warning",
+    "pi_undervoltage": "warning",
+    "history_paused": "warning",
+    "clock_unsynced": "info",
+    "recovery_trend": "info",
 }
+# An alarm clears only after its condition has been false for max(CLEAR_HOLD_MIN, delay / 2)
+# seconds, so a value that wobbles around its limit neither flaps nor mails again and again.
+# These have their own hysteresis (a count spanning an hour, a restart file) and clear at once.
+CLEAR_HOLD_MIN = 300.0
+CLEAR_HOLD_OWN = frozenset({"level_flapping", "watchdog_restarts", "afterheat_pilot_fallback",
+                            "afterheat_rate_high", "sensor_frozen", "recovery_trend"})
+CLEAR_HOLD_LONG = {"recovery_trend": 3600.0}
 FROST_WATCH_T4 = 3.0
 FROST_RISK_T4 = 0.5
 # Clean-filter reference: power per fan gear pair, learned this many hours
@@ -110,6 +164,40 @@ LEVEL_FLAP_QUIET_SECONDS = 900
 # the clear, or this long (the old burst, older than the quiet period, has
 # then left the hour).
 LEVEL_FLAP_REARM_SECONDS = 3600 - LEVEL_FLAP_QUIET_SECONDS
+# Water coil frost sensor: below this (fresh) the coil is close to freezing. 30 days of live data: min 15.2 C.
+COIL_FROST_C = 10.0
+# Afterheat "water cold": HAC1 asks for much heat but the flow pipe is cold, or the return is far
+# below the air that should be warming it (only 2026-11-21 matches in 30 days).
+WATER_COLD_FLOW_LEVEL = 8
+WATER_COLD_FLOW_C = 36.0
+WATER_COLD_RETURN_LEVEL = 3
+WATER_COLD_RETURN_BELOW_K = 3.0
+# Afterheat "no lift" at a high level: this long at HAC1 level >= NO_LIFT_LEVEL with less than NO_LIFT_K.
+NO_LIFT_LEVEL = 6
+NO_LIFT_K = 1.0
+NO_LIFT_SECONDS = 1200.0
+PILOT_FALLBACK_LIMIT = 3
+PILOT_RATE_WARNINGS_LIMIT = 3
+# Fan rpm per percent is fixed (weekly medians moved <= 1 rpm in 5 weeks); 8 % off for the
+# alarm delay is a failing fan. A reference needs RPM_REF_MIN samples first.
+RPM_TOLERANCE = 0.08
+RPM_STEADY_SECONDS = 180.0
+RPM_REF_MIN = 30
+RPM_REF_WEIGHT = 500
+# The unit has this long to reach a new level before it must follow it.
+FOLLOW_GRACE_SECONDS = 180.0
+FOLLOW_TOLERANCE_PERCENT = 5.0
+# Longest constant run in 30 days was 0.7 h (6 h for PM2.5, left out): 4 h without any change.
+FROZEN_SECONDS = 4 * 3600.0
+PI_DISK_PERCENT = 90.0
+# Heat recovery: the 7-day median this many points under the 30-day median.
+RECOVERY_TREND_POINTS = 4.0
+RECOVERY_TREND_MIN_SAMPLES = 60
+RECOVERY_KEEP_DAYS = 31
+# A coil that is cold for this long gives the T2 sensor error (T2AH minus T2).
+T2_COLD_SECONDS = 1200.0
+T2_SAMPLES_MAX = 240
+T2_SAMPLES_MIN = 60
 SAVE_EVERY = 300.0
 MAX_STEP = 60.0
 # The gateway records each watchdog exit; this many within the window is a restart loop.
@@ -188,6 +276,25 @@ class Diagnostics:
         self.seen_sensors: set[str] = set()
         # T1 (outdoor) is always expected: missing from start it counts after a grace period.
         self.first_update: float | None = None
+        # Alarm hysteresis and the text details of alarms that name something (rooms, sensors).
+        self.clear_since: dict[str, float] = {}
+        self.detail: dict[str, str] = {}
+        # Afterheat: HAC1 level held high with no lift, and how long the level has been 0 (cold coil).
+        self.level_high_since: float | None = None
+        self.level_zero_since: float | None = None
+        self.t2_samples: list[float] = []
+        self.t2_sample_at = 0.0
+        # Rpm per fan percent (learned, persisted) and how long each fan has held its percent.
+        self.rpm_ref: dict[str, dict[str, float]] = {}
+        self.fan_steady: dict[str, tuple[float, float]] = {}
+        self.expected_pair: tuple[float | None, float | None] | None = None
+        self.expected_since = 0.0
+        # Values for the "stands still" check: name -> (value, since).
+        self.frozen: dict[str, tuple[float, float]] = {}
+        # Day -> {half-point bin: count} of the extract-side recovery, for the weekly trend.
+        self.recovery_days: dict[str, dict[str, int]] = {}
+        self.trend_at = 0.0
+        self.trend: tuple[float | None, float | None] = (None, None)
         self.restart_path = self.path.parent / WATCHDOG_RESTART_FILE if self.path else None
         self.restart_mtime: float | None = None
         self.restart_times: list[float] = []
@@ -224,17 +331,30 @@ class Diagnostics:
         refs = saved.get("filter_reference", {})
         if isinstance(refs, dict):
             self.filter_reference = {
-                str(k): {"w": float(v["w"]), "n": float(v.get("n", 1))}
+                str(k): {"w": float(v["w"]), "n": float(v.get("n", 1)),
+                         **({"h": float(v["h"])} if _num(v.get("h")) is not None else {})}
                 for k, v in refs.items() if isinstance(v, dict) and _num(v.get("w"))}
         self.filter_hours = _num(saved.get("filter_hours"))
         self.filter_marker = saved.get("filter_marker")
+        refs = saved.get("rpm_reference", {})
+        if isinstance(refs, dict):
+            self.rpm_ref = {str(k): {"v": float(v["v"]), "n": float(v.get("n", 1))}
+                            for k, v in refs.items() if isinstance(v, dict) and _num(v.get("v"))}
+        days = saved.get("recovery_days", {})
+        if isinstance(days, dict):
+            self.recovery_days = {str(d): {str(b): int(c) for b, c in bins.items() if _num(c) is not None}
+                                  for d, bins in days.items() if isinstance(bins, dict)}
+        samples = saved.get("t2_samples", [])
+        if isinstance(samples, list):
+            self.t2_samples = [float(v) for v in samples if _num(v) is not None][-T2_SAMPLES_MAX:]
 
     def save(self) -> None:
         if not self.path:
             return
         payload = {"energy": self.energy, "today": self.today,
                    "filter_reference": self.filter_reference, "filter_hours": self.filter_hours,
-                   "filter_marker": self.filter_marker}
+                   "filter_marker": self.filter_marker, "rpm_reference": self.rpm_ref,
+                   "recovery_days": self.recovery_days, "t2_samples": self.t2_samples}
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp = tempfile.mkstemp(prefix=".diagnostics-", dir=self.path.parent)
@@ -250,6 +370,220 @@ class Diagnostics:
         self.save()
 
     # ---- update ------------------------------------------------------
+    @staticmethod
+    def _clear_hold(code: str) -> float:
+        if code in CLEAR_HOLD_LONG:
+            return CLEAR_HOLD_LONG[code]
+        if code in CLEAR_HOLD_OWN:
+            return 0.0
+        return max(CLEAR_HOLD_MIN, ALARM_DELAYS[code] / 2.0)
+
+    def _median_recovery(self, today: str, days: int) -> float | None:
+        """Median of the recorded extract-side recovery over the last ``days`` days (None: too little)."""
+        first = datetime.fromtimestamp(datetime.strptime(today, "%Y-%m-%d").timestamp() - (days - 1) * 86400).strftime("%Y-%m-%d")
+        total: dict[int, int] = {}
+        for day, bins in self.recovery_days.items():
+            if first <= day <= today:
+                for key, count in bins.items():
+                    total[int(key)] = total.get(int(key), 0) + count
+        count = sum(total.values())
+        if count < RECOVERY_TREND_MIN_SAMPLES:
+            return None
+        half, seen = count / 2.0, 0
+        for key in sorted(total):
+            seen += total[key]
+            if seen >= half:
+                return round(key / 2.0, 1)
+        return None
+
+    def _recovery_trend(self, now: float, extract_recovery: float | None, cold: bool, bypass: bool) -> bool:
+        today = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+        if extract_recovery is not None and cold and not bypass and 0 <= extract_recovery <= 105:
+            bins = self.recovery_days.setdefault(today, {})
+            key = str(int(round(extract_recovery * 2)))
+            bins[key] = bins.get(key, 0) + 1
+        if len(self.recovery_days) > RECOVERY_KEEP_DAYS:
+            for day in sorted(self.recovery_days)[:-RECOVERY_KEEP_DAYS]:
+                del self.recovery_days[day]
+        if now - self.trend_at >= 300 or now < self.trend_at:
+            self.trend_at = now
+            week, month = self._median_recovery(today, 7), self._median_recovery(today, 30)
+            self.trend = (week, month)
+        week, month = self.trend
+        return week is not None and month is not None and len(self.recovery_days) >= 14 \
+            and week <= month - RECOVERY_TREND_POINTS
+
+    def _fan_checks(self, s: dict, now: float, unit_frost: bool, quiet: bool) -> tuple[bool, bool]:
+        """Rpm against the learned rpm of the same percent; the unit against the commanded profile."""
+        speed_bad = False
+        for fan in ("extract", "supply"):
+            pct = _num(s.get(f"actual_fan_{fan}_percent"))
+            rpm = _num(s.get(f"actual_fan_{fan}_rpm"))
+            held = self.fan_steady.get(fan)
+            if pct is None or rpm is None or pct <= 0 or quiet or (fan == "supply" and unit_frost):
+                self.fan_steady.pop(fan, None)
+                continue
+            if held is None or held[0] != pct:
+                self.fan_steady[fan] = held = (pct, now)
+            if now - held[1] < RPM_STEADY_SECONDS:
+                continue
+            key = f"{fan}:{int(pct)}"
+            ref = self.rpm_ref.get(key)
+            if rpm <= 0:
+                speed_bad = True
+            elif ref is None or ref["n"] < RPM_REF_MIN:
+                ref = self.rpm_ref.setdefault(key, {"v": rpm, "n": 0.0})
+                ref["n"] += 1
+                ref["v"] += (rpm - ref["v"]) / ref["n"]
+            elif abs(rpm - ref["v"]) / ref["v"] > RPM_TOLERANCE:
+                speed_bad = True
+            else:
+                # Follows slowly, and only values near the reference: a failing fan cannot drag it along.
+                ref["n"] = min(RPM_REF_WEIGHT, ref["n"] + 1)
+                ref["v"] += (rpm - ref["v"]) / ref["n"]
+        # Following the commanded level: the unit's extract percent against the profile of the effective level.
+        profile = s.get("effective_profile")
+        wanted = _num(profile.get("extract")) if isinstance(profile, dict) else None
+        wanted_pair = (wanted, _num(profile.get("supply")) if isinstance(profile, dict) else None)
+        if wanted_pair != self.expected_pair:
+            self.expected_pair, self.expected_since = wanted_pair, now
+        actual = _num(s.get("actual_fan_extract_percent"))
+        not_followed = (
+            s.get("hardware_control_state") == "active_pi_master" and wanted is not None and actual is not None
+            and not quiet and not unit_frost and now - self.expected_since >= FOLLOW_GRACE_SECONDS
+            and abs(actual - wanted) > FOLLOW_TOLERANCE_PERCENT)
+        return speed_bad, not_followed
+
+    def _watch_frozen(self, name: str, value: float | None, now: float) -> bool:
+        """True when ``value`` has not changed for FROZEN_SECONDS (a missing value resets the watch)."""
+        if value is None:
+            self.frozen.pop(name, None)
+            return False
+        held = self.frozen.get(name)
+        if held is None or held[0] != value:
+            self.frozen[name] = (value, now)
+            return False
+        return now - held[1] >= FROZEN_SECONDS
+
+    def _extra_checks(self, s: dict, now: float, t1, t3, t4, bypass: bool, extract_recovery, cold: bool) -> dict:
+        """The alarms added in 1.13.0-beta.14: coil frost, water, rooms, fans, frozen sensors, the Pi itself."""
+        conditions: dict[str, bool] = {}
+        detail: dict[str, str] = {}
+        # Coil frost sensor (fresh value only, supplied by the runtime).
+        frost = _num(s.get("coil_frost_temperature"))
+        conditions["coil_frost"] = frost is not None and frost < COIL_FROST_C
+        if conditions["coil_frost"]:
+            detail["coil_frost"] = f"{frost:.1f} °C"
+        # HAC1 level and the water pipes.
+        level = _num(s.get("afterheat_level"))
+        flow, back = _num(s.get("water_flow_temperature")), _num(s.get("water_return_temperature"))
+        t2ah = _num(s.get("heating_coil_after_temperature"))
+        conditions["afterheat_water_cold"] = bool(
+            level is not None and ((level >= WATER_COLD_FLOW_LEVEL and flow is not None and flow < WATER_COLD_FLOW_C)
+                                   or (level >= WATER_COLD_RETURN_LEVEL and back is not None and t2ah is not None
+                                       and back < t2ah - WATER_COLD_RETURN_BELOW_K)))
+        # High HAC1 level for a long time with next to no lift (corrected T2).
+        lift = _num(s.get("afterheat_lift"))
+        setpoint = _num(s.get("afterheat_effective_setpoint"))
+        if setpoint is None:
+            setpoint = _num(s.get("actual_afterheat_setpoint"))
+        reached = setpoint is not None and t2ah is not None and t2ah >= setpoint - 1.0
+        if (level is not None and level >= NO_LIFT_LEVEL and lift is not None and lift < NO_LIFT_K
+                and not reached and s.get("actual_afterheat_outdoor_lockout") is not True):
+            self.level_high_since = self.level_high_since or now
+        else:
+            self.level_high_since = None
+        no_lift_high = self.level_high_since is not None and now - self.level_high_since >= NO_LIFT_SECONDS
+        # A cold coil (HAC1 level 0 for a while, no heat in the pipes or T2AH equal to the T1+T3-T4 estimate)
+        # shows the T2 sensor error directly: it is a suggestion for "Korrektion T2", nothing is changed.
+        raw_t2 = _num(s.get("actual_supply_before_heater_temperature"))
+        estimate = _num(s.get("actual_supply_before_heater_estimate"))
+        if level == 0 and s.get("actual_afterheat") is not True:
+            self.level_zero_since = self.level_zero_since or now
+        else:
+            self.level_zero_since = None
+        if (self.level_zero_since is not None and now - self.level_zero_since >= T2_COLD_SECONDS
+                and raw_t2 is not None and t2ah is not None
+                and ((back is not None and back < t2ah + 2.0)
+                     or (estimate is not None and abs(t2ah - estimate) <= 0.7))
+                and now - self.t2_sample_at >= 60):
+            self.t2_sample_at = now
+            self.t2_samples = (self.t2_samples + [round(t2ah - raw_t2, 2)])[-T2_SAMPLES_MAX:]
+        t2_suggested = None
+        if len(self.t2_samples) >= T2_SAMPLES_MIN:
+            ordered = sorted(self.t2_samples)
+            t2_suggested = round(ordered[len(ordered) // 2], 2)
+        # Pilot fallbacks and a setpoint rate that is too high (counts come from the pilot, 6 h / 1 h).
+        conditions["afterheat_pilot_fallback"] = (_num(s.get("afterheat_fallbacks_6h")) or 0) >= PILOT_FALLBACK_LIMIT
+        conditions["afterheat_rate_high"] = (_num(s.get("afterheat_rate_warnings_1h")) or 0) >= PILOT_RATE_WARNINGS_LIMIT
+        conditions["afterheat_status_stale"] = s.get("afterheat_status_stale") is True
+        # HA rooms with control: a CO2 or humidity sensor that is stale or missing.
+        rooms_bad: list[str] = []
+        online = s.get("smart_inputs_online") is True
+        rooms = s.get("smart_ha_rooms") if isinstance(s.get("smart_ha_rooms"), dict) else {}
+        quality = s.get("smart_room_quality") if isinstance(s.get("smart_room_quality"), dict) else {}
+        missing = s.get("smart_missing_sensors") if isinstance(s.get("smart_missing_sensors"), dict) else {}
+        source_rooms = {str(n) for n in (s.get("smart_source_rooms") or [])}
+        if online:
+            # Rooms HA left out of the message (all selected sensors lack data) count too.
+            for name in list(rooms) + [n for n in missing if n not in rooms]:
+                room = rooms.get(name, {})
+                if (not isinstance(room, dict) or room.get("enabled") is False
+                        or room.get("control") is False or name in source_rooms):
+                    continue
+                per_kind = quality.get(name) if isinstance(quality.get(name), dict) else {}
+                names = []
+                for kind, label in (("co2", "CO₂-måleren"), ("humidity", "fugtmåleren")):
+                    state = (per_kind.get(kind) or {}).get("state") if isinstance(per_kind.get(kind), dict) else None
+                    gone = any(isinstance(k, str) and kind[:3] in k.lower().replace("co₂", "co2")
+                               for k in (missing.get(name) or []))
+                    if state == "stale" or gone:
+                        names.append(label)
+                if names:
+                    rooms_bad.append(f"{' og '.join(names)} i {name}")
+        conditions["room_sensor_missing"] = bool(rooms_bad)
+        if rooms_bad:
+            detail["room_sensor_missing"] = "; ".join(rooms_bad[:4])
+        # Fans.
+        unit_frost = s.get("actual_unit_frost_protection") is True
+        quiet = (s.get("standby_active") is True or s.get("bonfire_active") is True
+                 or bool(s.get("actual_bypass_travel_direction")) or s.get("fireplace") is True
+                 or s.get("actual_fireplace") is True)
+        speed_bad, not_followed = self._fan_checks(s, now, unit_frost, quiet)
+        conditions["fan_speed_mismatch"] = speed_bad
+        conditions["level_not_followed"] = not_followed
+        # Sensors that stand still: the unit's own, and CO2 / humidity in the rooms with control.
+        frozen: list[str] = []
+        for name, label, value in (
+                ("co2", "CO₂ (anlæg)", _num(s.get("unit_co2"))),
+                ("t1", "T1", t1), ("t3", "T3", t3), ("t4", "T4", t4), ("t2ah", "T2AH", t2ah)):
+            if self._watch_frozen(name, value, now):
+                frozen.append(label)
+        if online:
+            for name, room in rooms.items():
+                if (not isinstance(room, dict) or room.get("enabled") is False
+                        or room.get("control") is False or name in source_rooms):
+                    continue
+                # Room humidity is whole percent and often reported only on change: only CO2 is watched.
+                for kind, label in (("co2", "CO₂"),):
+                    per_kind = quality.get(name) if isinstance(quality.get(name), dict) else {}
+                    state = (per_kind.get(kind) or {}).get("state") if isinstance(per_kind.get(kind), dict) else None
+                    value = _num(room.get(kind)) if state in ("fresh", "unknown_age") else None
+                    if self._watch_frozen(f"{name}:{kind}", value, now):
+                        frozen.append(f"{label} i {name}")
+        conditions["sensor_frozen"] = bool(frozen)
+        if frozen:
+            detail["sensor_frozen"] = ", ".join(frozen[:5])
+        # The Pi itself.
+        disk = _num(s.get("pi_disk_used_percent"))
+        conditions["pi_disk_full"] = disk is not None and disk >= PI_DISK_PERCENT
+        conditions["pi_undervoltage"] = s.get("pi_undervoltage_now") is True
+        conditions["history_paused"] = s.get("history_recording_available") is False
+        conditions["clock_unsynced"] = s.get("pi_clock_synced") is False
+        conditions["recovery_trend"] = self._recovery_trend(now, extract_recovery, cold, bypass)
+        return {"conditions": conditions, "detail": detail, "no_lift_high": no_lift_high,
+                "t2_suggested": t2_suggested}
+
     def _level_flapping(self, flaps: float | None, quiet: float | None, now: float) -> bool:
         """Hysteresis: raised above LEVEL_FLAP_LIMIT, held until LEVEL_FLAP_CLEAR or a quiet period.
 
@@ -332,9 +666,14 @@ class Diagnostics:
         reference = self.filter_reference.get(pair) if pair else None
         if pair is not None and len(self.filter_window) >= FILTER_WINDOW_SAMPLES:
             average = sum(self.filter_window) / len(self.filter_window)
-            if learning or reference is None and hours is None:
-                # Running mean of the clean power at this gear pair.
+            if learning or reference is None:
+                # Running mean of the clean power at this gear pair. A pair that has no reference
+                # outside the first days after a filter change (the fan profile changed) gets one
+                # now, marked with the filter hours it was learned at: from then on the check
+                # shows a change from that day, not from clean filters.
                 entry = self.filter_reference.setdefault(pair, {"w": average, "n": 0.0})
+                if reference is None and not learning and hours is not None:
+                    entry["h"] = hours
                 entry["n"] = min(FILTER_REFERENCE_WEIGHT, entry["n"] + 1)
                 entry["w"] += (average - entry["w"]) / entry["n"]
                 reference = entry
@@ -354,6 +693,8 @@ class Diagnostics:
                 kwh = value * step / 3_600_000
                 self.energy[key] += kwh
                 self.today[key] += kwh
+
+        extra = self._extra_checks(s, now, t1, t3, t4, bypass, extract_recovery, cold)
 
         # Alarm conditions, raised after their delay.
         roles = s.get("onewire_sensors") or []
@@ -395,10 +736,10 @@ class Diagnostics:
             "bypass_not_closing": cold and s.get("actual_bypass_request") in (False, "off", "OFF", 0)
                 and not bypass and t2 is not None and t1 is not None and t3 is not None
                 and (t2 - t1) < 0.25 * (t3 - t1),
-            "afterheat_no_lift": s.get("actual_afterheat") is True
+            "afterheat_no_lift": (s.get("actual_afterheat") is True
                 and s.get("actual_afterheat_outdoor_lockout") is not True
                 and _num(s.get("afterheat_lift")) is not None and _num(s.get("afterheat_lift")) < 0.5
-                and not afterheat_target_reached,
+                and not afterheat_target_reached) or extra["no_lift_high"],
             "sensor_missing": missing,
             "bus_unhealthy": s.get("rs485_healthy") is False,
             "filter_clogging": filter_change is not None and not learning
@@ -409,18 +750,32 @@ class Diagnostics:
                 and _num(s.get("balance_running_excess_percent")) < -OVERPRESSURE_PERCENT,
             "level_flapping": level_flapping,
             "watchdog_restarts": restarts >= WATCHDOG_RESTART_LIMIT,
+            **extra["conditions"],
         }
+        self.detail = extra["detail"]
         for code, holds in conditions.items():
             if holds:
+                self.clear_since.pop(code, None)
                 self.started.setdefault(code, now)
-                if now - self.started[code] >= ALARM_DELAYS[code]:
+                # The level-aware "no lift" has already waited NO_LIFT_SECONDS at the high level.
+                delay = 0 if code == "afterheat_no_lift" and extra["no_lift_high"] else ALARM_DELAYS[code]
+                if now - self.started[code] >= delay:
                     self.active.setdefault(code, now)
+            elif code in self.active:
+                # Hysteresis: an alarm clears only after its condition has been gone for a while.
+                gone = self.clear_since.setdefault(code, now)
+                if now - gone >= self._clear_hold(code):
+                    self.active.pop(code, None)
+                    self.started.pop(code, None)
+                    self.clear_since.pop(code, None)
             else:
                 self.started.pop(code, None)
-                self.active.pop(code, None)
+                self.clear_since.pop(code, None)
 
         alarms = [
-            {"code": code, "severity": ALARM_SEVERITY[code], "text": ALARM_TEXT[code], "since": int(since)}
+            {"code": code, "severity": ALARM_SEVERITY[code],
+             "text": ALARM_TEXT[code] + (f": {self.detail[code]}" if self.detail.get(code) else ""),
+             "since": int(since)}
             for code, since in sorted(self.active.items(), key=lambda item: item[1])
         ]
         worst = "ok"
@@ -442,6 +797,15 @@ class Diagnostics:
             "filter_power_change_percent": None if filter_change is None else round(filter_change, 1),
             "filter_reference_learning": learning,
             "filter_reference_pairs": len(self.filter_reference),
+            "filter_reference_status": (
+                None if self.filter_pair is None else
+                "Ingen reference for nuværende trin (læres nu)" if self.filter_pair not in self.filter_reference
+                else "Reference lært senere end 72 timer efter filterskift" if "h" in self.filter_reference[self.filter_pair]
+                else "Reference fra rene filtre"),
+            "recovery_median_7d": self.trend[0],
+            "recovery_median_30d": self.trend[1],
+            "t2_offset_suggested_k": extra["t2_suggested"],
+            "t2_offset_samples": len(self.t2_samples),
             "filter_reference_gears": self.filter_pair if self.filter_pair in self.filter_reference else None,
             "recovered_energy_kwh": round(self.energy["recovered_kwh"], 3),
             "afterheat_energy_kwh": round(self.energy["afterheat_kwh"], 3),

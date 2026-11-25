@@ -25,7 +25,17 @@ ASSET_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; chars
 AUXILIARY_REFRESH_SECONDS = 5
 PREHEATER_STALE_SECONDS = 60
 RANGES = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000}
-HISTORY_FIELDS = ("humidity", "outdoor_temp", "supply_temp", "extract_temp", "exhaust_temp", "hrc2_t5_temperature", "heating_coil_after_temperature", "heating_coil_frost_temperature", "flow_temperature", "return_temperature", "co2", "fan_supply_rpm", "fan_extract_rpm", "fan_supply_percent", "fan_extract_percent", "heat_recovery_efficiency", "system_cpu_usage_percent", "pi_cpu_temperature", "system_memory_used_percent", "system_load_1m", "afterheat_setpoint", "afterheat_active", "afterheat_level", "afterheat_level_target", "afterheat_level_wanted", "afterheat_target", "afterheat_context", "afterheat_before_temperature", "afterheat_algorithm_code", "afterheat_algorithm_wanted", "afterheat_safety_override")
+HISTORY_FIELDS = ("humidity", "outdoor_temp", "supply_temp", "extract_temp", "exhaust_temp", "hrc2_t5_temperature", "heating_coil_after_temperature", "heating_coil_frost_temperature", "flow_temperature", "return_temperature", "co2", "fan_supply_rpm", "fan_extract_rpm", "fan_supply_percent", "fan_extract_percent", "heat_recovery_efficiency", "system_cpu_usage_percent", "pi_cpu_temperature", "system_memory_used_percent", "system_load_1m", "afterheat_setpoint", "afterheat_active", "afterheat_level", "afterheat_level_target", "afterheat_level_wanted", "afterheat_target", "afterheat_context", "afterheat_before_temperature", "afterheat_algorithm_code", "afterheat_algorithm_wanted", "afterheat_safety_override",
+                  # Added 1.13.0-beta.14: what drove the level and the unit's own protection, and the room values it steered by.
+                  "fan_level", "level_source_code", "bypass_active", "unit_frost_protection", "unit_frost_supply_percent",
+                  "frost_lock_active", "unit_power_w", "indoor_rh_average", "indoor_rh_lowest", "outdoor_rh", "max_room_co2")
+# Values outside these limits are sensor glitches (T1 read 655 C for a day before the signed decode): they are
+# never stored, and rows stored before are read as missing and cleaned when the history is opened.
+AIR_RANGE, WATER_RANGE = (-50.0, 60.0), (-20.0, 110.0)
+HISTORY_RANGES = {**{field: AIR_RANGE for field in ("outdoor_temp", "supply_temp", "extract_temp", "exhaust_temp",
+                                                      "heating_coil_after_temperature", "heating_coil_frost_temperature",
+                                                      "afterheat_before_temperature")},
+                  **{field: WATER_RANGE for field in ("flow_temperature", "return_temperature")}}
 HISTORY_SENSOR_MARKERS = {
     "humidity": "humidity_sample_fresh",
     "co2": "co2_sample_fresh",
@@ -77,6 +87,9 @@ class HistoryStore:
             existing = {row[1] for row in db.execute("PRAGMA table_info(samples)")}
             for field in (*HISTORY_FIELDS, *HISTORY_SENSOR_MARKERS.values()):
                 if field not in existing: db.execute(f'ALTER TABLE samples ADD COLUMN "{field}" REAL')
+            # Glitch rows stored before the range check: make them missing (cheap, runs when the file is opened).
+            for field, (low, high) in HISTORY_RANGES.items():
+                db.execute(f'UPDATE samples SET "{field}" = NULL WHERE "{field}" < ? OR "{field}" > ?', (low, high))
         self.ready = True
     def _fail(self, error: Exception, now: float) -> None:
         """Pause recording until the next retry; only the first failure in a row is logged."""
@@ -110,6 +123,8 @@ class HistoryStore:
             try: value = float(state[field])
             except (KeyError, TypeError, ValueError): value = None
             if field == "heat_recovery_efficiency" and value is not None and not 0 <= value <= 100: value = None
+            limits = HISTORY_RANGES.get(field)
+            if limits is not None and value is not None and not limits[0] <= value <= limits[1]: value = None
             values.append(value)
         all_fields = (*HISTORY_FIELDS, *HISTORY_SENSOR_MARKERS.values())
         values.extend(sample_freshness[field] for field in HISTORY_SENSOR_MARKERS)
@@ -133,9 +148,13 @@ class HistoryStore:
     def _fresh_column(field: str) -> str:
         """SQL for a field; a sample recorded as stale reads as NULL."""
         marker = HISTORY_SENSOR_MARKERS.get(field)
+        limits = HISTORY_RANGES.get(field)
+        inside = f' AND "{field}" BETWEEN {limits[0]} AND {limits[1]}' if limits else ""
         if marker:
             legacy = f'"{marker}" IS NULL OR ' if field in ("humidity", "co2", "outdoor_temp", "extract_temp", "exhaust_temp") else ""
-            return f'CASE WHEN {legacy}"{marker}" = 1 THEN "{field}" END'
+            return f'CASE WHEN ({legacy}"{marker}" = 1){inside} THEN "{field}" END'
+        if limits:
+            return f'CASE WHEN "{field}" BETWEEN {limits[0]} AND {limits[1]} THEN "{field}" END'
         return f'"{field}"'
     MAX_RAW_SECONDS = 31 * 86400
     def rows(self, seconds: int, fields: tuple[str, ...], *, markers: bool = False, now: float | None = None) -> list[dict[str, object]]:
@@ -180,7 +199,7 @@ class HistoryStore:
         value = self._fresh_column
         columns = [
             (f'CASE WHEN MIN("{field}") = MAX("{field}") AND COUNT("{field}") = COUNT(*) '
-             f'THEN MIN("{field}") END AS "{field}"') if field in ("afterheat_context", "afterheat_algorithm_code") else
+             f'THEN MIN("{field}") END AS "{field}"') if field in ("afterheat_context", "afterheat_algorithm_code", "level_source_code") else
             f'MAX("{field}") AS "{field}"' if field == "afterheat_safety_override" else
             f'AVG({value(field)}) AS "{field}"' for field in HISTORY_FIELDS]
         for field in self.HISTORY_SPREAD_FIELDS:

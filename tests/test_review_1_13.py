@@ -167,7 +167,8 @@ class DiagnosticsTests(ReviewTestCase):
         for minute in range(1, 5):
             result = diag.update(self.feed(outdoor=5.0, co2=None), 1000.0 + minute * 60)
         self.assertIn("local_sensor_stale", self.codes(result))
-        result = diag.update(self.feed(outdoor=5.0, co2=610), 1400.0)
+        diag.update(self.feed(outdoor=5.0, co2=610), 1400.0)
+        result = diag.update(self.feed(outdoor=5.0, co2=610), 1400.0 + 301)  # clears after a hold, not at once
         self.assertNotIn("local_sensor_stale", self.codes(result))
 
     def test_three_watchdog_restarts_in_30_minutes_is_critical(self):
