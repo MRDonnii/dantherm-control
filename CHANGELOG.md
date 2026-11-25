@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.13.0-beta.15 — Siderne passer på telefonen
+
+- **Ventilationstilstand klippes ikke mere af:** på en smal skærm (fx iPhone) stod den tredje knap, "Manuel", delvist uden for kortet "Drift og styring". Valgknapperne kan nu blive smallere, og teksten på dem fylder flere linjer, så alle tre er helt synlige. På computer ser de ud som før.
+- **Før og efter opdatering (Ugerapport):** valget af opdatering stak ud over kanten på en smal skærm. Det fylder nu højst bredden af kortet.
+- Alle sider er gennemgået på 320, 375 og 587 px bredde (Chrome og Safari-motoren), også med knapper og faner åbnet, uden at siden kan flyttes sidelæns. Ingen tekster eller funktioner er ændret. Ændret af Claude AI.
+- Se [release notes](docs/releases/1.13.0-beta.15.md).
+
 ## 1.13.0-beta.14 — Eftervarmens MPC skifter roligere
 
 - **Ingen skift frem og tilbage hvert minut:** MPC'en bliver nu mindst 2 minutter på det nederste trin, før den går op igen, og den planlægger skiftene som en rolig takt (et kort pust på trin 2, så flere minutter på trin 1). Før kunne den kun planlægge et pust "nu", så den pustede for tidligt, mens luften stadig var varm.

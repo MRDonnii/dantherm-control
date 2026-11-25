@@ -76,6 +76,8 @@ html, body { overflow-x: clip; }
   :root[data-skin] .fd-main .pro-card-head { min-width: 0; flex-wrap: wrap; }
   :root[data-skin] .fd-main .pro-card-head > * { min-width: 0; }
   :root[data-skin] .fd-main .diag-actions { flex-wrap: wrap; }
+  :root[data-skin] .fd-main .diag-actions > label { min-width: 0; max-width: 100%; }
+  :root[data-skin] .fd-main .diag-actions > label select { width: 100%; }
   :root[data-skin] .fd-main .info-row { min-width: 0; }
   :root[data-skin] .fd-main .info-row dd { overflow-wrap: anywhere; }
 
@@ -88,6 +90,10 @@ html, body { overflow-x: clip; }
   .hx-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .hx-stat { min-width: 0; }
   .hx-stat > * { min-width: 0; overflow-wrap: anywhere; }
+  /* Valgknapper (fx Ventilationstilstand): knapperne må krympe, og teksten ombrydes i stedet for at stikke ud over kortet. */
+  :root[data-skin] :is(.pro-segment, .segmented-v2, .settings-segment) { max-width: 100%; min-width: 0; }
+  :root[data-skin] :is(.pro-segment, .segmented-v2, .settings-segment) button { min-width: 0; white-space: normal; overflow-wrap: anywhere; line-height: 1.15; padding: 6px 8px; text-align: center; }
+  :root[data-skin] .segmented-v2 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 /* Smalle telefoner (360–375 px): nøgletal i én tekstlinje mindre. */
