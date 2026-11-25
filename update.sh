@@ -73,6 +73,23 @@ done
 [[ -d ${state_dir} ]] || { echo "Persistent state directory ${state_dir} is missing; use the installer/recovery path." >&2; exit 2; }
 [[ -r ${state_dir} ]] || { echo "Persistent state directory ${state_dir} is not readable; refusing update." >&2; exit 2; }
 
+# While the afterheat frost lock is latched an update waits for thaw, unless
+# it is chosen anyway (HCH5_UPDATE_FORCE=1, set by the WebUI's "update anyway").
+# Exit code 3 = deferred; nothing has been changed.
+if [[ ${HCH5_UPDATE_FORCE:-0} != 1 ]] && python3 - "${state_dir}/controller.json" <<'PY' 2>/dev/null
+import json, sys
+try:
+    latched = json.load(open(sys.argv[1], encoding="utf-8")).get("frost_lock_latched") is True
+except Exception:
+    latched = False
+raise SystemExit(0 if latched else 1)
+PY
+then
+  echo "Frost lock is latched: update deferred until thaw. Run with HCH5_UPDATE_FORCE=1 to update anyway." >&2
+  exit 3
+fi
+[[ ${HCH5_UPDATE_FORCE:-0} == 1 ]] && echo "HCH5_UPDATE_FORCE=1: frost deferral overridden."
+
 stage=$(mktemp -d /tmp/hch5-control-stage.XXXXXX)
 update_check=${state_dir}/update-check.json
 cleanup(){ rm -rf -- "${stage}"; rm -f -- "${update_check}"; }
@@ -159,12 +176,25 @@ install -d -m 0700 "${backup}/state"
 for keyfile in controller-token.json api-keys.json; do
   [[ -f ${state_dir}/${keyfile} ]] && cp -a "${state_dir}/${keyfile}" "${backup}/state/"
 done
+# The controller's own state (controller.json, fireplace/filter/night state, ...):
+# a new build may migrate it, so a rollback restores the copy the old build used.
+install -d -m 0700 "${backup}/state/runtime"
+for statefile in "${state_dir}"/*.json; do
+  [[ -f ${statefile} ]] || continue
+  case $(basename -- "${statefile}") in
+    controller-token.json|api-keys.json|webui-auth.json|webui-sessions.json|update-check.json) continue ;;
+  esac
+  cp -a "${statefile}" "${backup}/state/runtime/"
+done
 
 rollback_ready=1
 rollback() {
   local rc=${1:-1}
   echo "HCH5 Control update failed validation (rc=${rc}); restoring previous build." >&2
   set +e
+  trap - TERM
+  # Stop first: the new build must not rewrite its state while it is restored.
+  systemctl stop dantherm-webui-gateway.service
   if [[ -f ${backup}/app-code.tar.gz ]]; then
     find "${app}" -mindepth 1 -maxdepth 1 ! -name venv -exec rm -rf -- {} +
     tar -xzf "${backup}/app-code.tar.gz" -C "${app}"
@@ -178,8 +208,13 @@ rollback() {
   if [[ -f ${backup}/state/controller-token.json && ! -f ${state_dir}/controller-token.json ]]; then
     cp -a "${backup}/state/controller-token.json" "${state_dir}/controller-token.json"
   fi
+  if [[ -d ${backup}/state/runtime ]]; then
+    for statefile in "${backup}/state/runtime"/*.json; do
+      [[ -f ${statefile} ]] && cp -a "${statefile}" "${state_dir}/"
+    done
+  fi
   systemctl daemon-reload
-  systemctl restart dantherm-webui-gateway.service
+  systemctl start dantherm-webui-gateway.service
   sleep 2
   if systemctl is-active --quiet dantherm-webui-gateway.service \
       && curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${web_port}/api/auth/status"; then
@@ -198,6 +233,14 @@ on_error(){
   exit "${rc}"
 }
 trap on_error ERR
+# The admin helper stops a hanging update with SIGTERM: roll back, never leave half an update.
+on_term(){
+  trap - ERR TERM
+  echo "Update stopped (SIGTERM)." >&2
+  if [[ ${rollback_ready:-0} -eq 1 ]]; then rollback 143; fi
+  exit 143
+}
+trap on_term TERM
 
 echo "[4/6] Installing validated files while current process remains running..."
 install -d -o passivelink-webui -g passivelink-webui "${app}" "${app}/webui"
@@ -291,7 +334,6 @@ done
 curl -fsS --max-time 3 -H "Authorization: Bearer ${check_key}" \
   "http://127.0.0.1:${web_port}/api/controller/access-health" \
   | python3 -c 'import json,sys; need=int(sys.argv[1]); data=json.load(sys.stdin); assert data.get("store") in ("ok","legacy"), data; assert data.get("control_keys",0) >= need, data' "${expected_control_keys}"
-rm -f -- "${update_check}"
 
 python3 - "${raw_port}" <<'PY'
 import socket, sys
@@ -301,6 +343,31 @@ with socket.create_connection(("127.0.0.1", port), timeout=2):
 print("raw TCP listener: OK")
 PY
 
+# Soak: the new build must keep running and keep a healthy control loop for a
+# while before the rollback is given up (HCH5_UPDATE_SOAK_SECONDS, default 300).
+soak_seconds=${HCH5_UPDATE_SOAK_SECONDS:-300}
+[[ ${soak_seconds} =~ ^[0-9]+$ ]] || soak_seconds=300
+echo "Soak: watching the new build for ${soak_seconds} s..."
+soak_pid=$(systemctl show dantherm-webui-gateway.service -p MainPID --value 2>/dev/null || true)
+soak_failures=0
+soak_end=$((SECONDS + soak_seconds))
+while (( SECONDS < soak_end )); do
+  sleep 15
+  pid=$(systemctl show dantherm-webui-gateway.service -p MainPID --value 2>/dev/null || true)
+  [[ ${pid} == "${soak_pid}" ]] || { echo "Soak: the gateway restarted (PID ${soak_pid} -> ${pid})." >&2; false; }
+  if curl -fsS --max-time 3 -H "Authorization: Bearer ${check_key}" \
+      "http://127.0.0.1:${web_port}/api/controller/state" 2>/dev/null \
+      | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data.get("controller_health",{}).get("state") == "healthy"' 2>/dev/null; then
+    soak_failures=0
+  else
+    soak_failures=$((soak_failures + 1))
+    # A single slow answer is normal on a Pi 3B; three in a row are not.
+    [[ ${soak_failures} -lt 3 ]] || { echo "Soak: the controller loop stopped being healthy." >&2; false; }
+  fi
+done
+echo "Soak: OK"
+rm -f -- "${update_check}"
+
 [[ $(sha256sum "${config}" | awk '{print $1}') == "${config_before}" ]]
 [[ $(sha256sum "${env_file}" | awk '{print $1}') == "${env_before}" ]]
 if [[ -n ${auth_before} ]]; then
@@ -308,7 +375,7 @@ if [[ -n ${auth_before} ]]; then
 fi
 
 rollback_ready=0
-trap - ERR
+trap - ERR TERM
 
 # After the update is accepted; problems here never fail or roll back the update.
 if [[ -f ${source_dir}/scripts/netboot/hch-nfs-watchdog-guard.sh && -f ${source_dir}/scripts/netboot/hch-root-is-nfs ]]; then
@@ -322,6 +389,54 @@ if [[ -f ${source_dir}/gateway/update_history.py ]]; then
     && chown passivelink-webui:passivelink-webui "${state_dir}/update-history-backfill.json" \
     || echo "Update history could not be read from the backups; the update itself is fine." >&2
 fi
+# Housekeeping (never fails the update): drop WebUI bundles that neither the
+# new build nor the previous one (still open in browser tabs) uses, and keep
+# the newest 10 update backups plus those from the last 37 days (Ugerapport).
+python3 - "${app}/webui" "${source_dir}/gateway/webui" "${backup}/app-code.tar.gz" <<'PY' \
+  || echo "Old WebUI bundles could not be pruned; the update itself is fine." >&2
+import re, sys, tarfile
+from pathlib import Path
+live, source, archive = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+pattern = re.compile(rb"v2-[A-Za-z0-9_-]+\.[A-Za-z0-9]+")
+keep = {p.name for p in source.iterdir() if p.is_file()}
+previous = {}
+with tarfile.open(archive, "r:gz") as tar:
+    for member in tar.getmembers():
+        name = member.name.lstrip("./")
+        if member.isfile() and name.startswith("webui/") and "/" not in name[6:]:
+            if name[6:] == "index.html" or name[6:].startswith("v2-"):
+                handle = tar.extractfile(member)
+                previous[name[6:]] = handle.read() if handle else b""
+todo = ["index.html"]
+while todo:
+    name = todo.pop()
+    for found in pattern.findall(previous.get(name, b"")):
+        found = found.decode()
+        if found not in keep:
+            keep.add(found)
+            todo.append(found)
+removed = 0
+for path in live.glob("v2-*"):
+    if path.is_file() and path.name not in keep:
+        path.unlink()
+        removed += 1
+print(f"WebUI bundles pruned: {removed}")
+PY
+python3 - /var/backups "${backup}" <<'PY' \
+  || echo "Old update backups could not be pruned; the update itself is fine." >&2
+import shutil, sys, time
+from pathlib import Path
+root, current = Path(sys.argv[1]), Path(sys.argv[2])
+backups = sorted((p for p in root.glob("hch5-control-update-*") if p.is_dir()), key=lambda p: p.name, reverse=True)
+cutoff = time.time() - 37 * 86400
+removed = 0
+for index, path in enumerate(backups):
+    if index < 10 or path == current or path.stat().st_mtime >= cutoff:
+        continue
+    shutil.rmtree(path, ignore_errors=True)
+    removed += 1
+print(f"Old update backups removed: {removed}")
+PY
 # The admin helper only restarts itself after an update it ran. After a manual
 # update.sh it would keep running the old helper code (and its last update
 # status) until the next reboot, so restart it here.

@@ -162,7 +162,12 @@ class DashboardTests(unittest.TestCase):
                 self.assertEqual(touch.headers.get_content_type(), "image/png")
                 self.assertIn(b":root", urllib.request.urlopen(f"http://127.0.0.1:{port}/assets/dashboard.css").read())
                 self.assertTrue(json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/state.json"))["available"])
+                # Login off still needs the per-start CSRF token (fase 2, runtime-4).
                 request = urllib.request.Request(f"http://127.0.0.1:{port}/api/control", data=b"{}", method="POST")
+                with self.assertRaises(urllib.error.HTTPError) as error: urllib.request.urlopen(request)
+                self.assertEqual(error.exception.code, 403)
+                request = urllib.request.Request(f"http://127.0.0.1:{port}/api/control", data=b"{}", method="POST",
+                                                 headers={"X-CSRF-Token": server.auth.open_csrf})
                 with self.assertRaises(urllib.error.HTTPError) as error: urllib.request.urlopen(request)
                 self.assertEqual(error.exception.code, 405)
             finally: server.stop()

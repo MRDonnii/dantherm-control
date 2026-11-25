@@ -7,7 +7,7 @@ const api = vi.hoisted(() => ({ requestJson: vi.fn(), postJson: vi.fn() }));
 vi.mock("../lib/api", () => ({
   requestJson: api.requestJson,
   postJson: api.postJson,
-  ApiError: class ApiError extends Error {},
+  ApiError: class ApiError extends Error { constructor(message: string, public status?: number) { super(message); } },
 }));
 afterEach(() => { cleanup(); api.requestJson.mockReset(); api.postJson.mockReset(); });
 
@@ -55,5 +55,21 @@ describe("Opdateringer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Skjul" }));
     await waitFor(() => expect(screen.queryByText("update.sh stoppede med kode 2")).toBeNull());
     expect(api.postJson).toHaveBeenCalledWith("/api/admin/action", { action: "dismiss_update_error", target: undefined }, "csrf-test");
+  });
+  it("spørger, før den opdaterer, mens det fryser", async () => {
+    const { ApiError } = await import("../lib/api");
+    const offer = { ok: true, channel: "beta" as const, current_version: "1.6.1", available_version: "1.7.0", update_available: true };
+    api.requestJson.mockResolvedValue({ csrf: "csrf-test" });
+    api.postJson.mockImplementation(async (_endpoint: string, body: { action: string; force?: boolean }) => {
+      if (body.action === "install_update" && !body.force) throw new ApiError("Det fryser.", 423);
+      return offer;
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<UpdatesPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Opdater nu" }));
+    await waitFor(() => expect(api.postJson).toHaveBeenCalledWith("/api/admin/action",
+      { action: "install_update", target: "beta", force: true }, "csrf-test"));
+    expect(confirm).toHaveBeenCalled();
+    confirm.mockRestore();
   });
 });

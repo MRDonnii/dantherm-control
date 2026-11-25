@@ -92,7 +92,7 @@ def load_update_state() -> None:
     if not isinstance(saved, dict):
         return
     restored = {key: saved.get(key) for key in PERSISTED_UPDATE_KEYS if key in saved}
-    if restored.get("phase") not in {None, "idle", "complete", "failed", "up_to_date", "dismissed"}:
+    if restored.get("phase") not in {None, "idle", "complete", "failed", "up_to_date", "dismissed", "deferred"}:
         # The helper stopped in the middle of an attempt (update.sh restarts it
         # only after a successful update, so this is an interrupted one).
         restored.update(phase="failed", result="failed", detail="Opdateringen blev afbrudt, før den blev færdig.",
@@ -480,6 +480,92 @@ def update_info(channel: str | None = None, *, force_refresh: bool = False) -> d
     return {**result, "update": update_state_view()}
 
 
+# update.sh: exit code when the frost lock defers an update that was not forced.
+UPDATE_DEFERRED_FROST_RC = 3
+# update.sh normally ends within ~4 min plus its soak; past this it is asked to
+# stop (SIGTERM, so its trap rolls back) and given time to finish the rollback.
+UPDATE_TIMEOUT_SECONDS = 900
+UPDATE_ROLLBACK_GRACE_SECONDS = 300
+CONTROLLER_STATE_FILE = Path(os.getenv("DANTHERM_CONTROLLER_STATE_FILE", "/var/lib/dantherm-hch5-ha/controller.json"))
+FROST_DEFER_MESSAGE = ("Det fryser, og eftervarmens frostsikring er slået til. Opdateringen venter derfor, "
+                       "til det er tøet. Du kan vælge at opdatere alligevel.")
+
+
+def frost_lock_latched() -> bool:
+    try:
+        return json.loads(CONTROLLER_STATE_FILE.read_text(encoding="utf-8")).get("frost_lock_latched") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def claim_update() -> bool:
+    """Mark an update as running before the request is answered (no double start)."""
+    with UPDATE_LOCK:
+        if UPDATE_STATE.get("running"):
+            return False
+        UPDATE_STATE["running"] = True
+        return True
+
+
+def release_update_claim() -> None:
+    with UPDATE_LOCK:
+        UPDATE_STATE["running"] = False
+
+
+def _run_updater(command: list[str], *, cwd: Path, env: dict, log) -> int:
+    """Run update.sh; on a hang stop it with SIGTERM so its own rollback runs.
+
+    subprocess.run(timeout=...) sends SIGKILL, which skipped the rollback.
+    """
+    process = subprocess.Popen(command, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT)
+    try:
+        return process.wait(timeout=UPDATE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        try:
+            process.wait(timeout=UPDATE_ROLLBACK_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        raise RuntimeError(f"update.sh svarede ikke inden for {UPDATE_TIMEOUT_SECONDS // 60} minutter og blev stoppet")
+
+
+def _release_checksums(ref: str) -> dict[str, str] | None:
+    """The release's SHA256SUMS asset (sha256 per file in the source tree), if it has one."""
+    url = f"https://github.com/{REPOSITORY}/releases/download/{urllib.parse.quote(ref, safe='')}/SHA256SUMS"
+    try:
+        text = _request_text(url)
+    except (OSError, urllib.error.URLError, ValueError):
+        return None
+    sums: dict[str, str] = {}
+    for line in text.splitlines():
+        match = re.fullmatch(r"([0-9a-f]{64}) [ *]?(.+)", line.strip())
+        if match:
+            name = match.group(2)
+            sums[name[2:] if name.startswith("./") else name] = match.group(1)
+    return sums or None
+
+
+def verify_source_tree(source: Path, sums: dict[str, str]) -> int:
+    """Every file in the downloaded tree must be listed with the same SHA-256."""
+    seen = 0
+    for path in sorted(p for p in source.rglob("*") if p.is_file() or p.is_symlink()):
+        relative = path.relative_to(source).as_posix()
+        expected = sums.get(relative)
+        if expected is None:
+            raise RuntimeError(f"Kontrolsum mangler for {relative}")
+        if path.is_symlink():
+            raise RuntimeError(f"Uventet link i udgivelsen: {relative}")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if not hmac.compare_digest(digest, expected):
+            raise RuntimeError(f"Kontrolsummen passer ikke for {relative}")
+        seen += 1
+    missing = sorted(set(sums) - {p.relative_to(source).as_posix() for p in source.rglob("*") if p.is_file()})
+    if missing:
+        raise RuntimeError(f"Filen {missing[0]} mangler i udgivelsen")
+    return seen
+
+
 def _download_tarball(ref: str, destination: Path) -> None:
     request = urllib.request.Request(
         f"https://codeload.github.com/{REPOSITORY}/tar.gz/{urllib.parse.quote(ref, safe='')}",
@@ -518,7 +604,7 @@ def _schedule_admin_restart() -> None:
     )
 
 
-def _install_update(channel: str) -> None:
+def _install_update(channel: str, force: bool = False) -> None:
     _set_update_state(
         running=True,
         channel=channel,
@@ -563,6 +649,12 @@ def _install_update(channel: str) -> None:
             _download_tarball(ref, archive)
             _set_update_state(progress=38, phase="extracting", detail="Pakker ny build ud…")
             source = _safe_extract(archive, directory / "src")
+            sums = _release_checksums(ref)
+            if sums is None:
+                log.write("Ingen SHA256SUMS i udgivelsen; filerne er ikke kontrolleret mod en kontrolsum.\n")
+            else:
+                _set_update_state(progress=44, phase="verifying_download", detail="Kontrollerer filerne mod udgivelsens kontrolsummer…")
+                log.write(f"Kontrolsummer OK for {verify_source_tree(source, sums)} filer.\n")
             updater = source / "update.sh"
             if not updater.is_file():
                 raise RuntimeError("updater_missing")
@@ -571,13 +663,18 @@ def _install_update(channel: str) -> None:
             env["HCH5_UPDATE_BUILD"] = build
             # update.sh must not restart this helper while it is its parent.
             env["HCH5_UPDATE_FROM_ADMIN"] = "1"
+            if force:
+                env["HCH5_UPDATE_FORCE"] = "1"
+                log.write("Opdatering under frost valgt alligevel.\n")
             _set_update_state(progress=58, phase="installing", detail="Installerer og kører failsafe-validering…")
             log.write(f"$ bash {updater.relative_to(directory)}\n")
             log.flush()
-            completed = subprocess.run(["bash", str(updater)], cwd=source, timeout=300, env=env,
-                                       stdout=log, stderr=subprocess.STDOUT, check=False)
-            if completed.returncode != 0:
-                raise RuntimeError(f"update.sh stoppede med kode {completed.returncode}")
+            returncode = _run_updater(["bash", str(updater)], cwd=source, env=env, log=log)
+            if returncode == UPDATE_DEFERRED_FROST_RC:
+                _set_update_state(progress=0, phase="deferred", result="deferred_frost", detail=FROST_DEFER_MESSAGE)
+                return
+            if returncode != 0:
+                raise RuntimeError(f"update.sh stoppede med kode {returncode}")
             _set_update_state(progress=93, phase="verifying", detail="Bekræfter ny build og services…")
         success = True
         _set_update_state(progress=100, phase="complete", result="complete", detail="Opdatering installeret. Genindlæser WebUI…")
@@ -656,6 +753,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.authorized():
             return self.reply(401, {"error": "unauthorized"})
+        payload: dict = {}
         if self.path == "/reboot":
             action, target = "reboot", None
         elif self.path == "/action":
@@ -664,7 +762,8 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(self.rfile.read(length))
                 action = data.get("action")
                 target = data.get("target")
-            except (ValueError, TypeError, json.JSONDecodeError):
+                payload = data if isinstance(data, dict) else {}
+            except (ValueError, TypeError, AttributeError, json.JSONDecodeError):
                 return self.reply(400, {"error": "invalid_json"})
         else:
             return self.reply(404, {"error": "not_found"})
@@ -754,14 +853,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(503, {"error": f"update_check_failed: {error}"})
         if action == "install_update":
             channel = str(target) if target in {"stable", "beta"} else current_update_channel()
-            if UPDATE_STATE["running"]:
+            force = payload.get("force") is True
+            if not force and frost_lock_latched():
+                # Updates wait while it freezes unless chosen anyway (the WebUI asks).
+                return self.reply(423, {"error": FROST_DEFER_MESSAGE, "frost_deferred": True})
+            if not claim_update():
                 return self.reply(409, {"error": "update_already_running", "update": update_state_view()})
             try:
                 set_update_channel(channel)
             except OSError as error:
+                release_update_claim()
                 return self.reply(500, {"error": f"channel_save_failed: {error}"})
             self.reply(202, {"ok": True, "message": "update scheduled", "channel": channel})
-            threading.Thread(target=_install_update, args=(channel,), daemon=True).start()
+            threading.Thread(target=_install_update, args=(channel, force), daemon=True).start()
             return
         command = {"reboot": ["systemctl", "reboot"], "shutdown": ["systemctl", "poweroff"]}.get(action)
         if command:

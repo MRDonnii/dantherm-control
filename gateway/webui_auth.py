@@ -48,12 +48,58 @@ class AuthManager:
         # Set by the web server: decides whether a Kontrolrum session may be
         # used by this request (see kontrolrum_sso.KontrolrumSso.session_problem).
         self.session_guard = None
+        # With login switched off the browser still needs a CSRF token. It is
+        # handed out through the same-origin /api/auth/status and kept in the
+        # state dir, so tabs left open (kiosk) keep working after a restart.
+        self.open_csrf = self._load_open_csrf()
+        # Only one or two password hashes at a time: each costs ~1 s of CPU on
+        # a Pi 3B, and parallel logins must not starve the controller.
+        self.hash_slots = threading.BoundedSemaphore(2)
         self._load_sessions()
 
-    # ------------------------------------------------------------------ store
-    def load(self):
+    def _load_open_csrf(self) -> str:
+        token_path = self.path.with_name("webui-open-csrf")
         try:
-            data = json.loads(self.path.read_text())
+            token = token_path.read_text(encoding="utf-8").strip()
+            if len(token) >= 24:
+                return token
+        except OSError:
+            pass
+        token = secrets.token_urlsafe(24)
+        try:
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = token_path.with_name(token_path.name + ".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(token)
+            tmp.replace(token_path)
+        except OSError:
+            pass  # fall back to a per-process token
+        return token
+
+    # ------------------------------------------------------------------ store
+    @property
+    def backup_path(self):
+        return self.path.with_name(self.path.name + ".bak")
+
+    def unreadable(self):
+        """True when the store exists but neither it nor its backup can be read.
+
+        Then setup must stay closed and login fails closed: an unreadable file
+        must never look like a fresh installation.
+        """
+        return self.path.exists() and self.load() is None
+
+    def load(self):
+        data = self._parse(self.path)
+        if data is None and self.path.exists():
+            # A damaged store (e.g. a crash during a write): use the last good copy.
+            data = self._parse(self.backup_path)
+        return data
+
+    def _parse(self, path):
+        try:
+            data = json.loads(path.read_text())
         except (OSError, ValueError):
             return None
         if not isinstance(data, dict):
@@ -83,16 +129,40 @@ class AuthManager:
         data = {"version": 2, "enabled": bool(data.get("enabled", True)), "users": data["users"]}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data))
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(data))
+            handle.flush()
+            os.fsync(handle.fileno())
         os.chmod(tmp, 0o600)
+        if self._parse(self.path) is not None:
+            # Keep the last good store; load() falls back to it if the new one is damaged.
+            try:
+                backup_tmp = self.backup_path.with_suffix(".baktmp")
+                backup_tmp.write_bytes(self.path.read_bytes())
+                os.chmod(backup_tmp, 0o600)
+                backup_tmp.replace(self.backup_path)
+            except OSError:
+                pass
         tmp.replace(self.path)
+        try:
+            directory = os.open(self.path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError:
+            pass
 
     def configured(self):
-        return bool(self.load())
+        # An existing but unreadable store counts as configured (fail closed).
+        return bool(self.load()) or self.path.exists()
 
     def enabled(self):
         data = self.load()
-        return bool(data and data.get("enabled", True))
+        if data is None:
+            # Missing: nothing to protect yet (setup). Unreadable: keep login on.
+            return self.path.exists()
+        return bool(data.get("enabled", True))
 
     @staticmethod
     def _hash(password, salt):
@@ -177,9 +247,12 @@ class AuthManager:
         user = self._find(data, username)
         if not user or not user.get("salt"):
             # Spend the same time as a real check so usernames cannot be probed.
-            self._hash(password or "", "00" * 16)
+            with self.hash_slots:
+                self._hash(password or "", "00" * 16)
             return False
-        ok = hmac.compare_digest(str(user.get("password_hash", "")), self._hash(password or "", user["salt"]))
+        with self.hash_slots:
+            digest_ = self._hash(password or "", user["salt"])
+        ok = hmac.compare_digest(str(user.get("password_hash", "")), digest_)
         return ok and self._active(user)
 
     def user(self, username):
@@ -352,12 +425,40 @@ class AuthManager:
     # -------------------------------------------------------- rate limiting
     def allow_attempt(self, ip):
         now = time.time()
-        values = [t for t in self.failures.get(ip, []) if now - t < 300]
-        self.failures[ip] = values
-        return len(values) < 5
+        with self.lock:
+            values = [t for t in self.failures.get(ip, []) if now - t < 300]
+            self.failures[ip] = values
+            if len(self.failures) > 1024:
+                self.failures = {key: times for key, times in self.failures.items()
+                                 if times and now - times[-1] < 300}
+            return len(values) < 5
+
+    def take_attempt(self, ip):
+        """Reserve a login attempt before the (slow) password check.
+
+        Checking the limit first and recording the failure only after the
+        hash let parallel requests bypass the five-per-five-minutes limit.
+        The reservation is released again by succeeded().
+        """
+        now = time.time()
+        with self.lock:
+            values = [t for t in self.failures.get(ip, []) if now - t < 300]
+            if len(values) >= 5:
+                self.failures[ip] = values
+                return None
+            values.append(now)
+            self.failures[ip] = values
+            return now
+
+    def succeeded(self, ip, token):
+        with self.lock:
+            values = self.failures.get(ip, [])
+            if token in values:
+                values.remove(token)
 
     def failed(self, ip):
-        self.failures.setdefault(ip, []).append(time.time())
+        with self.lock:
+            self.failures.setdefault(ip, []).append(time.time())
 
     # -------------------------------------------------------------- sessions
     def _load_sessions(self):
@@ -387,11 +488,12 @@ class AuthManager:
     def _save_sessions(self):
         self.session_path.parent.mkdir(parents=True, exist_ok=True)
         now = time.time()
-        remembered = {
-            sid: session
-            for sid, session in self.sessions.items()
-            if session.get("remember") and float(session.get("expires", 0)) > now
-        }
+        with self.lock:
+            remembered = {
+                sid: dict(session)
+                for sid, session in self.sessions.items()
+                if session.get("remember") and float(session.get("expires", 0)) > now
+            }
         if not remembered:
             try:
                 self.session_path.unlink(missing_ok=True)
@@ -405,13 +507,21 @@ class AuthManager:
 
     def drop_sessions(self, username):
         wanted = _normal(username)
-        before = len(self.sessions)
-        self.sessions = {sid: s for sid, s in self.sessions.items() if _normal(s.get("username")) != wanted}
-        if len(self.sessions) != before:
-            try:
+        with self.lock:
+            before = len(self.sessions)
+            self.sessions = {sid: s for sid, s in self.sessions.items() if _normal(s.get("username")) != wanted}
+            if len(self.sessions) != before:
+                try:
+                    self._save_sessions()
+                except OSError:
+                    pass
+
+    def _forget(self, sid):
+        """Drop one session; the disk copy is rewritten only for a remembered one."""
+        with self.lock:
+            removed = self.sessions.pop(sid, None)
+            if removed and removed.get("remember"):
                 self._save_sessions()
-            except OSError:
-                pass
 
     def session(self, username, remember=False):
         user = self._find(self.load(), username)
@@ -420,14 +530,15 @@ class AuthManager:
         sid = secrets.token_urlsafe(32)
         csrf = secrets.token_urlsafe(24)
         lifetime = REMEMBER_SESSION_SECONDS if remember else SHORT_SESSION_SECONDS
-        self.sessions[sid] = {
-            "username": username,
-            "csrf": csrf,
-            "expires": time.time() + lifetime,
-            "remember": bool(remember),
-        }
-        if remember:
-            self._save_sessions()
+        with self.lock:
+            self.sessions[sid] = {
+                "username": username,
+                "csrf": csrf,
+                "expires": time.time() + lifetime,
+                "remember": bool(remember),
+            }
+            if remember:
+                self._save_sessions()
         return sid, csrf
 
     def session_kontrolrum(self, username, binding):
@@ -478,16 +589,19 @@ class AuthManager:
             return None
         if not data.get("enabled", True):
             admin = next((u for u in data["users"] if u.get("role") == "admin"), data["users"][0])
-            return {"username": admin.get("username"), "csrf": None, "role": "admin"}
+            return {"username": admin.get("username"), "csrf": self.open_csrf, "role": "admin"}
         try:
             cookie = SimpleCookie(header)
             sid = cookie["dantherm_session"].value
-            session = self.sessions.get(sid)
-        except (KeyError, AttributeError):
+        except Exception:  # noqa: BLE001 - a bad or missing cookie is just no session
             return None
+        with self.lock:
+            session = self.sessions.get(sid)
         if not session or session["expires"] < time.time():
-            self.sessions.pop(sid, None)
-            self._save_sessions()
+            # An unknown cookie costs no disk write; only a remembered session
+            # that really expired is removed from the file.
+            if session:
+                self._forget(sid)
             return None
         if session.get("kr") is not None:
             problem = self._kontrolrum_session_problem(session, client_ip)
@@ -495,13 +609,12 @@ class AuthManager:
                 # A copied cookie from elsewhere does not end Kontrolrum's own
                 # session; a new key, SSO off or a removed tick does.
                 if problem != "peer_changed":
-                    self.sessions.pop(sid, None)
+                    self._forget(sid)
                 return None
         # Role, deletion, disabling and expiry take effect immediately.
         user = self._find(data, session.get("username"))
         if not self._active(user):
-            self.sessions.pop(sid, None)
-            self._save_sessions()
+            self._forget(sid)
             return None
         session["role"] = user.get("role", "user")
         # Keep normal sessions sliding for 12 hours. Remembered sessions are
@@ -513,7 +626,7 @@ class AuthManager:
     def logout(self, header):
         try:
             cookie = SimpleCookie(header)
-            self.sessions.pop(cookie["dantherm_session"].value, None)
-            self._save_sessions()
-        except (KeyError, AttributeError):
-            pass
+            sid = cookie["dantherm_session"].value
+        except Exception:  # noqa: BLE001 - a bad or missing cookie
+            return
+        self._forget(sid)

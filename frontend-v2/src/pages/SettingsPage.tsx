@@ -57,7 +57,7 @@ export const CONTROLLER_KEYS = [
   "fireplace_afterrun_minutes", "fireplace_max_hours", "fireplace_cold_guard_enabled", "onewire_roles",
   "pm25_enabled", "pm25_setpoint", "pm25_step", "pm25_hysteresis", "pm25_max_level", "pm25_ignored_rooms",
   "bathroom_rise_percent", "bathroom_rise_minutes", "bathroom_night_drying", "bathroom_max_minutes",
-  "upshift_delay_seconds", "humidity_rise_min_rh",
+  "upshift_delay_seconds", "humidity_rise_min_rh", "top_level_limit_enabled",
 ] as const;
 
 /** The settings changed in the form compared with the state it was loaded from. */
@@ -463,6 +463,12 @@ export function SettingsPage() {
           <Help>{lang === "da"
             ? `Skiftet sker med det samme og flytter alle trinvalg til det trin, der har nærmest samme ventilatorgear. Den anden models værdier gemmes, så du kan skifte tilbage. 4 trin følger Dantherms servicemanual for HCH 5 (HCP4-panel og HRC 2): trin 3 er den nominelle luftmængde, som huset indreguleres til. Trin 2 og 1 ligger én og to gearafstande under, og trin 4 er maksimum. Vælger du trin 4 manuelt, kører det i ${MAX_LEVEL_HOURS} timer og går så tilbage til trin 3, som på Dantherms panel.`
             : `Switching happens at once and moves every step choice to the step with the nearest fan gears. The other model's values are kept, so you can switch back. 4 steps follow Dantherm's service manual for the HCH 5 (HCP4 panel and HRC 2): step 3 is the nominal airflow the house is commissioned to. Steps 2 and 1 lie one and two offsets below, and step 4 is maximum. Chosen by hand, step 4 runs for ${MAX_LEVEL_HOURS} hours and then returns to step 3, as on Dantherm's panel.`}</Help>
+          {steps === 6 && <>
+            <label className="check-row"><input type="checkbox" checked={form.top_level_limit_enabled === true} onChange={check("top_level_limit_enabled")}/> {lang === "da" ? `Trin 6 slutter efter ${MAX_LEVEL_HOURS} timer` : `Step 6 ends after ${MAX_LEVEL_HOURS} hours`}</label>
+            <Help>{lang === "da"
+              ? `Når du selv vælger trin 6, går ventilationen af sig selv ned på trin 5 efter ${MAX_LEVEL_HOURS} timer, ligesom trin 4 gør med 4 trin. Slået fra kører trin 6, indtil du vælger et andet trin.`
+              : `When you choose step 6 yourself, the ventilation goes down to step 5 by itself after ${MAX_LEVEL_HOURS} hours, as step 4 does with 4 steps. Switched off, step 6 runs until you choose another step.`}</Help>
+          </>}
           {steps === 4 && <>
             <label>{lang === "da" ? "Udsugning, trin 3" : "Extract, step 3"}<input type="number" min={NOMINAL_RANGE[0]} max={NOMINAL_RANGE[1]} value={fans.extract} onChange={setFan("extract")}/><span>gear</span><Help>{lang === "da" ? `Gear ${NOMINAL_RANGE[0]}–${NOMINAL_RANGE[1]}. Indstilles, så udsugningen på trin 3 giver husets krav (se Beregning).` : `Gear ${NOMINAL_RANGE[0]}–${NOMINAL_RANGE[1]}. Set so extract at step 3 gives the house's requirement (see Calculation).`}</Help></label>
             <label>{lang === "da" ? "Indblæsning, trin 3" : "Supply, step 3"}<input type="number" min={NOMINAL_RANGE[0]} max={NOMINAL_RANGE[1]} disabled={balanceOn} value={balanceOn ? n(stepRows?.["3"]?.supply, fans.supply) : fans.supply} onChange={setFan("supply")}/><span>gear</span><Help>{balanceOn ? (lang === "da" ? "Styres af luftbalancen (Auto herunder). Slå den over på Manuel for at indregulere indblæsningen selv." : "Set by the air balance (Auto below). Switch it to Manual to commission supply yourself.") : (lang === "da" ? "Må aldrig give mere luft end udsugningen (Dantherm)." : "Must never give more air than extract (Dantherm).")}</Help></label>

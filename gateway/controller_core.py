@@ -416,6 +416,8 @@ class ControllerState:
         "afterheat_room_value": None,
         # Night cooling from the weather forecast (night_cooling.py).
         "night_cool_enabled": False,
+        # Off: on six steps the top level chosen by hand has no end time.
+        "top_level_limit_enabled": False,
         "night_cool_start": "23:00",
         "night_cool_end": "07:00",
         "night_cool_forecast_c": 24.0,
@@ -622,7 +624,7 @@ class ControllerState:
             max_until = float(self.data["max_level_until"]) if self.data.get("max_level_until") else None
         except (TypeError, ValueError):
             max_until = None
-        if self.dantherm_steps() and self.data["mode"] == "manual" and self.data["manual_level"] == MAX_LEVEL:
+        if self.top_hold_active():
             # Step 4 by hand always has an end, also for files without one.
             self.data["max_level_until"] = max_until or time.time() + MAX_LEVEL_HOURS * 3600
         else:
@@ -766,7 +768,8 @@ class ControllerState:
     BOOL_KEYS = ("sizing_enabled", "afterheat_room_enabled", "fireplace_auto_enabled",
                  "humidity_smart_enabled", "dry_protection_enabled", "balance_enabled", "pm25_enabled",
                  "bathroom_night_drying", "winter_dry_enabled", "frost_lock_enabled",
-                 "afterheat_room_weighted", "night_cool_enabled", "fireplace_cold_guard_enabled")
+                 "afterheat_room_weighted", "night_cool_enabled", "fireplace_cold_guard_enabled",
+                 "top_level_limit_enabled")
     TIME_KEYS = (("night_cool_start", "Natkøling start", "23:00"), ("night_cool_end", "Natkøling slut", "07:00"))
 
     def _sanitize_advanced(self) -> None:
@@ -996,6 +999,20 @@ class ControllerState:
     def dantherm_steps(self) -> bool:
         return self.max_level() == MAX_LEVEL
 
+    def top_hold_active(self) -> bool:
+        """The top level chosen by hand, which ends by itself after MAX_LEVEL_HOURS.
+
+        Always on four Dantherm steps (like the HCP4 panel); on six steps only
+        with the setting "top_level_limit_enabled" (off by default).
+        """
+        timed = self.dantherm_steps() or self.data.get("top_level_limit_enabled") is True
+        return (timed and self.data.get("mode") == "manual"
+                and self.data.get("manual_level") == self.max_level())
+
+    def top_return_level(self) -> int:
+        """Where the timed top level returns to: step 3 on four steps, else one step down."""
+        return NOMINAL_LEVEL if self.dantherm_steps() else self.max_level() - 1
+
     def base_profiles(self) -> dict[int, dict[str, object]]:
         """Steps before the balance: the Dantherm ladder or the six-step table."""
         if self.dantherm_steps():
@@ -1139,6 +1156,15 @@ class ControllerState:
             backup = copy.deepcopy(self.data)
             try:
                 return self._configure(patch)
+            except ControllerError:
+                self.data = backup
+                raise
+            except (TypeError, ValueError, OverflowError, AttributeError) as error:
+                # A value of the wrong type (None, a list, "x", inf) is the
+                # caller's mistake: answer 400, never drop the connection.
+                self.data = backup
+                field = next(iter(patch), "?") if len(patch) == 1 else "en af værdierne"
+                raise ControllerError(f"Ugyldig værdi for {field}") from error
             except Exception:
                 self.data = backup
                 raise
@@ -1185,8 +1211,7 @@ class ControllerState:
                     if not 1 <= value <= top:
                         raise ControllerError(f"{key} skal være 1..{top}")
                     self.data[key] = value
-            if self.dantherm_steps() and self.data["mode"] == "manual" and self.data["manual_level"] == MAX_LEVEL and (
-                    not was_max or "manual_level" in patch):
+            if self.top_hold_active() and (not was_max or "manual_level" in patch):
                 # Choosing step 4 (again) starts its four hours.
                 self.data["max_level_until"] = time.time() + MAX_LEVEL_HOURS * 3600
             for key, low, high in (
@@ -1450,7 +1475,7 @@ class ControllerState:
         "afterheat_pi_band", "afterheat_pi_min_dwell_ticks", "afterheat_algorithm",
         "afterheat_room_integral_minutes", "afterheat_room_max_step", "afterheat_room_weighted",
         "afterheat_room_band_k", "afterheat_room_offset_k",
-        "night_cool_enabled", "night_cool_start", "night_cool_end", "night_cool_forecast_c", "night_cool_today_c",
+        "night_cool_enabled", "top_level_limit_enabled", "night_cool_start", "night_cool_end", "night_cool_forecast_c", "night_cool_today_c",
         "night_cool_season_c", "night_cool_delta_k", "night_cool_min_indoor_c", "night_cool_level",
     )
     ADVANCED_LABELS = {
@@ -1769,8 +1794,8 @@ class ControllerState:
         except (TypeError, ValueError):
             active_until = 0.0
         if active_until <= now:
-            if self.dantherm_steps() and self.data["mode"] == "manual" and self.data["manual_level"] == MAX_LEVEL:
-                self.data["manual_level"] = NOMINAL_LEVEL
+            if self.top_hold_active():
+                self.data["manual_level"] = self.top_return_level()
             self.data["max_level_until"] = None
             self.data["updated_at"] = now
             self.save()
@@ -2590,7 +2615,7 @@ class ControllerEngine:
                 readings.append((label, float(value), limit))
         return readings
 
-    def _update_frost_lock(self, now: float) -> bool:
+    def _update_frost_lock(self, now: float, clock: float | None = None) -> bool:
         """Decide the afterheat frost lock; the one place this is decided.
 
         Any known value at or below its limit for FROST_LOCK_ENGAGE_SECONDS
@@ -2601,6 +2626,10 @@ class ControllerEngine:
         With no known value the previous state is kept (fail-safe).
         The lock acts only when enabled and the coil is a water coil.
         """
+        if clock is None:
+            clock = getattr(self, "_interval_now", None)
+        clock = now if clock is None else clock
+        self._frost_clock_now = clock
         d = self.config.data
         readings = self.frost_readings()
         latched = d.get("frost_lock_latched") is True
@@ -2614,8 +2643,8 @@ class ControllerEngine:
                 f"{label} {_danish_number(value, 1)} °C (grænse {_danish_number(limit)} °C)" for label, value, limit in cold)
             if not latched:
                 if self.frost_cold_since is None:
-                    self.frost_cold_since = now
-                if now - self.frost_cold_since >= self.frost_engage_seconds:
+                    self.frost_cold_since = clock
+                if clock - self.frost_cold_since >= self.frost_engage_seconds:
                     latched = True
                     self.frost_cold_since = None
         elif not readings:
@@ -2637,8 +2666,8 @@ class ControllerEngine:
                     for label, value, limit in waiting)
             else:
                 if self.frost_release_since is None:
-                    self.frost_release_since = now
-                left = FROST_LOCK_RELEASE_SECONDS - (now - self.frost_release_since)
+                    self.frost_release_since = clock
+                left = FROST_LOCK_RELEASE_SECONDS - (clock - self.frost_release_since)
                 if left <= 0:
                     latched = False
                     self.frost_release_since = None
@@ -2842,6 +2871,10 @@ class ControllerEngine:
         return int(min(35, max(10, native)))
 
     def resolve(self, now: float | None = None) -> dict[str, object]:
+        # Intervals (the frost lock's 2 min engage and 30 min release) run on
+        # the monotonic clock in production: the Pi has no RTC and NTP steps
+        # the wall clock after boot. A caller-given ``now`` drives both.
+        interval_now = time.monotonic() if not now else now
         now = now or time.time()
         with self.config.lock, self.lock:
             self.config._expire_fireplace(now)
@@ -2851,7 +2884,11 @@ class ControllerEngine:
             self.config._expire_max_level(now)
             d = self.config.data
             self._update_winter(now)
-            frost_lock = self._update_frost_lock(now)
+            self._interval_now = interval_now
+            try:
+                frost_lock = self._update_frost_lock(now)
+            finally:
+                self._interval_now = None
             if frost_lock and d.get("cool_boost_until"):
                 # Køl lets freezing air past the coil: it ends when the frost lock engages.
                 d["cool_boost_until"], d["cool_boost_minutes"] = None, 0
@@ -2859,9 +2896,10 @@ class ControllerEngine:
                 self.config.save()
             if d["mode"] == "manual":
                 source, level, reason = "manual", int(d["manual_level"]), "Manuelt valgt niveau"
-                if self.config.dantherm_steps() and level == MAX_LEVEL and d.get("max_level_until"):
+                if self.config.top_hold_active() and d.get("max_level_until"):
                     remaining = max(0, math.ceil((float(d["max_level_until"]) - now) / 60))
-                    reason = f"Trin 4 (maksimum) · tilbage til trin 3 om ca. {remaining} min"
+                    reason = (f"Trin {level} (maksimum) · tilbage til trin "
+                              f"{self.config.top_return_level()} om ca. {remaining} min")
             elif d["mode"] == "smart_auto":
                 seen = d.get("ha_last_seen")
                 lease = min(int(d["ha_timeout_seconds"]), int(d.get("ha_valid_for_seconds", d["ha_timeout_seconds"])))
@@ -2983,7 +3021,7 @@ class ControllerEngine:
                 "afterheat_frost_lock_reason": self.frost_lock_reason,
                 "afterheat_frost_lock_floor": frost_floor,
                 "afterheat_frost_lock_release_seconds": (
-                    max(0, math.ceil(FROST_LOCK_RELEASE_SECONDS - (now - self.frost_release_since)))
+                    max(0, math.ceil(FROST_LOCK_RELEASE_SECONDS - (getattr(self, "_frost_clock_now", now) - self.frost_release_since)))
                     if frost_lock and self.frost_release_since is not None else None),
                 "afterheat_room_state": self.afterheat_room_state,
                 "afterheat_room_reason": afterheat_reason,

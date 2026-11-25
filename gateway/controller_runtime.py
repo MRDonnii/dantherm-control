@@ -1902,9 +1902,65 @@ class ControllerRuntime:
                 self.engine.resolve()
                 self.last_tick_at = time.time()
                 return self.snapshot()
+            self._reassert_drifted_outputs()
             state = self.engine.apply()
             self.last_tick_at = time.time()
             return state
+
+    # The unit must show the written fan pair / bypass request this long
+    # before the Pi writes it again (polls run every 3-10 s).
+    DRIFT_REASSERT_SECONDS = 30.0
+    # A unit that keeps undoing the value is not fought: at most once per 10 min.
+    DRIFT_REASSERT_MIN_INTERVAL_SECONDS = 600.0
+
+    def _reassert_drifted_outputs(self, now: float | None = None) -> None:
+        """Write the fan pair and bypass again when the unit no longer shows them.
+
+        Only the unit's own frost protection (extract kept, supply lowered) is
+        left alone; fireplace and standby own the fans while they run. A
+        panel change makes HCP4 master, which already clears last_applied.
+        """
+        now = time.monotonic() if now is None else now
+        drift = getattr(self, "_drift_since", None)
+        if drift is None:
+            drift = self._drift_since = {}
+        state, applied = self.gateway_state, self.engine.last_applied
+        if state.get("gateway_mode") == "mk2_controller":
+            return
+        special = (applied.get("fireplace") is True or applied.get("standby") is True
+                   or state.get("fireplace_gateway") == "ON")
+
+        def number(value: object) -> bool:
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+        want = applied.get("fan_pair")
+        actual = (state.get("fan_extract_percent"), state.get("fan_supply_percent"))
+        pair_drift = (
+            not special and isinstance(want, tuple) and len(want) == 2
+            and all(number(value) for value in actual)
+            and (int(actual[0]), int(actual[1])) != (int(want[0]), int(want[1]))
+            and state.get("unit_frost_protection") is not True
+            and not (int(actual[0]) == int(want[0]) and int(actual[1]) < int(want[1]))
+        )
+        want_bypass = applied.get("bypass")
+        actual_bypass = state.get("bypass_request")
+        bypass_drift = (
+            not special and want_bypass in ("on", "off") and actual_bypass in ("ON", "OFF")
+            and actual_bypass.lower() != want_bypass
+        )
+        for key, drifted, shown in (("fan_pair", pair_drift, actual), ("bypass", bypass_drift, actual_bypass)):
+            if not drifted:
+                drift.pop(key, None)
+                continue
+            since = drift.setdefault(key, now)
+            last = drift.get(f"{key}_reasserted")
+            if now - since >= self.DRIFT_REASSERT_SECONDS and (
+                    last is None or now - last >= self.DRIFT_REASSERT_MIN_INTERVAL_SECONDS):
+                drift.pop(key, None)
+                drift[f"{key}_reasserted"] = now
+                LOG.warning("Anlægget mistede indstillingen %s (Pi skrev %s, anlægget viser %s); skrives igen",
+                            key, applied.get(key), shown)
+                applied.pop(key, None)
 
     def tick(self) -> None:
         self.refresh_measurements()

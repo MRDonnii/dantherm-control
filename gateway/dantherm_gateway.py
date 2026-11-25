@@ -42,6 +42,15 @@ LOG = logging.getLogger("dantherm_gateway")
 # cycle gets longer for MQTT and startup. After a watchdog exit the process is
 # killed hard if the cleanup has not finished in HARD_EXIT_SECONDS.
 CONTROLLER_STALL_SECONDS = 120.0
+# The serial main loop normally turns over in well under a second; its longest
+# legitimate step (a queued hardware action plus block reads) is a few seconds.
+MAIN_LOOP_STALL_SECONDS = 90.0
+MAIN_LOOP_WATCHDOG_INTERVAL_SECONDS = 5.0
+# A write on a healthy RS485 adapter takes milliseconds; never block forever.
+SERIAL_WRITE_TIMEOUT_SECONDS = 1.0
+CONTROLLER_HARDWARE_TIMEOUT_SECONDS = 4.0
+# The duplicate filter only needs frames from the last dedupe window.
+SNIFFER_LAST_SEEN_PRUNE_AT = 256
 CONTROLLER_FIRST_CYCLE_GRACE_SECONDS = 300.0
 HARD_EXIT_SECONDS = 20.0
 EXIT_LOCK_TIMEOUT_SECONDS = 2.0
@@ -249,6 +258,10 @@ class DirectionCapture:
         self.directory.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         self.path = self.directory / f"direction-{stamp}.jsonl"
+        from sniffer import prune_captures
+
+        prune_captures([*self.directory.glob("direction-*.jsonl"), self.path])
+        self.started_monotonic = time.monotonic()
         self.running = True
         self.thread = threading.Thread(
             target=self._writer, name="rs485-direction-capture", daemon=True
@@ -267,12 +280,23 @@ class DirectionCapture:
 
     def _writer(self) -> None:
         assert self.path is not None
+        from sniffer import CAPTURE_MAX_BYTES, CAPTURE_MAX_SECONDS
+
+        written = 0
         with self.path.open("a", encoding="utf-8", buffering=1) as output:
             while True:
                 record = self.records.get()
                 if record is None:
                     break
-                output.write(json.dumps(record, separators=(",", ":")) + "\n")
+                line = json.dumps(record, separators=(",", ":")) + "\n"
+                output.write(line)
+                written += len(line)
+                if (written >= CAPTURE_MAX_BYTES
+                        or time.monotonic() - getattr(self, "started_monotonic", time.monotonic()) >= CAPTURE_MAX_SECONDS):
+                    # A forgotten capture stops by itself before it fills the SD card.
+                    self.running = False
+                    LOG.warning("Direction-aware capture stoppet automatisk (grænse nået): %s", self.path)
+                    break
 
     def record_tx(self, data: bytes, reason: str) -> None:
         if not self.running:
@@ -401,7 +425,7 @@ class ReadOnlyTcpMirror:
                             continue
                         self.clients.add(client)
                     self.selector.register(client, selectors.EVENT_READ)
-                    LOG.info("TCP-læser tilsluttet fra %s", address[0])
+                    LOG.debug("TCP-læser tilsluttet fra %s", address[0])
                     continue
 
                 client = key.fileobj
@@ -595,6 +619,7 @@ class RtuSniffer:
             parity=serial.PARITY_EVEN if self.parity.upper() == "E" else serial.PARITY_NONE,
             stopbits=serial.STOPBITS_ONE,
             timeout=0.05,
+            write_timeout=SERIAL_WRITE_TIMEOUT_SECONDS,
             exclusive=True,
         )
         # FTDI control lines holdes passive. Der kaldes aldrig write().
@@ -647,6 +672,9 @@ class RtuSniffer:
             del self.buffer[:offset]
         if len(self.buffer) > 1024:
             del self.buffer[:-16]
+        if len(self.last_seen) > SNIFFER_LAST_SEEN_PRUNE_AT:
+            cutoff = time.monotonic() - self.dedupe_s
+            self.last_seen = {key: seen for key, seen in self.last_seen.items() if seen >= cutoff}
 
 
 class Gateway:
@@ -794,8 +822,11 @@ class Gateway:
         """Serialize controller writes onto the gateway's sole RS485 thread."""
         done = threading.Event()
         result: dict[str, object] = {}
+        # The caller gives up after the timeout; the serial thread must then
+        # not carry the stale request out later (result "expired").
+        result["deadline"] = time.monotonic() + CONTROLLER_HARDWARE_TIMEOUT_SECONDS
         self.controller_hardware_queue.put((action, value, done, result))
-        if not done.wait(4.0):
+        if not done.wait(CONTROLLER_HARDWARE_TIMEOUT_SECONDS):
             raise TimeoutError(f"controller hardware timeout: {action}")
         if result.get("error"):
             raise RuntimeError(str(result["error"]))
@@ -804,6 +835,15 @@ class Gateway:
     def process_controller_hardware(self, ser: serial.Serial):
         while not self.controller_hardware_queue.empty():
             action, value, done, result = self.controller_hardware_queue.get()
+            deadline = result.pop("deadline", None)
+            if deadline is not None and time.monotonic() > deadline:
+                result["error"] = "expired"
+                state = getattr(self, "state", None)
+                if isinstance(state, dict):
+                    state["controller_hardware_expired"] = int(state.get("controller_hardware_expired") or 0) + 1
+                LOG.warning("Udløbet styrekommando sprunget over: %s", action)
+                done.set()
+                continue
             try:
                 bridge = getattr(self, "mk2_bridge", None)
                 if bridge is not None:
@@ -1847,9 +1887,11 @@ class Gateway:
         # for the rare CRC byte equal to the byte count).
         crc = crc16(header).to_bytes(2, "little")
         tail = frame[2:6] + crc[:1] if crc[0] != frame[6] else None
-        for _attempt in range(2):
+        for attempt in range(2):
             if not self.wait_quiet(ser):
                 raise RuntimeError("RS485 bus did not become quiet")
+            if attempt:
+                self.count_bus(0x40, "retry")
             self.serial_write(ser, frame, reason)
             ser.flush()
             deadline = time.monotonic() + 0.5
@@ -1860,11 +1902,14 @@ class Gateway:
                 index = received.find(header)
                 if index >= 0 and (header_seen or len(received) >= index + 8):
                     self.last_afterheat_block_at = time.monotonic()
+                    self.count_bus(0x40, "ok")
                     return
                 header_seen = index >= 0
                 if tail is not None and tail in received:
                     self.last_afterheat_block_at = time.monotonic()
+                    self.count_bus(0x40, "ok")
                     return
+            self.count_bus(0x40, "timeout")
         raise RuntimeError(f"missing FC16 acknowledgement for register {start}")
 
     def _afterheat_temperature_words(self, ser: serial.Serial) -> list[int]:
@@ -2018,15 +2063,34 @@ class Gateway:
         time.sleep(0.15)
         self.write_pair(ser, *target)
 
+    def count_bus(self, slave: int, outcome: str) -> None:
+        """Per-slave RS485 counters (unit = 1, HAC1 = 0x40) for the diagnostics.
+
+        ``outcome`` is ok, retry, timeout (no answer) or crc_error (an answer
+        with the right header but a broken checksum).
+        """
+        state = getattr(self, "state", None)
+        if not isinstance(state, dict):
+            return
+        name = {1: "unit", 0x40: "hac1"}.get(int(slave), f"slave{int(slave)}")
+        key = f"rs485_{name}_{outcome}"
+        state[key] = int(state.get(key) or 0) + 1
+
     def read_fan_pair(self, ser: serial.Serial) -> tuple[int, int] | None:
         request = self.read_frame(66, 2)
+        sent = 0
         for _attempt in range(4):
             if not self.wait_quiet(ser):
                 continue
-            self.serial_write(ser, request, "ACTIVE_READ")
+            # Zero bytes written: the master gate kept it off the wire (not counted).
+            wrote = self.serial_write(ser, request, "ACTIVE_READ") != 0
+            if wrote and sent:
+                self.count_bus(1, "retry")
+            sent += wrote
             ser.flush()
             deadline = time.monotonic() + 0.4
             received = bytearray()
+            crc_bad = False
             while time.monotonic() < deadline:
                 received.extend(self.serial_read(ser, 256))
                 for offset in range(max(0, len(received) - 256), len(received) - 8):
@@ -2034,11 +2098,15 @@ class Gateway:
                     if frame[:3] != b"\x01\x03\x04":
                         continue
                     if crc16(frame[:-2]) != int.from_bytes(frame[-2:], "little"):
+                        crc_bad = True
                         continue
+                    self.count_bus(1, "ok")
                     return (
                         int.from_bytes(frame[3:5], "big"),
                         int.from_bytes(frame[5:7], "big"),
                     )
+            if wrote:
+                self.count_bus(1, "crc_error" if crc_bad else "timeout")
         return None
 
     def read_register_block(
@@ -2046,6 +2114,7 @@ class Gateway:
     ) -> list[int] | None:
         request = self.read_frame(start, count, slave=slave, function=function)
         expected_length = 5 + count * 2
+        sent = 0
         for _attempt in range(4):
             if not self._active_read_allowed():
                 return None
@@ -2053,10 +2122,15 @@ class Gateway:
                 continue
             if not self._active_read_allowed():
                 return None
-            self.serial_write(ser, request, "ACTIVE_READ")
+            # Zero bytes written: the master gate kept it off the wire (not counted).
+            wrote = self.serial_write(ser, request, "ACTIVE_READ") != 0
+            if wrote and sent:
+                self.count_bus(slave, "retry")
+            sent += wrote
             ser.flush()
             deadline = time.monotonic() + 0.18
             received = bytearray()
+            crc_bad = False
             while time.monotonic() < deadline:
                 received.extend(self.serial_read(ser, 256))
                 for offset in range(
@@ -2067,15 +2141,19 @@ class Gateway:
                     if frame[:3] != bytes([slave, function, count * 2]):
                         continue
                     if crc16(frame[:-2]) != int.from_bytes(frame[-2:], "little"):
+                        crc_bad = True
                         continue
                     # A CRC-valid response to an active read also proves that the
                     # RS485 bus is alive. Without this, installations with no
                     # unsolicited frames are restarted by the watchdog every 60 s.
                     self.last_bus_frame = time.monotonic()
+                    self.count_bus(slave, "ok")
                     return [
                         int.from_bytes(frame[index : index + 2], "big")
                         for index in range(3, len(frame) - 2, 2)
                     ]
+            if wrote:
+                self.count_bus(slave, "crc_error" if crc_bad else "timeout")
         return None
 
     def _active_read_allowed(self) -> bool:
@@ -2767,26 +2845,57 @@ class Gateway:
             self.hard_exit_timer = timer
         return timer
 
+    def main_loop_stalled(self, now: float | None = None) -> float | None:
+        """Seconds since the serial main loop last turned over, when that is too long."""
+        stamp = getattr(self, "last_main_loop_monotonic", None)
+        if stamp is None:
+            return None
+        age = (time.monotonic() if now is None else now) - stamp
+        return age if age > MAIN_LOOP_STALL_SECONDS else None
+
+    def start_main_loop_watchdog(self) -> threading.Event:
+        """Watch the serial main loop from its own thread.
+
+        The main loop watches the controller thread, but nothing watched the
+        main loop: a blocked serial call would leave the process alive with
+        the bus dead. On a stall the hard exit is armed (systemd restarts).
+        """
+        stop = threading.Event()
+
+        def watch():
+            while not stop.wait(MAIN_LOOP_WATCHDOG_INTERVAL_SECONDS):
+                age = self.main_loop_stalled()
+                if age is not None:
+                    self.running = False
+                    self.watchdog_exit(f"Hovedløkken på RS485 har stået stille i {age:.0f} sekunder; genstarter gateway")
+                    return
+
+        thread = threading.Thread(target=watch, name="main-loop-watchdog", daemon=True)
+        thread.start()
+        return stop
+
     def restore_on_exit(self, ser: serial.Serial):
-        if not self.control_enabled:
-            # Controller mode: a fireplace the controller started is ended, so the
-            # unit never stays without extract while the Pi is down. The saved
-            # state lets the controller pick it up again after a restart.
+        # The last will runs for every entry point: the controller entry point
+        # sets control_enabled=False, yet ControllerRuntime drives the HAC1
+        # setpoint and the fireplace pattern through the hardware queue.
+        # It runs once only, even if a second stop path reaches it.
+        if getattr(self, "exit_restore_done", False):
+            return
+        self.exit_restore_done = True
+        self.restore_afterheat_on_exit(ser)
+        if self.fireplace_gateway_active:
+            # A fireplace the gateway runs is ended, so the unit never stays
+            # without extract while the Pi is down. The saved state lets the
+            # controller pick it up again after a restart. In controller mode
+            # the write goes through the master gate (HCP4 always wins).
             controller = getattr(self, "controller", None)
             master = getattr(controller, "master", None)
-            if self.fireplace_gateway_active and (master is None or master.writes_allowed()):
+            if self.control_enabled or master is None or master.writes_allowed():
                 try:
                     self.stop_fireplace(ser, clear_saved_state=False)
                 except Exception:
                     LOG.exception("Kunne ikke gendanne Pejs-værdier ved stop")
-            return
-        self.restore_afterheat_on_exit(ser)
-        if self.fireplace_gateway_active:
-            try:
-                self.stop_fireplace(ser, clear_saved_state=False)
-            except Exception:
-                LOG.exception("Kunne ikke gendanne Pejs-værdier ved stop")
-        if self.restore_pair is None:
+        if not self.control_enabled or self.restore_pair is None:
             return
         try:
             self.write_pair(ser, *self.restore_pair)
@@ -2944,6 +3053,8 @@ class Gateway:
             self.reader_started_at = time.monotonic()
             LOG.info("Aflæsning startet på %s", serial_cfg["port"])
             self.controller.start()
+            self.last_main_loop_monotonic = time.monotonic()
+            main_loop_watchdog = self.start_main_loop_watchdog()
             try:
                 if self.control_enabled and self.startup_mode is not None:
                     startup_mode = self.startup_mode
@@ -2953,6 +3064,7 @@ class Gateway:
                 if self.control_enabled:
                     self.resume_fireplace(ser)
                 while self.running:
+                    self.last_main_loop_monotonic = time.monotonic()
                     # A dead regulator must not be masked by a working HTTP server.
                     health = self.controller.loop_health()
                     if self.controller.thread is not None and not health["thread_alive"]:
@@ -3074,6 +3186,7 @@ class Gateway:
                     if time.monotonic() - self.last_filter_publish >= 60.0:
                         self.publish_filter_status()
             finally:
+                main_loop_watchdog.set()
                 self.controller.stop()
                 self.direction_capture.stop()
                 self.restore_on_exit(ser)
@@ -3092,7 +3205,9 @@ def main():
     parser.add_argument("-c", "--config", default="config.yaml")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
-    logging.basicConfig(level=getattr(logging, args.log_level.upper()), format="%(asctime)s %(levelname)s %(message)s")
+    from journal_logging import configure_logging
+
+    configure_logging(args.log_level)
     config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
     gateway = Gateway(config)
     signal.signal(signal.SIGTERM, lambda *_: setattr(gateway, "running", False))
