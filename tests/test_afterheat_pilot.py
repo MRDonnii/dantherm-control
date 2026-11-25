@@ -279,6 +279,11 @@ def longest_minutes(rows, condition):
     return longest / 60
 
 
+def share(rows, condition):
+    """Part of the rows meeting ``condition``."""
+    return sum(1 for r in rows if condition(r)) / len(rows)
+
+
 def mean_abs_error(rows, target, start=10 * 60):
     late = [abs(r["air"] - target) for r in rows if r["t"] >= start]
     return sum(late) / len(late)
@@ -335,7 +340,8 @@ class CalmControlTests(unittest.TestCase):
                     self.assertEqual(plant.fan, 27)
                     self.assertTrue(all(r["state"] == "pi" for r in rows))
                     rates.append(level_changes_per_5_minutes(rows))
-                    self.assertLessEqual(rates[-1], 1.0)
+                    # (1.1: at 17 % fan level 0 settles 1.2 K cold; the soft floor takes level 1 sooner.)
+                    self.assertLessEqual(rates[-1], 1.1)
                     self.assertLessEqual(mean_abs_error(rows, 21.0), 0.5)
                     after_start_or_step = [r["air"] for r in rows
                                            if any(0 <= r["t"] - at < 10 * 60 for at in (0, *events))]
@@ -394,8 +400,11 @@ class CalmControlTests(unittest.TestCase):
         # The trial's coil: level 1 ~0.2 K and level 2 ~6 K. Level 1 leaves the
         # air 0.7-1.2 K cold, level 2 several K too warm: the Pi learns the big
         # step and then takes turns on the two (long-period PWM with the
-        # minimum dwell) so that the air is right on average, instead of
-        # sitting cold on level 1 for good.
+        # minimum dwell) instead of sitting cold on level 1 for good. Since
+        # 1.13.0-beta.9 the turn back up comes before the falling air passes the
+        # soft floor (target - 0.5 K): the air rarely dips below it and is warm
+        # on average instead, and on this coil (6 K step, cools in ~2 min) the
+        # turns come every 5-7 ticks (no turn can be both calm and right).
         for base in (19.6, 20.1):
             for seed in (1, 2):
                 with self.subTest(base=base, seed=seed):
@@ -404,9 +413,10 @@ class CalmControlTests(unittest.TestCase):
                     self.assertGreater(pilot.heat.step(1), 2.5)
                     late = [r for r in rows if r["t"] >= 15 * 60]
                     self.assertTrue(any(r["reason"].startswith("Skifter mellem trin 1 og 2") for r in late))
-                    self.assertLessEqual(abs(mean_error(late, 21.0)), 0.8)
+                    self.assertTrue(-0.2 <= mean_error(late, 21.0) <= 2.5)
+                    self.assertLessEqual(share(late, lambda r: r["air"] < 21.0 - pilot_module.SOFT_FLOOR_K), 0.08)
                     self.assertLessEqual(max(r["level"] for r in late), 3)
-                    self.assertLessEqual(level_changes_per_5_minutes(late), 1.4)  # 1.4: a hold never sits above the air HAC1 reads (live 2026-11-21)
+                    self.assertLessEqual(level_changes_per_5_minutes(late), 3.2)  # (was 1.4 before the soft floor)
                     self.assertLessEqual(max(r["changes"] for r in late), pilot_module.RATE_WARN_CHANGES + 2)
 
     def test_trial_valves_never_sit_two_kelvin_cold(self):
@@ -418,9 +428,10 @@ class CalmControlTests(unittest.TestCase):
                 pilot, rows = self.run_trial_valves(18.4, seed)
                 self.assertTrue(all(r["state"] == "pi" for r in rows))
                 late = [r for r in rows if r["t"] >= 15 * 60]
-                self.assertLessEqual(abs(mean_error(late, 21.0)), 0.8)
+                self.assertTrue(-0.2 <= mean_error(late, 21.0) <= 2.5)  # warm rather than dips (see above)
+                self.assertLessEqual(share(late, lambda r: r["air"] < 21.0 - pilot_module.SOFT_FLOOR_K), 0.08)
                 self.assertGreaterEqual(sum(1 for a, b in zip(late, late[1:]) if a["level"] != b["level"]), 4)
-                self.assertLessEqual(level_changes_per_5_minutes(late), 1.4)  # 1.4: a hold never sits above the air HAC1 reads (live 2026-11-21)
+                self.assertLessEqual(level_changes_per_5_minutes(late), 3.2)  # (was 1.4 before the soft floor)
                 self.assertLessEqual(longest_minutes(rows, lambda r: r["air"] < 21.0 - 1.0), 20)
                 self.assertLessEqual(max(r["level"] for r in late), 3)
 

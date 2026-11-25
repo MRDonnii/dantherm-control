@@ -46,11 +46,13 @@ class Hac1Plant:
                  water_mean: float = 44.0, water_amp: float = 6.0, water_period: float = 2400.0,
                  noise: float = 0.03, seed: int = 1, tick_offset: float = 17.3,
                  period: float = TICK_PERIOD_S, level: int = 1, setpoint: float = 21.0,
-                 start: float = 1_000_000.0) -> None:
+                 start: float = 1_000_000.0, tau_down: float | None = None) -> None:
         self.gain, self.curvature, self.base = gain, curvature, base
         # Explicit heat of each level relative to level 1's (overrides the curvature).
         self.level_heat = level_heat
         self.dead_time, self.tau, self.fan = dead_time, tau, fan
+        # The coil cools slower than it heats (live RLV-2 fit 2026-11-25: ~110 s up, ~240 s down).
+        self.tau_down = tau if tau_down is None else tau_down
         self.water_mean, self.water_amp, self.water_period = water_mean, water_amp, water_period
         self.noise = noise
         self.random = random.Random(seed)
@@ -95,7 +97,8 @@ class Hac1Plant:
         while len(self.history) > 1 and self.history[1][0] <= self.now - self.dead_time:
             self.history.popleft()
         delayed = self.history[0][1]
-        self.x += (delayed - self.x) * (1 - math.exp(-dt / self.tau))
+        tau = self.tau if delayed >= self.x else self.tau_down
+        self.x += (delayed - self.x) * (1 - math.exp(-dt / tau))
         self.raw = self.x + self.random.gauss(0.0, self.noise)
         if self.now < self.glitch_until:
             self.raw += 3.0
@@ -164,6 +167,12 @@ OPENED_VALVES = dict(gain=1.25, curvature=0.0, base=20.0)
 # fan, then flattening (assumed; the trial never went above level 2).
 TRIAL_LEVEL_HEAT = [0.0, 0.15, 5.25, 6.0, 6.6, 7.0, 7.3, 7.55, 7.75, 7.9, 8.0]
 TRIAL_VALVES = dict(gain=1.0, level_heat=TRIAL_LEVEL_HEAT, base=20.5)
+# The RLV balancing valve at 2 turns (live 2026-11-24/25 at 36 % fan): level 1 lifts the
+# air ~2.4 K over the air before the coil (17.8 C), level 2 ~8.6 K, the rest flattening;
+# the coil heats in ~110 s and cools in ~240 s. (Lifts / 0.9: 27/36 fan * 24/20 water.)
+RLV2_LIFT_AT_36 = [0.0, 2.4, 8.6, 9.6, 10.3, 10.8, 11.2, 11.5, 11.7, 11.9, 12.0]
+RLV2_VALVES = dict(gain=1.0, level_heat=[lift / 0.9 for lift in RLV2_LIFT_AT_36], base=17.89, fan=36.0,
+                   tau=110.0, tau_down=240.0)
 
 
 def run(pilot, plant: Hac1Plant, *, target: float, minutes: float, events=None,

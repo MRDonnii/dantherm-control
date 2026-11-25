@@ -137,6 +137,9 @@ class ControllerRuntime:
         self.afterheat_room_source_used: str | None = None
         # Raw HAC1 T2AH readings (monotonic time, value) for the afterheat control.
         self._t2ah_raw_samples: deque[tuple[float, float]] = deque()
+        # refresh_measurements runs in the controller thread and in every HTTP snapshot():
+        # the raw T2AH window is changed and read under this lock only.
+        self._t2ah_raw_lock = threading.Lock()
         # Last frost lock state written to the change log (None until first seen).
         self._frost_lock_logged: bool | None = None
         # Extra 1-Wire sensors (T2 before the coil, loft, ...), read in the background.
@@ -288,12 +291,14 @@ class ControllerRuntime:
 
         raw = state.get("t2ah_last_raw_temperature")
         raw_at = state.get("t2ah_last_raw_sample_monotonic")
-        samples = self._t2ah_raw_samples
-        if (isinstance(raw, (int, float)) and not isinstance(raw, bool) and isinstance(raw_at, (int, float))
-                and (not samples or samples[-1][0] != raw_at)):
-            samples.append((float(raw_at), float(raw)))
-        while samples and mono - samples[0][0] > self.T2AH_RAW_WINDOW_SECONDS:
-            samples.popleft()
+        with self._t2ah_raw_lock:
+            samples = self._t2ah_raw_samples
+            if (isinstance(raw, (int, float)) and not isinstance(raw, bool) and isinstance(raw_at, (int, float))
+                    and (not samples or samples[-1][0] != raw_at)):
+                samples.append((float(raw_at), float(raw)))
+            while samples and mono - samples[0][0] > self.T2AH_RAW_WINDOW_SECONDS:
+                samples.popleft()
+            raw_values = [value for _at, value in samples]
         t2ah_age = sensor_sample_age(state, "heating_coil_after_temperature", now=mono)
         level = state.get("hac1_output_level")
         return {
@@ -302,7 +307,7 @@ class ControllerRuntime:
             "level_changed_at": wall_time("hac1_output_level_changed_monotonic"),
             "t2ah": self._safe_number(state.get("heating_coil_after_temperature"), -30, 80),
             "t2ah_at": None if t2ah_age is None else wall - t2ah_age,
-            "t2ah_raw": robust_temperature(value for _at, value in samples),
+            "t2ah_raw": robust_temperature(raw_values),
             "fan_supply": self._safe_number(self._first(state, "fan_supply_percent", "supply_fan_percent"), 0, 100),
             "water_flow": self.onewire.by_role("water_flow"),
             "before_heater": self.onewire.by_role("t2"),

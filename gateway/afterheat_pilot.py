@@ -180,8 +180,41 @@ PERSIST_URGENT_S = 60.0
 # The turns follow the measured air: the error (K*s) summed since the last
 # turn has to reach this before the other level is taken (larger = longer period).
 PWM_SWITCH_KS = 450.0
-# The sum is kept within this many switch amounts (a bounded memory).
-PWM_DEBT_LIMIT = 1.5
+# The sum is kept within this many switch amounts (a bounded memory). Wide enough
+# that the warm side is paid back too: the warm bias is PWM_WARM_BIAS_K, not the clamp
+# (1.5 threw away the warm excess of the upper level and left ~+0.4 K by accident).
+PWM_DEBT_LIMIT = 3.0
+# A dip below the target is felt as a cold draught, a little too warm is not: taking
+# turns, the air is steered this much above the target on average (the sum counts
+# from it) ...
+PWM_WARM_BIAS_K = 0.3
+# ... and should rarely fall more than this below the target (a soft floor): on the
+# lower level the turn back up is taken before the falling air would pass it, from
+# how far the air went on falling after earlier turns up (learned, see FALL_*).
+SOFT_FLOOR_K = 0.5
+# How far the air goes on falling after a step up is asked for, as seconds of its
+# fall rate at that moment (the tick, the dead time and the coil's lag): learned per
+# fan bucket from each turn up taken while the air fell at least FALL_MIN_SLOPE.
+FALL_OVERRUN_PRIOR_S = 90.0
+FALL_OVERRUN_RANGE = (30.0, 300.0)
+FALL_LEARN_WEIGHT = 0.3
+FALL_MIN_SLOPE = 0.25 / 60.0
+FALL_FAN_BUCKET = 5.0
+# The turn up is judged over this much more: the air settles part of the way
+# meanwhile, so the straight line through the trend runs a little cold.
+FALL_WATCH_S = 6 * 60.0
+FALL_RISE_K = 0.15
+# While the air sweeps through the hold window (a turn on its way), the hold setpoint
+# keeps at least this far (or the trend times PHASE_UNCERTAINTY_S) from the side that
+# would make HAC1 step back toward the other level (see _hold_setpoint).
+TRANSIENT_HOLD_MARGIN_K = 0.25
+PHASE_UNCERTAINTY_S = 10.0
+# Ping-pong guard: this many level changes in a row on consecutive ticks, back and
+# forth, and the level on the target's side is kept this many ticks (no reverts).
+PINGPONG_CHANGES = 3
+PINGPONG_HOLD_TICKS = 4
+# Unasked steps by HAC1 are counted this long for the diagnostics.
+UNASKED_WINDOW_S = 3600.0
 # Under the frost lock a level is not stepped down to when it settles less than this above
 # the frost floor HAC1 can hold (the whole degree at or above the frost floor).
 FROST_MARGIN_K = 0.2
@@ -244,8 +277,8 @@ BAND_DRIFT_K = 0.06
 # In the band the integral drifts to the level held with this time constant.
 BAND_BLEED_S = 600.0
 # Gates that hold the level against the PI (see _plan), and those that rule a step out for a while.
-HELD_GATES = ("step", "dwell", "wait", "unholdable", "pwm", "frost")
-RULED_OUT_GATES = ("step", "unholdable", "pwm", "frost")
+HELD_GATES = ("step", "dwell", "wait", "unholdable", "pwm", "frost", "pingpong")
+RULED_OUT_GATES = ("step", "unholdable", "pwm", "frost", "pingpong")
 
 
 def _num(value: object) -> float | None:
@@ -257,6 +290,17 @@ def _num(value: object) -> float | None:
 
 def _danish(value: float, digits: int = 1) -> str:
     return f"{value:.{digits}f}".replace(".", ",")
+
+
+def comfort_cost(error: float) -> float:
+    """How far (K) the air at ``error`` K from the target is from where the Pi aims.
+
+    Counted from the warm bias (PWM_WARM_BIAS_K), not the target: of two levels
+    equally far off the target the warmer one is the better bet (a dip is felt
+    as a draught, a little warm is not). Below the soft floor the floor rule
+    decides (see _floor_ahead), whatever this says.
+    """
+    return abs(error - PWM_WARM_BIAS_K)
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -568,6 +612,18 @@ class AfterheatPilot:
         self.pwm_settled: list[float | None] = [None, None]
         self.pwm_up = False
         self.pwm_turn_at: float | None = None
+        # Learned fall overrun (s) per fan bucket, and the turn up being watched (see FALL_*).
+        self.fall_overrun: dict[int, float] = {}
+        self.fall_watch: dict[str, float] | None = None
+        self.floor_due = False
+        self.floor_soon = False
+        # Level changes seen (when, direction) for the ping-pong guard, and the guard itself.
+        self.level_changes: deque[tuple[float, int]] = deque()
+        self.pingpong_level: int | None = None
+        self.pingpong_other: int | None = None
+        self.pingpong_until: float | None = None
+        # HAC1's unasked steps (when), for the diagnostics.
+        self.unasked: deque[float] = deque()
         # Why the last decision held the level ("band", "dwell", "step") and the step it weighed (K).
         self.gate: str | None = None
         self.gate_step_k = 0.0
@@ -658,6 +714,9 @@ class AfterheatPilot:
         if not self.active:
             return
         self.level_change_at, self.level_change_dir = seen_at, 1 if level > previous else -1
+        self._watch_pingpong(inp, seen_at, level, previous)
+        if self.fall_watch is not None and level == self.fall_watch["level"] + 1:
+            self.fall_watch["seen"] = 1.0  # the turn up being watched has been taken
         if not self._fresh(inp.t2ah, inp.t2ah_age) or abs(level - previous) != 1:
             self.episodes = []
         else:
@@ -687,12 +746,28 @@ class AfterheatPilot:
             self.last_step_dir, self.last_step_at = direction, seen_at
             self.revert_level = None
             self._note(inp, "Frostsikring: HAC1 gik selv et trin op")
+        elif self._early_turn(inp, previous, level, seen_at):
+            # Taking turns, HAC1 stepped onto the other level of the pair when its
+            # turn was (nearly) due anyway: taken as the turn, not undone.
+            self.unasked.append(seen_at)
+            self.commanded_dir = 0
+            self.last_step_dir, self.last_step_at = direction, seen_at
+            self.revert_level = None
+            self._note(inp, "HAC1 tog selv det næste skift; det gælder som skiftet")
+        elif self.pingpong_until is not None and seen_at < self.pingpong_until:
+            # The ping-pong guard holds still: HAC1's step is not undone (see _guard).
+            self.unasked.append(seen_at)
+            self.commanded_dir = 0
+            self.revert_level = None
         else:
+            self.unasked.append(seen_at)
             if self.margin >= FOLLOW_MARGIN_K and not self.band_hold:
                 self.follow_failures += 1  # close to a band edge (or in the comfort band) it is noise, not HAC1
             self._note(inp, "HAC1 tog et uventet trin; rettes ved næste tick")
             self.revert_level, self.revert_at = previous, seen_at
-            if self.action == "hold":
+            if self.action == "hold" and self.pwm_low is None:
+                # (Taking turns the air sweeps through the hold window all the time:
+                # such a step says nothing about where the level settles.)
                 # HAC1 stepped off a level it was asked to hold: noted, and a level
                 # it keeps stepping off is avoided for a while (see _plan).
                 self.blips.append((seen_at, previous))
@@ -703,6 +778,160 @@ class AfterheatPilot:
                     LOG.info("Afterheat: level %d is not held by HAC1 (air on a whole degree); avoided for %d min",
                              previous, UNHOLDABLE_S // 60)
         self.command_level, self.check_at = level, None
+
+    def _early_turn(self, inp: PilotInputs, previous: int, level: int, seen_at: float) -> bool:
+        """HAC1's own step between the two levels taking turns, toward the side the sum says is next.
+
+        A step down off the upper level once the air has been warm enough (the
+        sum has reached the target plus the warm bias), or up off the lower one
+        once it has been cold enough or the falling air nears the soft floor, is
+        taken as the turn. The other way it is undone as before: a step up while
+        the air is still too warm would only make it warmer.
+        """
+        lower = self.pwm_low
+        if lower is None or {previous, level} != {lower, lower + 1} or self.fan_moved:
+            return False
+        # (Off the upper level only within a tick of the minimum dwell: a shorter
+        # turn there only makes the turns come faster.)
+        left = (math.inf if self.pwm_turn_at is None else self._dwell_ticks(inp) * self.clock.period
+                - DECIDE_BEFORE_S - 5 - (seen_at - self.pwm_turn_at))
+        if (level < previous and self.pwm_up and self.pwm_debt >= 0 and self.error_now > PWM_WARM_BIAS_K
+                and not self.floor_due and left <= self.clock.period):
+            self.pwm_up, self.pwm_turn_at = False, seen_at
+            return True
+        if level > previous and not self.pwm_up and (self.pwm_debt <= 0 or self.floor_soon):
+            self.pwm_up, self.pwm_turn_at = True, seen_at
+            return True
+        return False
+
+    def _watch_pingpong(self, inp: PilotInputs, seen_at: float, level: int, previous: int) -> None:
+        """Level changes back and forth on consecutive ticks start the ping-pong guard (see _guard)."""
+        changes = self.level_changes
+        changes.append((seen_at, level - previous))
+        while changes and seen_at - changes[0][0] > (PINGPONG_CHANGES + 1) * self.clock.period:
+            changes.popleft()
+        recent = list(changes)[-PINGPONG_CHANGES:]
+        if len(recent) < PINGPONG_CHANGES or self.pingpong_until is not None and seen_at < self.pingpong_until:
+            return
+        consecutive = all(b[0] - a[0] <= 1.5 * self.clock.period for a, b in zip(recent, recent[1:]))
+        alternating = all(abs(d) == 1 and a[1] == -d for a, (_t, d) in zip(recent, recent[1:]))
+        if not (consecutive and alternating):
+            return
+        # The level on the target's side: the lower one while the air is warmer
+        # than the target plus the warm bias, else the upper one.
+        low_level, high_level = min(level, previous), max(level, previous)
+        warm = self._raw(inp) - float(inp.target) > PWM_WARM_BIAS_K if self._fresh(inp.t2ah, inp.t2ah_age) else True
+        keep, other = (low_level, high_level) if warm else (high_level, low_level)
+        self.pingpong_level, self.pingpong_other = keep, other
+        self.pingpong_until = seen_at + PINGPONG_HOLD_TICKS * self.clock.period
+        self.revert_level = None
+        if self.pwm_low is not None and low_level == self.pwm_low:
+            self.pwm_up, self.pwm_turn_at = keep > low_level, seen_at
+        LOG.info("Afterheat: HAC1 and the Pi took turns %d<->%d every tick; level %d kept %d ticks",
+                 low_level, high_level, keep, PINGPONG_HOLD_TICKS)
+
+    def _end_guard(self) -> None:
+        self.pingpong_level, self.pingpong_other, self.pingpong_until = None, None, None
+
+    def _guard(self, inp: PilotInputs, level: int, low: int, high: int) -> tuple[str, int] | None:
+        """Ping-pong guard: keep the chosen level a few ticks instead of undoing each step of HAC1."""
+        if self.pingpong_until is None:
+            return None
+        keep = self.pingpong_level
+        if (inp.now >= self.pingpong_until or self.fan_moved or keep is None or not low <= keep <= high
+                or (inp.frost_lock and (self.frost_cold or self._below_frost_floor(inp, self.error_settled)))
+                or (keep < (self.pingpong_other or keep) and level <= keep and self.floor_due)):
+            self._end_guard()  # done, or the frost lock / the soft floor needs the upper level now
+            return None
+        self.revert_level = None
+        other = self.pingpong_other if self.pingpong_other is not None else keep
+        if level != keep and (level - keep) * (other - keep) < 0:
+            self.pingpong_level = keep = level  # HAC1 went on away from the other level: kept
+        if level == keep:
+            self.gate, self.gate_dir = "pingpong", 1 if other > keep else -1
+            return "hold", level
+        self.gate_dir = 1 if keep > level else -1
+        return ("up" if keep > level else "down"), keep
+
+    def _fall_overrun_s(self, inp: PilotInputs) -> float:
+        """Learned seconds of the fall rate the air goes on falling after a step up is asked for."""
+        fan = _clamp(_num(inp.fan_supply) or FAN_REFERENCE_PERCENT, 15.0, 100.0)
+        bucket = int(round(fan / FALL_FAN_BUCKET))
+        for distance in (0, 1, -1, 2, -2):
+            if bucket + distance in self.fall_overrun:
+                return self.fall_overrun[bucket + distance]
+        return FALL_OVERRUN_PRIOR_S
+
+    def _settles_at(self, inp: PilotInputs) -> float:
+        """Where the air settles on this level (the coldest of what is known about it)."""
+        level = int(inp.level)
+        target = float(inp.target)
+        settled = target + self.error_settled
+        if self.pwm_low is not None and level in (self.pwm_low, self.pwm_low + 1):
+            judged = self.pwm_settled[level - self.pwm_low]
+            if judged is not None:
+                settled = min(settled, target + judged)
+        seen = self.level_seen.get(level)
+        if (seen is not None and inp.now - seen[0] <= LEVEL_SEEN_MEMORY_S and self.scale is not None
+                and abs(self.scale / seen[2] - 1.0) <= LEARN_SCALE_TOLERANCE):
+            settled = min(settled, seen[1])
+        return settled
+
+    def _floor_ahead(self, inp: PilotInputs, ticks: int = 1) -> bool:
+        """Waiting ``ticks`` more for a step up would let the air fall past the soft floor.
+
+        The air a tick on (falling first order toward where this level settles,
+        from the measured trend) less what it goes on falling after a step up is
+        asked for then (the learned overrun times the fall rate there).
+        """
+        air = self._raw(inp)
+        floor = float(inp.target) - SOFT_FLOOR_K
+        slope = self._trend(inp.now)
+        if slope is None or slope > -FALL_MIN_SLOPE / 2:
+            # Not falling: air that stays cold is the band's and the persistence's
+            # matter (PERSIST_COLD_S), not the turn's timing.
+            return False
+        settled = self._settles_at(inp)
+        period = self.clock.period * ticks
+        if air - settled > 0.05:
+            decay = math.exp(-period * -slope / (air - settled))
+            later, slope_later = settled + (air - settled) * decay, slope * decay
+        else:
+            later, slope_later = air + slope * period, slope
+        return later + slope_later * self._fall_overrun_s(inp) < floor
+
+    def _start_fall_watch(self, inp: PilotInputs) -> None:
+        slope = self._trend(inp.now)
+        if self.fall_watch is not None or slope is None or slope > -FALL_MIN_SLOPE or self.fan_moved:
+            return
+        air = self._raw(inp)
+        self.fall_watch = {"t": inp.now, "air": air, "slope": slope, "min": air, "level": float(int(inp.level)),
+                           "seen": 0.0, "fan": _clamp(_num(inp.fan_supply) or FAN_REFERENCE_PERCENT, 15.0, 100.0)}
+
+    def _track_fall(self, inp: PilotInputs) -> None:
+        """Learn how far the air went on falling after a step up was asked for (FALL_*)."""
+        watch = self.fall_watch
+        if watch is None or _num(inp.t2ah_raw) is None and _num(inp.t2ah) is None:
+            return
+        air = self._raw(inp)
+        watch["min"] = min(watch["min"], air)
+        age = inp.now - watch["t"]
+        if self.fan_moved or (not watch["seen"] and age > self.clock.period + DECIDE_BEFORE_S + 10):
+            self.fall_watch = None  # the airflow moved, or HAC1 did not take the step
+            return
+        if not watch["seen"] or (air < watch["min"] + FALL_RISE_K and age <= FALL_WATCH_S):
+            return
+        self.fall_watch = None
+        if age > FALL_WATCH_S:
+            return
+        seconds = _clamp((watch["air"] - watch["min"]) / -watch["slope"], *FALL_OVERRUN_RANGE)
+        bucket = int(round(watch["fan"] / FALL_FAN_BUCKET))
+        before = self.fall_overrun.get(bucket)
+        value = seconds if before is None else before + FALL_LEARN_WEIGHT * (seconds - before)
+        self.fall_overrun[bucket] = value
+        if before is None or abs(value - before) >= 10:
+            LOG.info("Afterheat: the air fell on %.0f s of its rate after a step up (fan %.0f %%), now %.0f s",
+                     seconds, watch["fan"], value)
 
     def _check_follow(self, inp: PilotInputs) -> None:
         if self.check_at is None or inp.now < self.check_at:
@@ -1176,6 +1405,11 @@ class AfterheatPilot:
                 and inp.now - self.level_change_at < PWM_JUDGE_S
                 and self._down_below_frost_floor(inp, level + 1, self._neighbour_error(level, 1)))
 
+    @staticmethod
+    def _upper_better(warm: float, cold: float) -> bool:
+        """The warmer of two levels (settled errors, K) is the better bet on its own (see comfort_cost)."""
+        return comfort_cost(warm) < comfort_cost(cold) - IMPROVE_MARGIN_K
+
     def _end_pwm(self) -> None:
         if self.pwm_low is not None:
             LOG.info("Afterheat: taking turns on levels %d and %d ends", self.pwm_low, self.pwm_low + 1)
@@ -1206,7 +1440,14 @@ class AfterheatPilot:
         members = cold_side + warm_side
         if level not in members and self.revert_level in members and abs(
                 level - self.revert_level) == 1 and not self.fan_moved:
-            return None  # HAC1 stepped out of the pair by itself: taken back first (see _plan)
+            # HAC1 stepped out of the pair by itself: taken straight back (the
+            # model's guess of where that level settles is no reason to stay:
+            # the soft floor is judged on the pair's levels).
+            back = self.revert_level - level
+            if back < 0 or not (inp.frost_lock and level < low):
+                self.gate_dir = back
+                return ("up" if back > 0 else "down"), self.revert_level
+            return None
         if level not in members or not low <= lower < high or self.fan_moved:
             self._end_pwm()
             return None
@@ -1215,22 +1456,42 @@ class AfterheatPilot:
             return None
         # Where each level settles is judged on that level once the last turn
         # has (mostly) reached the air: the model's step may still be learning.
+        # Not while the air still clearly moves: the coil cools slower than the
+        # model's lag, and a fall judged early ended the turns with the air on
+        # its way below the target (sim RLV 2, 2026-11-25).
+        slope = self._trend(inp.now)
         if level in (lower, lower + 1) and (
-                self.level_change_at is None or inp.now - self.level_change_at >= PWM_JUDGE_S):
+                self.level_change_at is None or inp.now - self.level_change_at >= PWM_JUDGE_S) and (
+                level > lower or slope is None or slope * MODEL_DEAD_TIME_S > -BAND_DRIFT_K * 2):
             self.pwm_settled[level - lower] = self.error_settled
         cold_low, warm_high = self.pwm_settled
+        seen = self.level_seen.get(lower)
+        if (cold_low is not None and seen is not None and inp.now - seen[0] <= LEVEL_SEEN_MEMORY_S
+                and self.scale is not None and abs(self.scale / seen[2] - 1.0) <= LEARN_SCALE_TOLERANCE):
+            cold_low = min(cold_low, seen[1] - float(inp.target))  # the air measured on it lately
+        if warm_high is None and level in (lower, lower + 1):
+            # The upper level is never kept long enough to be judged when the soft
+            # floor shortens the turns: the model's guess stands in for it.
+            warm_high = self.error_settled + (self.scale or 1.0) * self.heat.step(lower) * (level == lower)
         if ((cold_low is not None and cold_low >= -self._cold_band(inp, lower, low))
                 or (cold_low is not None and self._below_frost_floor(inp, cold_low))
                 or (warm_high is not None and warm_high <= self.band[1])
-                or (cold_low is not None and warm_high is not None and abs(warm_high) < abs(cold_low) - (
-                    IMPROVE_MARGIN_K if warm_high * cold_low < 0 else 0.0))):
+                or (cold_low is not None and warm_high is not None and self._upper_better(warm_high, cold_low))):
             self._end_pwm()  # one of the two is close enough, or the upper one is the better bet
             return None
         self.revert_level = None  # a step HAC1 takes by itself is undone by the turn below
+        # Each level is kept the minimum dwell from the last turn. (Not from the
+        # last step: taking a level back that HAC1 left by itself is no turn, and
+        # counting it kept the upper level on at +4 K for half an hour, live
+        # 2026-11-25 13:15-13:45.)
         needed = self._dwell_ticks(inp) * self.clock.period - DECIDE_BEFORE_S - 5
-        turn_left = max(self._dwell_left(inp), 0.0 if self.pwm_turn_at is None
-                        else needed - (inp.now - self.pwm_turn_at))
-        if not self.pwm_up and (self.frost_cold or (self.pwm_debt <= -PWM_SWITCH_KS and turn_left <= 0)):
+        turn_left = (self._dwell_left(inp) if self.pwm_turn_at is None
+                     else needed - (inp.now - self.pwm_turn_at))
+        # The soft floor: up before the falling air would pass it, after the shorter reversal dwell.
+        floor_left = (0.0 if self.pwm_turn_at is None else
+                      REVERSAL_DWELL_TICKS * self.clock.period - DECIDE_BEFORE_S - 5 - (inp.now - self.pwm_turn_at))
+        if not self.pwm_up and (self.frost_cold or (self.pwm_debt <= -PWM_SWITCH_KS and turn_left <= 0)
+                                or (self.floor_due and floor_left <= 0)):
             self.pwm_up, self.pwm_turn_at = True, inp.now
         elif self.pwm_up and self.pwm_debt >= PWM_SWITCH_KS and turn_left <= 0 and not self.frost_cold:
             self.pwm_up, self.pwm_turn_at = False, inp.now
@@ -1254,6 +1515,9 @@ class AfterheatPilot:
             return "up", max(target, low)
         if level > high:
             return "down", min(target, high)
+        guard = self._guard(inp, level, low, high)
+        if guard is not None:
+            return guard
         pwm = self._pwm(inp, level, low, high)
         if pwm is not None:
             return pwm
@@ -1298,10 +1562,14 @@ class AfterheatPilot:
                 return ("up" if move > 0 else "down"), level + move
             self.gate = "band"
             return "hold", level
-        persistent_cold = self._persistent_cold(inp) and level < high
+        # The soft floor: a level that settles below it, with the air on its way
+        # there within a tick and the fall after it, counts as cold for long.
+        persistent_cold = (self._persistent_cold(inp) or (
+            self.floor_due and self._settles_at(inp) < float(inp.target) - SOFT_FLOOR_K)) and level < high
         upper = self.error_settled + (self.scale or 1.0) * self.heat.step(level)
         below_floor = self._below_frost_floor(inp, self.error_settled)
-        if persistent_cold and upper > self.band[1] and not below_floor and self._overshoots(inp, level, 1):
+        if (persistent_cold and upper > self.band[1] and not below_floor and self._overshoots(inp, level, 1)
+                and not self._upper_better(upper, self.error_settled)):
             # Cold for a while, and the next level would overshoot (out of the band) further: take turns.
             self._end_pwm()
             self.pwm_low, self.pwm_debt, self.pwm_settled = level, -PWM_SWITCH_KS, [self.error_settled, None]
@@ -1413,6 +1681,9 @@ class AfterheatPilot:
             guesses = (*guesses, float(inp.target) + self.error_settled)
             middle = (max(guesses) + min(guesses)) / 2
             spread = max(HOLD_NOISE_K, (max(guesses) - min(guesses)) / 2)
+        transient = self._transient_hold(inp, low, guesses, floor_sp, harm_up, harm_down)
+        if transient is not None:
+            return transient
         whole = math.floor(middle)
         candidates = [c for c in (whole - 1, whole, whole + 1) if c >= floor_sp] or [floor_sp]
         if now > float(inp.target) + HOLD_ABOVE_AIR_K:
@@ -1446,6 +1717,88 @@ class AfterheatPilot:
         best = min(candidates, key=harm)
         if (self.setpoint is not None and self.setpoint >= floor_sp and self.setpoint_level == int(inp.level)
                 and (not restricted or self.setpoint in candidates)
+                and harm(self.setpoint) <= harm(best) + HOLD_GAP_HYSTERESIS):
+            return self.setpoint
+        return best
+
+    def _avoid_dir(self, inp: PilotInputs) -> int:
+        """The step HAC1 must not take by itself while the air sweeps through the hold window (+1 up, -1 down, 0).
+
+        Back toward the level just left: on the lower of two levels taking turns,
+        on the level the ping-pong guard keeps, and right after a step down while
+        the air still falls. A step the other way is the lesser harm (it is
+        kept by the guard, or undone at the next tick).
+        """
+        level = int(inp.level)
+        if self.pingpong_until is not None and level == self.pingpong_level and self.pingpong_other is not None:
+            return 1 if self.pingpong_other > level else -1
+        if self.pwm_low is not None:
+            if level == self.pwm_low and not self.pwm_up:
+                # Late on the lower level a step up is the turn a tick early (see
+                # _early_turn), a step down a dip below the soft floor.
+                return -1 if self.floor_soon else 1
+            if level == self.pwm_low + 1 and self.pwm_up:
+                # On the upper level: not further up once the air is warm (a step
+                # down is then the turn, see _early_turn), not back down before.
+                return 1 if self.error_now > PWM_WARM_BIAS_K else -1
+            return 0
+        slope = self._trend(inp.now)
+        if (self.level_change_dir < 0 and self.level_change_at is not None
+                and inp.now - self.level_change_at < PWM_JUDGE_S and slope is not None and slope <= -FALL_MIN_SLOPE):
+            return 1
+        return 0
+
+    def _tick_guess(self, inp: PilotInputs, air: float, slope: float, linear: float) -> float:
+        """The air at the tick from its trend, bending first order toward where the level settles.
+
+        Right after a turn the air moves fastest and then slows down: the
+        straight line through the last 30 s overshoots by the tick.
+        """
+        ahead = (linear - air) / slope if slope else 0.0
+        settled = self._settles_at(inp) if slope < 0 else float(inp.target) + self.error_settled
+        gap = settled - air
+        if ahead <= 0 or gap * slope <= 0 or abs(gap) <= 0.05:
+            return linear
+        return settled - gap * math.exp(-ahead * abs(slope) / abs(gap))
+
+    def _transient_hold(self, inp: PilotInputs, low: int, guesses: tuple[float, ...], floor_sp: int,
+                        harm_up: float, harm_down: float) -> int | None:
+        """The hold setpoint while the air sweeps through the hold window right after a turn, or None.
+
+        HAC1 reads the air at its tick: the step back toward the level just left
+        is judged on the coldest guess at the tick (trend or model) and the step
+        the other way on the warmest, each scattered by the trend over the
+        tick's phase. The step back also costs the step after it (two level
+        changes, the start of a ping-pong): live 2026-11-25 on level 1 with the
+        air falling 1-3 K/min a whole-degree hold made HAC1 step up by itself,
+        the Pi took it back the next tick, and so on for up to 27 min.
+        """
+        avoid = self._avoid_dir(inp)
+        if avoid == 0:
+            return None
+        level = int(inp.level)
+        scale = self.scale or 1.0
+        back = UNASKED_STEP_K * 2 + scale * self.heat.step(level if avoid > 0 else level - 1)
+        if avoid > 0:
+            harm_up = max(harm_up, back)
+        else:
+            harm_down = max(harm_down, back)
+
+        def likely(z: float) -> float:
+            return 0.5 * (1 + math.erf(z / math.sqrt(2)))
+        slope = self._trend(inp.now) or 0.0
+        at_tick = self._tick_guess(inp, guesses[0], slope, guesses[1])
+        lo, hi = at_tick, at_tick
+        spread = max(PWM_GUESS_K, abs(slope) * PHASE_UNCERTAINTY_S)
+
+        def harm(candidate: int) -> float:
+            return (likely((candidate - lo) / spread) * harm_up
+                    + likely((hi - candidate - HAC1_DOWN_BAND_K) / spread) * harm_down)
+        candidates = [c for c in range(math.floor(lo) - 1, math.floor(hi) + 2) if c >= floor_sp] or [floor_sp]
+        if avoid < 0 and guesses[0] > float(inp.target) + HOLD_ABOVE_AIR_K:
+            candidates = [c for c in candidates if c <= guesses[0]] or [min(candidates)]  # see _hold_setpoint
+        best = min(candidates, key=harm)
+        if (self.setpoint is not None and self.setpoint in candidates and self.setpoint_level == level
                 and harm(self.setpoint) <= harm(best) + HOLD_GAP_HYSTERESIS):
             return self.setpoint
         return best
@@ -1563,6 +1916,11 @@ class AfterheatPilot:
         ahead = 0.0 if tick is None else max(0.0, tick - inp.now)
         action, setpoint, note, temperature, rule = self._choose_setpoint(inp, action, wanted, low, ahead)
         if (setpoint != self.setpoint and self.setpoint is not None and len(self.changes) >= RATE_LIMIT_CHANGES
+                and rule == "hold" and self.setpoint >= (math.ceil(inp.frost_floor) if inp.frost_lock else SETPOINT_MIN)
+                and setpoint_margin(self.setpoint, "hold", temperature) >= TRANSIENT_HOLD_MARGIN_K):
+            # A hold the current setpoint still gives with room to spare keeps it too.
+            setpoint, note = self.setpoint, "Begrænser ændringer af HAC1-setpunktet"
+        if (setpoint != self.setpoint and self.setpoint is not None and len(self.changes) >= RATE_LIMIT_CHANGES
                 and rule != "hold"
                 and not ((self.urgent or self.pwm_low is not None or self.frost_up) and action != "hold")):
             # (A hold setpoint already changes only for a clearly better bet, see _hold_setpoint.)
@@ -1581,6 +1939,8 @@ class AfterheatPilot:
         self.band_hold = self.gate == "band" and action == "hold"
         if action in ("up", "down"):
             self.commanded_dir, self.commanded_at = (1 if action == "up" else -1), inp.now
+        if action == "up" and tick is not None:
+            self._start_fall_watch(inp)
         self._set(inp, setpoint)
         if note:
             self._note(inp, note)
@@ -1613,6 +1973,9 @@ class AfterheatPilot:
         self.unholdable = {}
         self.gate, self.band_hold, self.in_band, self.urgent = None, False, False, False
         self.cold_since, self.frost_cold = None, False
+        self.fall_watch, self.floor_due = None, False
+        self.level_changes.clear()
+        self._end_guard()
         self._end_pwm()
         self.command_level, self.note = level, None
         self.active = True
@@ -1659,9 +2022,14 @@ class AfterheatPilot:
             return self.update(inp)  # falls back on the same call
         wanted = self._pi(inp, dt, low, high)
         level = int(inp.level)
+        self.floor_due = self._floor_ahead(inp)
+        self.floor_soon = self.floor_due or self._floor_ahead(inp, 2)
+        self._track_fall(inp)
+        while self.unasked and now - self.unasked[0] > UNASKED_WINDOW_S:
+            self.unasked.popleft()
         if self.pwm_low is not None:
             limit = PWM_DEBT_LIMIT * PWM_SWITCH_KS
-            self.pwm_debt = _clamp(self.pwm_debt + self.error_now * dt, -limit, limit)
+            self.pwm_debt = _clamp(self.pwm_debt + (self.error_now - PWM_WARM_BIAS_K) * dt, -limit, limit)
         held = self.action == "hold" and self.gate in HELD_GATES
         if self.in_band or held or self.pwm_low is not None:
             # A held level is a blocked actuator: the quantizer's sum decays instead of saturating.
@@ -1714,8 +2082,13 @@ class AfterheatPilot:
             floor = _danish(float(inp.frost_floor))
             doing = "går et trin op" if self.action == "up" else f"trin {level}"
             return f"Frostsikring: luften er under {floor} °C · {doing} · {where}"
+        if self.gate == "pingpong" and self.action == "hold":
+            return (f"Holder trin {level} et par minutter: HAC1 og Pi skiftede trin hvert minut · {where}")
         if self.pwm_low is not None:
             pair = f"trin {self.pwm_low} og {self.pwm_low + 1}"
+            if self.action == "up" and self.floor_due:
+                floor = _danish(target - SOFT_FLOOR_K)
+                return f"Skifter mellem {pair}: et trin op, før luften falder under {floor} °C · {where}"
             if self.action in ("up", "down"):
                 way = "op" if self.action == "up" else "ned"
                 return f"Skifter mellem {pair} (intet trin rammer målet): et trin {way} · {where}"
@@ -1788,6 +2161,11 @@ class AfterheatPilot:
                 if self.fallback_until is not None and self.fallback_until > inp.now else None),
             "afterheat_setpoint_changes_10min": len(self.changes),
             "afterheat_in_band": bool(active and self.in_band),
+            # HAC1's own steps (not asked for by the Pi): one in the last tick, and the count this hour.
+            "afterheat_unasked_step": bool(active and self.unasked and inp.now - self.unasked[-1] <= self.clock.period),
+            "afterheat_unasked_steps_hour": len(self.unasked) if active else 0,
+            "afterheat_pingpong_guard": bool(active and self.pingpong_until is not None
+                                             and inp.now < self.pingpong_until),
         }
 
 

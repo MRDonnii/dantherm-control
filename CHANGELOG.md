@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.13.0-beta.9 — Eftervarme uden kolde dyk og uden trin-pingpong
+
+- **Ingen kolde dyk:** Når Pi'en skifter mellem to trin, går den nu et trin op, før den faldende luft kommer mere end 0,5 °C under målet. Pi'en lærer selv, hvor langt luften falder efter et skift op ved hver blæserhastighed. Luften ligger derfor lidt over målet i snit frem for at dykke.
+- **Stop for trin-pingpong:** Når HAC1 og Pi'en skifter trin frem og tilbage hvert minut, holder Pi'en trinnet på den rigtige side et par minutter. Et skift, som HAC1 selv tager lige før tid, tæller som Pi'ens skift og bliver ikke rettet tilbage.
+- **Rettet fejl:** Det øverste trin kunne blive holdt i en halv time ved +4 °C, fordi Pi'ens egne tilbagerettelser nulstillede ventetiden. Ventetiden regnes nu fra det sidste rigtige skift.
+- **Rettet fejl:** "Controller write failed: deque mutated during iteration" kunne springe et styringsminut over, når WebUI eller HA hentede data samtidig.
+- Diagnostik får `afterheat_unasked_step`, `afterheat_unasked_steps_hour` og `afterheat_pingpong_guard`. Ingen nye indstillinger; setpunkter og frostsikring er uændrede. Ændret af Claude AI.
+- Se [release notes](docs/releases/1.13.0-beta.9.md).
+
 ## 1.13.0-beta.8 — Mobil topbjælke og opdateringsbadge
 
 - På telefoner viger vejrvisningen, når en opdatering er klar eller installeres. Opdateringsknappen får en kort tekst, så søgning, HA-status og konto bliver inden for skærmen uden at overlappe sidetitlen.
