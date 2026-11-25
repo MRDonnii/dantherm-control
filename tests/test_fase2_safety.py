@@ -56,3 +56,33 @@ def test_master_arbitrator_is_thread_safe():
     finally:
         sys.setswitchinterval(old)
     assert not errors, errors[:1]
+
+
+def _controller_gateway_module():
+    import pytest
+
+    return pytest.importorskip("dantherm_controller_gateway")
+
+
+def test_last_will_runs_in_the_controller_entry_point():
+    """safety-1: control_enabled=False must not skip the afterheat/fireplace restore."""
+    import types
+
+    module = _controller_gateway_module()
+    gateway = module.Gateway.__new__(module.Gateway)
+    gateway.control_enabled = False
+    gateway.restore_pair = (40, 40)
+    gateway.fireplace_gateway_active = True
+    calls = []
+    gateway.write_afterheat_setpoint = lambda ser, value: calls.append(("afterheat", value))
+    gateway.stop_fireplace = lambda ser, clear_saved_state=True: calls.append(("fireplace", clear_saved_state))
+    gateway.write_pair = lambda ser, *pair: calls.append(("pair", pair))
+    engine = types.SimpleNamespace(
+        afterheat_native_setpoint=lambda lock_timeout=None: 22, last_applied={"afterheat_setpoint": 27}
+    )
+    gateway.controller = types.SimpleNamespace(
+        engine=engine, master=types.SimpleNamespace(writes_allowed=lambda: True)
+    )
+    gateway.restore_on_exit(None)
+    # Legacy fan restore stays disabled in the controller entry point.
+    assert calls == [("afterheat", 22), ("fireplace", False)]

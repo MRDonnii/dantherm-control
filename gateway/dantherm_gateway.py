@@ -2700,15 +2700,17 @@ class Gateway:
         return timer
 
     def restore_on_exit(self, ser: serial.Serial):
-        if not self.control_enabled:
-            return
+        # The last will runs for every entry point: the controller entry point
+        # sets control_enabled=False, yet ControllerRuntime drives the HAC1
+        # setpoint and the fireplace pattern through the hardware queue. Each
+        # write below still goes through the master gate (HCP4 always wins).
         self.restore_afterheat_on_exit(ser)
         if self.fireplace_gateway_active:
             try:
                 self.stop_fireplace(ser, clear_saved_state=False)
             except Exception:
                 LOG.exception("Kunne ikke gendanne Pejs-værdier ved stop")
-        if self.restore_pair is None:
+        if not self.control_enabled or self.restore_pair is None:
             return
         try:
             self.write_pair(ser, *self.restore_pair)
