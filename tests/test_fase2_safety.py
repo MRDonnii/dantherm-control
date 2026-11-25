@@ -285,3 +285,67 @@ def test_control_key_cannot_change_safety_settings(tmp_path, monkeypatch):
         assert runtime.calls == [{"mode": "smart_auto"}]
     finally:
         server.stop()
+
+
+def test_login_off_still_needs_a_csrf_token(tmp_path):
+    """runtime-4: with login off, a POST without the token used to pass."""
+    from webui_auth import AuthManager
+
+    auth = AuthManager(tmp_path / "auth.json")
+    auth.save("admin", "long-test-password", False)
+    session = auth.authenticate_cookie("")
+    assert session["csrf"] and session["csrf"] == auth.open_csrf
+
+
+def test_unreadable_auth_file_does_not_reopen_setup(tmp_path):
+    """runtime-5: a damaged login file must fail closed, and the last good copy is used."""
+    from webui_auth import AuthManager
+
+    path = tmp_path / "auth.json"
+    auth = AuthManager(path)
+    auth.save("admin", "long-test-password", True)
+    auth.save("admin", "other-long-password", True)  # second write leaves a .bak
+    path.write_text("{broken")
+    assert auth.configured() and auth.enabled()
+    assert auth.verify("admin", "long-test-password")  # from the backup
+    auth.backup_path.write_text("{broken")
+    assert auth.unreadable() and auth.configured() and auth.enabled()
+    assert auth.authenticate_cookie("") is None
+
+
+def test_login_attempt_is_reserved_before_hashing(tmp_path):
+    """runtime-13: parallel logins could bypass the 5 per 5 minutes limit."""
+    from webui_auth import AuthManager
+
+    auth = AuthManager(tmp_path / "auth.json")
+    tokens = [auth.take_attempt("1.2.3.4") for _ in range(6)]
+    assert all(tokens[:5]) and tokens[5] is None
+    auth.succeeded("1.2.3.4", tokens[0])
+    assert auth.take_attempt("1.2.3.4") is not None
+
+
+def test_unknown_cookie_does_not_write_the_session_file(tmp_path, monkeypatch):
+    """runtime-14: every request with a stale cookie rewrote webui-sessions.json."""
+    from webui_auth import AuthManager
+
+    auth = AuthManager(tmp_path / "auth.json")
+    auth.save("admin", "long-test-password", True)
+    writes = []
+    monkeypatch.setattr(auth, "_save_sessions", lambda: writes.append(1))
+    assert auth.authenticate_cookie("dantherm_session=unknown") is None
+    assert writes == []
+
+
+def test_negative_content_length_does_not_hang(tmp_path, monkeypatch):
+    """runtime-13: Content-Length -1 made the handler block in rfile.read(-1)."""
+    import socket
+
+    server, _runtime, port = _server(tmp_path, monkeypatch)
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as conn:
+            conn.sendall(b"POST /api/auth/login HTTP/1.1\r\nHost: x\r\nContent-Length: -1\r\n"
+                         b"Content-Type: application/json\r\n\r\n")
+            answer = conn.recv(200)
+        assert answer.startswith(b"HTTP/1.")
+    finally:
+        server.stop()

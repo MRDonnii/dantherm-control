@@ -284,6 +284,10 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
         dashboard = self
 
         class Handler(BaseHTTPRequestHandler):
+            # A client that opens a connection and sends nothing (or stops
+            # half-way) must not hold a server thread forever.
+            timeout = 20
+
             def _session(self):
                 return dashboard.auth.authenticate_cookie(self.headers.get("Cookie", ""), self.client_address[0])
 
@@ -306,15 +310,20 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
 
             def _read_json(self):
                 try:
-                    length = min(int(self.headers.get("Content-Length", "0")), 262144)
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length < 0:
+                        return None  # read(-1) would wait for the client to close
+                    length = min(length, 262144)
                     payload = json.loads(self.rfile.read(length) or b"{}")
                     return payload if isinstance(payload, dict) else None
                 except (ValueError, TypeError, json.JSONDecodeError):
                     return None
 
             def _csrf(self, session):
-                return session is not None and hmac.compare_digest(
-                    self.headers.get("X-CSRF-Token", ""), session.get("csrf") or ""
+                expected = (session or {}).get("csrf") or ""
+                # An empty expected token never matches (it used to match a missing header).
+                return bool(expected) and hmac.compare_digest(
+                    self.headers.get("X-CSRF-Token", ""), expected
                 )
 
             def _need(self, session, capability):
@@ -587,6 +596,9 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
 
             def do_POST(self):
                 if self.path == "/api/auth/setup":
+                    if dashboard.auth.unreadable():
+                        LOG.error("The WebUI login file exists but cannot be read; setup stays closed")
+                        return self._json_error(503, "Login-filen kan ikke læses. Opsætningen åbnes ikke igen af sikkerhedshensyn.")
                     if dashboard.auth.configured():
                         return self._json_error(409, "Allerede konfigureret")
                     data = self._read_json() or {}
@@ -608,7 +620,8 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                 if self.path == "/api/auth/login":
                     data = self._read_json() or {}
                     ip = self.client_address[0]
-                    if not dashboard.auth.allow_attempt(ip):
+                    attempt = dashboard.auth.take_attempt(ip)
+                    if attempt is None:
                         return self._json_error(429, "For mange forsøg. Vent fem minutter.")
                     try:
                         verified = dashboard.auth.verify(data.get("username", ""), data.get("password", ""))
@@ -616,9 +629,10 @@ class ControllerDashboardHttpServer(DashboardHttpServer):
                         LOG.exception("Could not read the WebUI authentication store")
                         return self._json_error(500, "Kunne ikke læse login-konfigurationen")
                     if not verified:
-                        dashboard.auth.failed(ip)
+                        # The attempt reserved above already counts as the failure.
                         dashboard.events.add("login_failed", "Mislykket login", user=str(data.get("username", ""))[:64], ip=ip)
                         return self._json_error(401, "Forkert brugernavn eller adgangskode")
+                    dashboard.auth.succeeded(ip, attempt)
                     try:
                         remember = data.get("remember") is True
                         sid, csrf = dashboard.auth.session(data["username"], remember=remember)
