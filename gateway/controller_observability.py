@@ -256,6 +256,8 @@ class ControllerObservability:
             "fireplace": bool(snapshot.get("fireplace")),
             "controlling_room": snapshot.get("smart_controlling_room"),
             "controlling_metric": snapshot.get("smart_controlling_metric"),
+            # Everything that wanted more air at the time, with the winner first.
+            "candidates": snapshot.get("smart_candidates") or [],
         }
         with self.lock:
             self.events.append(event)

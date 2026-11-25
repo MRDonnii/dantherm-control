@@ -127,6 +127,7 @@ class ControllerRuntime:
         self.smart_requested_level = int(self.config.data["local_normal_level"])
         self.smart_controlling_room: str | None = None
         self.smart_controlling_metric: str | None = None
+        self.smart_candidates: list[dict[str, object]] = []
 
         # External fireplace switch (leased) and the automatic fireplace hold.
         self.fireplace_signal: bool | None = None
@@ -1185,6 +1186,10 @@ class ControllerRuntime:
                 del self._bathroom_episodes[name]
         if not candidates:
             return normal, "normal", "No enabled control measurements", None, None
+        # Every reason that wanted air, not only the winner (the PM2.5 floor once showed as the only reason).
+        self.smart_candidates = [
+            {"level": c[0], "room": c[3], "metric": c[4], "reason": c[5]}
+            for c in sorted(candidates, reverse=True) if c[0] > normal][:6]
         adjusted, _raw, _value, room, metric, reason = max(candidates)
         adjusted = min(int(d["local_max_level"]), max(int(d["local_min_level"]), adjusted))
         demand = "low" if adjusted <= 2 else "normal" if adjusted == 3 else "boost" if adjusted >= self.config.max_level() else "high"
@@ -1305,6 +1310,7 @@ class ControllerRuntime:
             "smart_missing_sensors": self.smart_missing_sensors,
             "smart_missing_rooms": self.smart_missing_rooms,
             "smart_room_quality": self._room_quality()[1],
+            "smart_candidates": list(self.smart_candidates),
             "smart_demand": self.smart_demand if fresh else "stale",
             "smart_requested_level": self.smart_requested_level if fresh else None,
             "smart_target_level": self.engine.current_auto_level if fresh else None,

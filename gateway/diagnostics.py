@@ -751,7 +751,9 @@ class Diagnostics:
             if holds:
                 self.clear_since.pop(code, None)
                 self.started.setdefault(code, now)
-                if now - self.started[code] >= ALARM_DELAYS[code]:
+                # The level-aware "no lift" has already waited NO_LIFT_SECONDS at the high level.
+                delay = 0 if code == "afterheat_no_lift" and extra["no_lift_high"] else ALARM_DELAYS[code]
+                if now - self.started[code] >= delay:
                     self.active.setdefault(code, now)
             elif code in self.active:
                 # Hysteresis: an alarm clears only after its condition has been gone for a while.
