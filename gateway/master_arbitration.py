@@ -8,7 +8,9 @@ healthy. There is intentionally no user-facing controller disable.
 """
 from __future__ import annotations
 
+import functools
 import logging
+import threading
 import time
 from collections import deque
 
@@ -119,6 +121,22 @@ class RtuFrameStream:
         return frames
 
 
+def _locked(method):
+    """Serialise access to the arbitration deques.
+
+    The serial thread (observe_frame/note_own_frame), the controller thread
+    (evaluate) and HTTP threads (snapshot) all touch the same deques.  Every
+    call is microseconds of work, so one re-entrant lock is enough.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class MasterArbitrator:
     UNKNOWN = "unknown"
     HCP4 = "hcp4"
@@ -130,6 +148,7 @@ class MasterArbitrator:
                  startup_observation: float = 10.0,
                  own_echo_ttl: float = 0.20,
                  foreign_echo_dedupe: float = 0.12):
+        self._lock = threading.RLock()
         self.detection_window = max(0.5, float(detection_window))
         self.detection_min_foreign_writes = max(1, int(detection_min_foreign_writes))
         self.release_timeout = max(3.0, float(release_timeout))
@@ -159,6 +178,7 @@ class MasterArbitrator:
         self._last_foreign_signature: tuple | None = None
         self._last_foreign_signature_at = 0.0
 
+    @_locked
     def configure(self, cfg: dict | None) -> None:
         cfg = cfg or {}
         for attr, key, minimum in (
@@ -187,6 +207,7 @@ class MasterArbitrator:
         LOG.warning("MASTER %s -> %s reason=%s", old.upper(), master.upper(), reason)
         return True
 
+    @_locked
     def note_own_frame(self, frame: bytes, now: float | None = None) -> None:
         write = write_signature(frame)
         read = read_request_signature(frame)
@@ -218,6 +239,7 @@ class MasterArbitrator:
                 return True
         return False
 
+    @_locked
     def observe_frame(self, frame: bytes, now: float | None = None) -> str:
         now = time.monotonic() if now is None else float(now)
         if not valid_crc(frame):
@@ -257,6 +279,7 @@ class MasterArbitrator:
                 self._transition(self.HCP4, "foreign_write_activity", now)
         return "foreign"
 
+    @_locked
     def evaluate(self, *, bus_healthy: bool, now: float | None = None) -> bool:
         """Choose the only safe active master."""
         now = time.monotonic() if now is None else float(now)
@@ -283,10 +306,12 @@ class MasterArbitrator:
     def writes_allowed(self) -> bool:
         return self.master == self.PI
 
+    @_locked
     def bus_age(self, now: float | None = None):
         now = time.monotonic() if now is None else float(now)
         return None if self.last_bus_frame is None else max(0.0, now - self.last_bus_frame)
 
+    @_locked
     def snapshot(self, now: float | None = None) -> dict[str, object]:
         now = time.monotonic() if now is None else float(now)
         self._purge(now)
