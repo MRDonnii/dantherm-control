@@ -40,7 +40,7 @@ const HOLD_WORDS: [RegExp, string][] = [
   [/\(auto\)|\(low\)|\(normal\)|\(high\)|\(critical\)/g, ""],
 ];
 
-function tidy(reason: string) {
+export function tidy(reason: string) {
   let text = reason;
   for (const [pattern, phrase] of PHRASES) text = text.replace(pattern, (_match, ...groups: string[]) => phrase(...groups));
   for (const [pattern, replacement] of HOLD_WORDS) text = text.replace(pattern, replacement);

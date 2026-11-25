@@ -37,17 +37,27 @@ export function timeTicks(from: number, to: number, widthPx: number, minGapPx = 
   const span = Math.max(1, to - from);
   const wanted = Math.max(2, Math.floor(widthPx / minGapPx));
   const step = TIME_STEPS.find(candidate => span / candidate <= wanted) ?? TIME_STEPS[TIME_STEPS.length - 1];
-  // Align to local midnight so 06:00 / 12:00 / Monday land where expected.
-  const offset = -new Date(from * 1000).getTimezoneOffset() * 60;
-  let first = Math.ceil((from + offset) / step) * step - offset;
+  // Day steps are calendar days: a day is 23 or 25 hours when the clock changes,
+  // so a fixed 86400 s would drift an hour (and a day label) after the change.
   if (step >= DAY) {
-    const midnight = new Date(first * 1000);
-    midnight.setHours(0, 0, 0, 0);
-    first = midnight.getTime() / 1000;
-    if (first < from) first += step;
+    const days = Math.round(step / DAY);
+    const cursor = new Date(from * 1000);
+    cursor.setHours(0, 0, 0, 0);
+    if (cursor.getTime() / 1000 < from) cursor.setDate(cursor.getDate() + 1);
+    const ticks: number[] = [];
+    // Multi-day steps count from the first tick, as before.
+    for (let ts = cursor.getTime() / 1000; ts <= to; ts = (cursor.setDate(cursor.getDate() + days), cursor.setHours(0, 0, 0, 0), cursor.getTime() / 1000)) ticks.push(ts);
+    return ticks;
   }
+  // Sub-day steps are walked on the wall clock, so 06:00 / 12:00 stay put across a clock change.
+  const offset = -new Date(from * 1000).getTimezoneOffset() * 60;
   const ticks: number[] = [];
-  for (let ts = first; ts <= to; ts += step) ticks.push(ts);
+  for (let wall = Math.ceil((from + offset) / step) * step; ; wall += step) {
+    const w = new Date(wall * 1000);
+    const ts = new Date(w.getUTCFullYear(), w.getUTCMonth(), w.getUTCDate(), w.getUTCHours(), w.getUTCMinutes()).getTime() / 1000;
+    if (ts > to) break;
+    if (ts >= from && (ticks.length === 0 || ts > ticks[ticks.length - 1])) ticks.push(ts);
+  }
   return ticks;
 }
 

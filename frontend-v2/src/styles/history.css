@@ -135,3 +135,15 @@
 /* A small chart under another in the same card, sharing its crosshair (e.g. HAC1 levels under the afterheat). */
 .hx-subchart { display: grid; gap: 2px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
 .hx-subchart h3 { margin: 0; color: var(--text); font-size: 13.5px; font-weight: 700; }
+
+/* Hvorfor skiftede blæseren: one card per change, two lines on a phone. */
+.decision-timeline { grid-column: 1 / -1; }
+.decision-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; max-height: 420px; overflow-y: auto; }
+.decision-list li { display: grid; grid-template-columns: 150px 96px minmax(0, 1fr) minmax(0, 2fr) 120px; gap: 10px; align-items: center; padding: 6px 8px; border-radius: 8px; background: var(--surface-soft); font-size: 15px; }
+.decision-list time, .decision-list em { color: var(--muted); font-style: normal; }
+.decision-who { font-weight: 600; }
+.decision-more { margin-top: 8px; min-height: 44px; }
+@media (max-width: 700px) {
+  .decision-list li { grid-template-columns: 1fr auto; row-gap: 2px; }
+  .decision-reason { grid-column: 1 / -1; }
+}

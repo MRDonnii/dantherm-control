@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { Activity, Fan, Leaf, Recycle, SlidersHorizontal } from "lucide-react";
 import { AfterheatAnalysis } from "../components/AfterheatAnalysis";
 import { AfterheatScale } from "../components/AfterheatScale";
 import { AlarmHistory } from "../components/AlarmHistory";
+import { DecisionTimeline } from "../components/DecisionTimeline";
 import { HistoryChart } from "../components/HistoryChart";
 import { requestJson } from "../lib/api";
 import { AFTERHEAT_CHART, afterheatLayers, clean, withAfterheatLines } from "../lib/historyData";
@@ -116,23 +117,30 @@ export function HistoryPage() {
   const [hover, setHover] = useState<number | null>(null);
   const [changes, setChanges] = useState<ChangeEvent[]>([]);
   const [paused, setPaused] = useState(false);
+  const [decisions, setDecisions] = useState<unknown>([]);
+  // Only the newest request may update the page: a slow answer for an older range is dropped.
+  const requestId = useRef(0);
 
   const refresh = useCallback(async (activeRange: string) => {
+    const id = ++requestId.current;
     try {
       const result = await requestJson<HistoryResponse>(`/history.json?range=${activeRange}`, { timeoutMs: 8000 });
+      if (id !== requestId.current) return;
       const now = Math.floor(Date.now() / 1000);
       const seconds = RANGES.find(item => item.value === activeRange)?.seconds ?? 86400;
       setSamples(Array.isArray(result.samples) ? clean(result.samples) : []);
       setPaused(result.recording?.state === "retrying");
       setWindow({ from: now - seconds, to: now });
       setUpdated(now);
-      const state = await requestJson<{ change_log?: ChangeEvent[] }>("/api/controller/state", { timeoutMs: 3500 }).catch(() => null);
+      const state = await requestJson<{ change_log?: ChangeEvent[]; decision_log?: unknown[] }>("/api/controller/state", { timeoutMs: 3500 }).catch(() => null);
+      if (id !== requestId.current) return;
       if (state && Array.isArray(state.change_log)) setChanges(state.change_log);
+      if (state && Array.isArray(state.decision_log)) setDecisions(state.decision_log);
       setOnline(true);
     } catch {
-      setOnline(false);
+      if (id === requestId.current) setOnline(false);
     } finally {
-      setLoading(false);
+      if (id === requestId.current) setLoading(false);
     }
   }, []);
 
@@ -140,6 +148,8 @@ export function HistoryPage() {
   useEffect(() => {
     setLoading(true);
     setHover(null);
+    setSamples([]);
+    setWindow(undefined);
     void refresh(range);
     const timer = window.setInterval(() => void refresh(range), 60000);
     return () => window.clearInterval(timer);
@@ -266,6 +276,8 @@ export function HistoryPage() {
             series={[{ key: "heat_recovery_efficiency", label: "Genvinding", slot: 1 }]}
           />
         </ChartCard>
+
+        <DecisionTimeline log={decisions}/>
 
         <AlarmHistory/>
 
