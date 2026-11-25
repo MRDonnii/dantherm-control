@@ -23,7 +23,7 @@ from afterheat_algorithms import Algorithm, make_algorithm
 from afterheat_control import (ALGORITHM_CODES, ALGORITHM_DEFAULT, ALGORITHM_LABELS, ALGORITHMS, DIRECT_SPEC,
                                FROST_MARGIN_K, HAC1_SPEC, OVERRIDE_FAULT, OVERRIDE_NONE, CoilModel, ControlView,
                                Decision, OutputSpec, SafetyFacts, SafetyLayer, SafetyResult, clamp, danish, num)
-from afterheat_pilot import (FAN_REFERENCE_PERCENT, LEVEL_MAX, TICK_PERIOD_S, AfterheatPilot, PilotInputs)
+from afterheat_pilot import LEVEL_MAX, TICK_PERIOD_S, AfterheatPilot, PilotInputs
 
 LOG = logging.getLogger("afterheat-control")
 
@@ -228,10 +228,6 @@ class AlgorithmPilot(AfterheatPilot):
         """Every fresh look at the coil teaches the shared model, whoever steers (also HAC1 alone)."""
         if not (inp.afterheat_on and self._fresh(inp.level, inp.level_age) and self._fresh(inp.t2ah, inp.t2ah_age)):
             return
-        model = self.control.model
-        if model.learned_s < 600 and not model.seeded and self.heat.measured > 0:
-            # A first lift table from the steps the standard pilot has measured (K at its reference fan).
-            model.seed([value * FAN_REFERENCE_PERCENT / 36.0 for value in self.heat.cumulative])
         target = num(inp.target) if inp.target is not None else None
         self.control.observe(inp.now, self._raw(inp), float(int(inp.level)), inp.fan_supply, inp.water_flow,
                              inp.before_heater, target)

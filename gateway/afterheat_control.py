@@ -239,7 +239,6 @@ class CoilModel:
         self.buffer: deque[tuple[float, float, float, float, float]] = deque()
         self.last_sample: float | None = None
         self.reid_at: float | None = None
-        self.seeded = False
         # Open-loop checks (due at, predicted air) and the errors seen (when, K).
         self.checks: deque[tuple[float, float]] = deque()
         self.check_errors: deque[tuple[float, float]] = deque()
@@ -277,16 +276,6 @@ class CoilModel:
                 break
             value = output
         return value
-
-    def seed(self, lift: list[float]) -> None:
-        """A first lift table (e.g. from the standard pilot's learned steps) while nothing is learned."""
-        if self.learned_s > 0 or len(lift) != LEVEL_MAX + 1:
-            return
-        table, previous = [0.0], 0.0
-        for value in lift[1:]:
-            previous = clamp(max(previous, float(value)), 0.0, LIFT_MAX_K)
-            table.append(previous)
-        self.lift, self.seeded = table, True
 
     # --------------------------------------------------------- filter/learn
     def observe(self, now: float, air: float, output: float, fan: float | None, water: float | None,

@@ -123,7 +123,7 @@ class MpcAlgorithm(Algorithm):
     REACH = 3.0
     SWITCH_AFTER = (1, 2, 3, 4, 6, 8)
     # Per change: a HAC1 level step is a felt jump; a stepless valve's small move is not.
-    MOVE_COST = 1.5
+    MOVE_COST = 4.0
     MOVE_COST_STEPLESS = 0.3
     MOVE_COST_SQUARED = 0.2
     EFFORT_COST = 0.01
