@@ -541,7 +541,8 @@ def _release_checksums(ref: str) -> dict[str, str] | None:
     for line in text.splitlines():
         match = re.fullmatch(r"([0-9a-f]{64}) [ *]?(.+)", line.strip())
         if match:
-            sums[match.group(2).lstrip("./")] = match.group(1)
+            name = match.group(2)
+            sums[name[2:] if name.startswith("./") else name] = match.group(1)
     return sums or None
 
 

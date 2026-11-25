@@ -13,10 +13,11 @@ out=${PWD}/SHA256SUMS
 work=$(mktemp -d)
 trap 'rm -rf -- "${work}"' EXIT
 # The same tree GitHub's tarball for the tag contains (git archive).
-git archive --format=tar "${tag}" | tar -x -C "${work}"
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+git -C "${repo}" archive --format=tar "${tag}" | tar -x -C "${work}"
 (cd "${work}" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sed 's#  \./#  #') > "${out}"
 echo "Wrote ${out} ($(wc -l < "${out}") files) for ${tag}."
 if [[ ${2:-} != --no-upload ]]; then
-  gh release upload "${tag}" "${out}" --clobber
+  (cd -- "${repo}" && gh release upload "${tag}" "${out}" --clobber)
   echo "Uploaded SHA256SUMS to release ${tag}."
 fi
