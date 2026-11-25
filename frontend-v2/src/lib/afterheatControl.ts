@@ -12,8 +12,24 @@ export type AfterheatAction = "up" | "hold" | "down";
 /** Settings the Pi controller adds to the advanced controller settings. */
 export const AFTERHEAT_CONTROL_SETTINGS = [
   "afterheat_control_mode", "afterheat_pi_gain", "afterheat_pi_integral_minutes",
-  "afterheat_pi_band", "afterheat_pi_min_dwell_ticks",
+  "afterheat_pi_band", "afterheat_pi_min_dwell_ticks", "afterheat_algorithm",
 ] as const;
+
+/** The selectable afterheat algorithms; the Pi sends the same list, this copy works offline. */
+export const AFTERHEAT_ALGORITHMS = [
+  { key: "standard", label: "Standard (Pi-pilot)", help: "Den styring, der kører i dag: holder luften i et komfortbånd og skifter mellem to trin, når intet trin rammer målet" },
+  { key: "mpc", label: "Forudseende (MPC)", help: "Regner 12 minutter frem og vælger det trin, der holder luften tættest på målet uden at blive for kold" },
+  { key: "mpc_simple", label: "Forudseende enkel", help: "Regner 6 minutter frem med én simpel model og vælger ét trin ad gangen, hellere lidt for varmt end for koldt" },
+  { key: "pid", label: "Klassisk regulator (PID)", help: "Retter efter hvor langt luften er fra målet, hvor længe den har været det, og hvor hurtigt den ændrer sig" },
+  { key: "tpi", label: "Tidsdeling (TPI)", help: "Deler tiden mellem de to trin omkring målet i faste runder på 6 minutter" },
+  { key: "heat_power", label: "Varmeeffekt", help: "Vælger trin ud fra hvor meget varme hvert trin giver lige nu, og justerer langsomt efter" },
+] as const;
+
+/** Label of an algorithm key, or the key itself when unknown. */
+export function algorithmName(key: string | null | undefined): string {
+  if (!key) return "–";
+  return AFTERHEAT_ALGORITHMS.find(item => item.key === key)?.label ?? key;
+}
 
 export const AFTERHEAT_LEVEL_MAX = 10;
 
@@ -40,12 +56,20 @@ export interface AfterheatControl {
   /** T2AH minus the target in K. */
   error: number | null;
   reason: string | null;
+  /** Label of the chosen algorithm (newer gateways), else null. */
+  algorithmLabel?: string | null;
+  /** Key of the algorithm that decides right now; null = HAC1 alone. */
+  algorithmActive?: string | null;
 }
 
 function finite(value: unknown): number | null {
   if (value === null || value === undefined || value === "" || typeof value === "boolean") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function text(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
 function oneOf<T extends string>(value: unknown, options: readonly T[]): T | null {
@@ -101,6 +125,8 @@ export function readAfterheatControl(controller: Record<string, unknown>): After
     hac1Setpoint: finite(controller.afterheat_hac1_setpoint),
     error: finite(controller.afterheat_control_error),
     reason,
+    ...(text(controller.afterheat_algorithm_label) !== null ? { algorithmLabel: text(controller.afterheat_algorithm_label) } : {}),
+    ...(text(controller.afterheat_algorithm_active) !== null ? { algorithmActive: text(controller.afterheat_algorithm_active) } : {}),
   };
 }
 
@@ -166,4 +192,12 @@ export function formatError(value: number | null): string {
   if (value === null) return "—";
   const sign = value > 0 ? "+" : value < 0 ? "−" : "±";
   return `${sign}${da(Math.abs(value), 2)} K`;
+}
+
+/** "Styring: Forudseende (MPC)" for the status lines; null on gateways without algorithms or when HAC1 steers alone. */
+export function algorithmLine(control: Pick<AfterheatControl, "algorithmLabel" | "algorithmActive" | "active">): string | null {
+  if (control.active !== "pi") return null;
+  const label = control.algorithmActive ? algorithmName(control.algorithmActive) : null;
+  const shown = label && label !== control.algorithmActive ? label : control.algorithmLabel ?? label;
+  return shown ? `Styring: ${shown}` : null;
 }

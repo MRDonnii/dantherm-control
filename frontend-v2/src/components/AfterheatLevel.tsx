@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { ArrowDown, ArrowUp, Minus } from "lucide-react";
-import { controlLabel, formatLevel, formatPercent, formatTarget, levelText, nextActionText, valveText, type AfterheatControl } from "../lib/afterheatControl";
+import { algorithmLine, controlLabel, formatLevel, formatPercent, formatTarget, levelText, nextActionText, valveText, type AfterheatControl } from "../lib/afterheatControl";
 
 /**
  * Counts down from the last snapshot value once a second, so the countdown
@@ -54,6 +54,7 @@ export function AfterheatLevelPanel({ control }: { control: AfterheatControl }) 
       {pi && <span><small>Mål-trin</small><strong>{formatLevel(control.levelWanted, 1)}</strong></span>}
       {pi && control.nextAction !== null && <span className="afterheat-level-next"><small>Næste</small><strong><ActionIcon size={13} aria-hidden="true"/>{nextActionText(control, seconds)}</strong></span>}
     </div>
+    {algorithmLine(control) && <p className="afterheat-level-reason">{algorithmLine(control)}</p>}
     {control.reason && <p className="afterheat-level-reason">{control.reason}</p>}
   </section>;
 }

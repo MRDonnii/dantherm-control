@@ -8,7 +8,7 @@ import { LEVEL_NAMES, MAX_LEVEL_HOURS, NOMINAL_RANGE, OFFSET_RANGE, baseProfiles
 import { LANG_KEY, currentLang, useLang, type Lang } from "../lib/i18n";
 import { useSession, type Permission } from "../lib/session";
 import { FROST_LOCK_SETTINGS, formatFloor, readFrostLock } from "../lib/frostLock";
-import { AFTERHEAT_CONTROL_SETTINGS, controlLabel, readAfterheatControl } from "../lib/afterheatControl";
+import { AFTERHEAT_ALGORITHMS, AFTERHEAT_CONTROL_SETTINGS, controlLabel, readAfterheatControl } from "../lib/afterheatControl";
 import { NIGHT_COOL_SETTINGS, ROOM_TARGET_SETTINGS } from "../lib/automation";
 import { NightCoolCard, RoomTargetCard } from "../components/AutomationCards";
 import { AccountPanel } from "../components/AccountPanel";
@@ -178,6 +178,8 @@ export function AfterheatControlCard({ lang, form, controller, set }: { lang: La
   const hasIntegral = typeof controller.afterheat_pi_integral_minutes === "number";
   const hasBand = typeof controller.afterheat_pi_band === "number";
   const hasDwell = typeof controller.afterheat_pi_min_dwell_ticks === "number";
+  const hasAlgorithm = typeof controller.afterheat_algorithm === "string";
+  const chosenAlgorithm = AFTERHEAT_ALGORITHMS.find(item => item.key === form.afterheat_algorithm) ?? AFTERHEAT_ALGORITHMS[0];
   return <Card title={da ? "Regulering" : "Control"} lead={da ? "Hvem styrer varmefladens trin" : "Who drives the coil's levels"} icon={Gauge}>
     <div className="settings-grid">
       <div className="settings-segment" role="radiogroup" aria-label={da ? "Regulering af eftervarmen" : "Afterheat control"}>
@@ -187,6 +189,11 @@ export function AfterheatControlCard({ lang, form, controller, set }: { lang: La
       <Help>{da
         ? "HAC1 åbner vandventilen i trin fra 0 til 10 og flytter højst ét trin i minuttet. Selv regulerer den kun på hele grader og svinger, når ventilatorerne skifter trin. Med Pi-styring vælger Pi'en trinnet ud fra den ønskede temperatur, også med decimaler, og tager højde for ventilatorernes luftmængde. Er en måling forældet, er Pi'en ikke busmaster, eller kører Køl, frikøling, standby eller bål, overlader Pi'en straks styringen til HAC1. Frostsikringen gælder stadig."
         : "HAC1 opens the water valve in levels from 0 to 10 and moves at most one level a minute. On its own it only regulates on whole degrees and swings when the fans change speed. With Pi control the Pi picks the level from the wanted temperature, decimals included, and allows for the fans' airflow. With a stale reading, when the Pi is not bus master, or while Køl, free cooling, standby or bonfire runs, the Pi hands control straight back to HAC1. The frost protection still applies."}</Help>
+      {pi && hasAlgorithm && <label>{da ? "Styring" : "Control method"}
+        <select value={chosenAlgorithm.key} onChange={e => set("afterheat_algorithm", e.target.value)}>
+          {AFTERHEAT_ALGORITHMS.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}
+        </select>
+        <Help>{chosenAlgorithm.help}</Help></label>}
       {pi && hasGain && <label>{da ? "Forstærkning" : "Gain"}<input type="number" min="0.3" max="2" step="0.1" value={n(form.afterheat_pi_gain, 1)} onChange={num("afterheat_pi_gain")}/><span>×</span><Help>{da ? "Ganger Pi'ens beregnede forstærkning (1,0 = som designet, 0,3–2,0). Højere reagerer hurtigere, men kan svinge." : "Scales the Pi's computed gain (1.0 = as designed, 0.3–2.0). Higher reacts faster but may swing."}</Help></label>}
       {pi && hasIntegral && <label>{da ? "Integraltid" : "Integral time"}<input type="number" min="1" max="20" step="0.5" value={n(form.afterheat_pi_integral_minutes, 2)} onChange={num("afterheat_pi_integral_minutes")}/><span>min</span><Help>{da ? "Hvor hurtigt en vedvarende afvigelse rettes. Kortere retter hurtigere, men kan svinge." : "How fast a lasting deviation is corrected. Shorter corrects faster but may swing."}</Help></label>}
       {pi && hasBand && <label>{da ? "Komfortbånd" : "Comfort band"}<input type="number" min="0.1" max="1.5" step="0.1" value={n(form.afterheat_pi_band, 0.5)} onChange={num("afterheat_pi_band")}/><span>± K</span><Help>{da ? "Så tæt på den ønskede temperatur (0,1–1,5 K) lader Pi'en trinnet være i fred. Et trin giver ofte 1,5–2 K, så et bredere bånd giver roligere drift med færre skift; et smallere rammer målet tættere, men skifter oftere. På laveste trin må luften være 1,3 × båndet for kold, men mens frostsikringen er slået til, aldrig under frostgrænsen. Ligger intet trin i båndet, og er luften for kold i flere minutter, skiftes der mellem de to nærmeste trin." : "How close to the wanted temperature (0.1–1.5 K) the Pi leaves the level alone. One level often gives 1.5–2 K, so a wider band means calmer running with fewer changes; a narrower one is closer to the target but changes more often. On the lowest level the air may be 1.3 × the band too cold, but while the frost protection is on never below the frost limit. When no level lies in the band and the air stays too cold for some minutes, the Pi alternates between the two nearest levels."}</Help></label>}
@@ -194,6 +201,7 @@ export function AfterheatControlCard({ lang, form, controller, set }: { lang: La
     </div>
     <div className="settings-summary">
       <span>{T.status[lang]}<strong>{control.known ? controlLabel(control) : "—"}</strong></span>
+      {typeof controller.afterheat_algorithm_label === "string" && <span>{da ? "Styring" : "Control method"}<strong>{controller.afterheat_algorithm_label}</strong></span>}
       <span>{da ? "Begrundelse" : "Reason"}<strong>{control.reason ?? "—"}</strong></span>
     </div>
   </Card>;

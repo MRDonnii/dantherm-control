@@ -6,7 +6,7 @@ import { requestJson } from "../lib/api";
 import { usePollHealth, useSinglePoll } from "../lib/connection";
 import { bypassTravel, formatRemaining } from "../lib/bypass";
 import { frostLockStatus, readFrostLock } from "../lib/frostLock";
-import { controlLabel, formatError, formatLevel, formatPercent, formatTarget, modeLabel, nextActionText, readAfterheatControl, readValvePercent, valveText, type AfterheatControl } from "../lib/afterheatControl";
+import { algorithmLine, controlLabel, formatError, formatLevel, formatPercent, formatTarget, modeLabel, nextActionText, readAfterheatControl, readValvePercent, valveText, type AfterheatControl } from "../lib/afterheatControl";
 import type { InfoRow } from "../components/InfoList";
 import "../styles/panels.css";
 import { usePullRefresh } from "../lib/pullRefresh";
@@ -64,6 +64,7 @@ export function afterheatControlRows(control: AfterheatControl): InfoRow[] {
     { label: "Styring", value: `${controlLabel(control)}${chosen}${sent}`, tone: control.active === "fallback" ? "warn" : undefined },
     { label: "Næste handling", value: pi ? nextActionText(control, control.nextTickSeconds) : "—" },
     { label: "Mål og afvigelse", value: control.target === null ? "—" : `${formatTarget(control.target)} · ${formatError(control.error)}` },
+    ...(algorithmLine(control) ? [{ label: "Valgt styring", value: algorithmLine(control)!.replace("Styring: ", "") }] : []),
     { label: "Styringens begrundelse", value: control.reason ?? "—" },
   ];
 }

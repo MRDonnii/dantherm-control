@@ -51,7 +51,7 @@ describe("AppShell search (Ctrl K) in both menu placements", () => {
 
   it("finds every page in the menu by its name, and Min konto", () => {
     for (const item of navigation) expect(searchPages(navigation, item[1]).map(hit => hit[0])).toContain(item[0]);
-    expect(searchPages(navigation, "eftervarme").map(hit => hit[0])).toEqual(["/overview", "/settings"]);
+    expect(searchPages(navigation, "eftervarme").map(hit => hit[0])).toEqual(["/overview", "/settings", "/afterheat-control"]);
     expect(searchPages(navigation, "")).toEqual([]);
     expect(searchPages([["/settings?section=security", "Min konto", "user", null, null]], "adgangskode")).toHaveLength(1);
   });
@@ -86,7 +86,7 @@ describe("AppShell menu structure", () => {
     expect(groups).toEqual(["Opsætning", "Teknik og drift", "System og adgang"]);
     const of = (group: string) => navigation.filter(item => item[4] === group).map(item => item[1]);
     expect(of("Opsætning")).toEqual(["Indstillinger", "Rum", "Indregulering"]);
-    expect(of("Teknik og drift")).toEqual(["Teknik", "Diagnostik", "Ugerapport"]);
+    expect(of("Teknik og drift")).toEqual(["Teknik", "Diagnostik", "Ugerapport", "Eftervarmens styring"]);
     expect(of("System og adgang")).toEqual(["Home Assistant", "Adgang for programmer", "System", "Opdateringer"]);
     expect(navigation.filter(item => item[4] === null).map(item => item[1])).toEqual(["Overblik", "Historik", "Ugeplan"]);
   });

@@ -62,6 +62,23 @@ describe("afterheat control setting", () => {
     expect(screen.getByText(/lader Pi'en trinnet være i fred/)).toBeTruthy();
   });
 
+  it("lets the user pick the control method and shows its help", () => {
+    const set = vi.fn();
+    const controller = { afterheat_control_mode: "pi", afterheat_algorithm: "standard", afterheat_algorithm_label: "Standard (Pi-pilot)" };
+    const { rerender } = render(<AfterheatControlCard lang="da" form={controller} controller={controller} set={set}/>);
+    const select = screen.getByLabelText(/^Styring/) as HTMLSelectElement;
+    expect(select.options).toHaveLength(6);
+    expect(screen.getByText(/Den styring, der kører i dag/)).toBeTruthy();
+    fireEvent.change(select, { target: { value: "mpc" } });
+    expect(set).toHaveBeenCalledWith("afterheat_algorithm", "mpc");
+    rerender(<AfterheatControlCard lang="da" form={{ ...controller, afterheat_algorithm: "mpc" }} controller={controller} set={set}/>);
+    expect(screen.getByText(/Regner 12 minutter frem/)).toBeTruthy();
+    cleanup();
+    const old = { afterheat_control_mode: "pi" };
+    render(<AfterheatControlCard lang="da" form={old} controller={old} set={set}/>);
+    expect(screen.queryByLabelText(/^Styring/)).toBeNull();
+  });
+
   it("only appears on firmware with the setting and saves the choice", async () => {
     window.location.hash = "#/settings?section=afterheat";
     api.requestJson.mockImplementation(async (endpoint: string) => endpoint === "/api/auth/status" ? { csrf: "x" } : { afterheat_setpoint: 20 });

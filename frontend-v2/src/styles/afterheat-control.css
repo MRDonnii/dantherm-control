@@ -1,0 +1,23 @@
+.ac-segment { display: flex; flex-wrap: wrap; gap: 4px; max-width: 100%; }
+.ac-forecast { display: block; width: 100%; height: auto; margin-top: 10px; }
+.ac-forecast text { fill: var(--muted); font-size: 11px; }
+.ac-forecast .ac-air { fill: none; stroke: var(--hx-1); stroke-width: 2.2; stroke-linejoin: round; }
+.ac-forecast .ac-target { stroke: var(--hx-3); stroke-width: 1.4; stroke-dasharray: 5 4; }
+.ac-forecast .ac-floor { stroke: var(--hx-2); stroke-width: 1.4; stroke-dasharray: 2 4; }
+.ac-forecast .ac-grid { stroke: var(--border); stroke-width: 1; }
+.ac-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 6px 0 0; padding: 0; list-style: none; color: var(--muted); font-size: 12px; }
+.ac-legend i { display: inline-block; width: 14px; height: 3px; margin-right: 6px; vertical-align: middle; border-radius: 2px; background: var(--c); }
+.ac-safety { margin: 0 0 10px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 9px; font-size: 13px; line-height: 1.45; }
+.ac-safety.is-active { border-color: color-mix(in srgb, var(--orange) 55%, var(--border)); color: var(--orange); }
+.ac-badge { display: inline-block; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border); font-size: 12px; font-weight: 750; }
+.ac-badge.tone-ok { color: var(--green); border-color: color-mix(in srgb, var(--green) 50%, var(--border)); }
+.ac-badge.tone-warn { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 50%, var(--border)); }
+.ac-badge.tone-neutral { color: var(--muted); }
+.ac-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 10px; margin-top: 12px; }
+.ac-cards > section { min-width: 0; padding: 11px 12px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface-soft); }
+.ac-cards h3 { margin: 0 0 4px; font-size: 14px; }
+.ac-cards .ac-short { margin: 0 0 4px; color: var(--orange); font-size: 12px; }
+.ac-strip { position: relative; display: flex; height: 16px; margin-top: 10px; overflow: hidden; border-radius: 6px; background: var(--surface-soft); }
+.ac-strip > i { display: block; height: 100%; }
+.ac-strip > b { position: absolute; top: 0; width: 3px; height: 100%; background: var(--red); }
+.ac-model-note { overflow-wrap: anywhere; }
