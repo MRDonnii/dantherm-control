@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.13.0-beta.10 — Vælg eftervarmens styring og sammenlign dem
+
+- **Seks styringer at vælge imellem:** Under Indstillinger → Regulering kan Pi-styringen nu bruge *Standard (Pi-pilot)* (som i dag, standardvalget), *Forudseende (MPC)*, *Forudseende enkel*, *Klassisk regulator (PID)*, *Tidsdeling (TPI)* eller *Varmeeffekt*. De er bygget efter styringerne i Better Thermostat og tilpasset vandfladen. Uden ændret indstilling kører alt præcis som i beta.9.
+- **Fælles sikkerhed:** Ingen styring kan gå uden om frostsikringen, den bløde bund (luften må ikke på vej under målet − 0,5 °C), pingpong-stoppet, grænsen for skift og grænserne for trin. Fejler en styring, tager standardstyringen over.
+- **Klar til 0–10 V-ventil:** Styringerne vælger "hvor meget varme", og en særskilt del sørger for at få ventilen derhen: i dag via HAC1's setpunkt, senere direkte 0–100 %.
+- **Ny side "Eftervarmens styring":** viser beslutningen lige nu (og hvad MPC venter de næste 12 minutter), resultater pr. styring for seneste time, døgn og uge, hvad modellen har lært, og historik med markering af, hvornår sikkerheden greb ind.
+- Historikken gemmer pr. minut hvilken styring der styrede, hvad den ønskede, og om sikkerheden greb ind. Ugerapporten og sammenligningen kan filtrere pr. styring. Ændret af Claude AI.
+- Se [release notes](docs/releases/1.13.0-beta.10.md).
+
 ## 1.13.0-beta.9 — Eftervarme uden kolde dyk og uden trin-pingpong
 
 - **Ingen kolde dyk:** Når Pi'en skifter mellem to trin, går den nu et trin op, før den faldende luft kommer mere end 0,5 °C under målet. Pi'en lærer selv, hvor langt luften falder efter et skift op ved hver blæserhastighed. Luften ligger derfor lidt over målet i snit frem for at dykke.
