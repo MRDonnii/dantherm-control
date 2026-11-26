@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.13.0-beta.18 — Eftervarmens MPC: roligere end HAC1 og færre kolde dyk
+
+- **Intet ekstra trin oven i et løft på vej:** når luften stadig er under målet − 0,5 °C lige efter et skridt op (varmen er på vej), lægger sikkerheden ikke længere et trin mere ovenpå, så længe trinnet ender over målet. Live 26/11 gav det trin 3 og luft på 26–28,6 °C.
+- **Et kort pust må slutte igen:** sikkerheden holder ikke længere trin 2 et minut ekstra, når varmen allerede er på vej og et skridt ned ikke gør dykket dybere. Grænsen "for mange skift" lader også et pust slutte, når modellen viser, at luften bliver for varm.
+- **Ned ad trappen i ét stræk:** efter et skridt ned må MPC'en gå videre ned med det samme (2 → 1 → 0, ét trin pr. minut, som HAC1 selv gør). Den korte ventetid holder kun et skridt tilbage op igen.
+- **HAC1's egen trappe som mulighed:** MPC'en kan nu også vælge HAC1's mønster (op ét trin ad gangen, blive lidt, ned ét trin ad gangen, blive lidt) og selv vælge, hvornår og hvor længe. Den bruger hele området 0–10; trin 0 kun mens frostlåsen tillader det (luft før fladen og frostføleren begge mindst 12 °C, som før).
+- **Varme toppe koster mere:** MPC'en regner luft mere end 2,5 °C over målet som klart dårligt, så den undgår de store pust.
+- **MPC-vagt:** hver halve time sammenlignes MPC'ens egne sidste 2 timer med HAC1 alene (spredning 1,27 °C og 24 % af tiden under målet − 0,5 °C). Er MPC'en dårligere, står det tydeligt i loggen. Der skiftes ikke noget automatisk.
+- Simuleret på en model af spolen lavet ud fra live-målingerne 26/11 (36 % blæser): spredning 1,01 °C (HAC1 1,27), 1,5 % af tiden under 21,5 °C (HAC1 24 %), 33 skift i timen (HAC1 36), højeste 25,9 °C (HAC1 25,6). Standardstyringen er uændret. Ændret af Claude AI.
+- Se [release notes](docs/releases/1.13.0-beta.18.md).
+
 ## 1.13.0-beta.17 — Egen CO₂-grænse pr. rum
 
 - **Nyt felt på siden Rum: "CO₂-grænse".** Tomt felt betyder husets grænse (800 ppm) som før. Skriv fx 1200 i køkkenet, så skruer rummet først op ved 1200 ppm. Tilladt er 600–2000 ppm.

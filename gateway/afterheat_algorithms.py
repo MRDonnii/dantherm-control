@@ -19,14 +19,17 @@ from afterheat_control import (ControlView, Decision, LEVEL_MAX, OutputSpec, SOF
 
 
 COLD_COST = 2.0
-PEAK_COST = 0.0
-PEAK_FROM_K = 3.0
+# A peak far over the target costs a lot more again (live 2026-11-26: the MPC's pulses went
+# to 26-28.6 C, HAC1 alone stayed under 25.6 C); +2.5 K is about one step-2 pulse from the floor.
+PEAK_COST = 10.0
+PEAK_FROM_K = 2.5
 
 
 def tracking_cost(error: float, margin: float = 0.0) -> float:
     """Cost per minute (K^2) of air ``error`` K from the target: a dip is much worse than a little warmth.
 
-    Up to +0.3 K warm is nearly free, below the target costs four times more than above it,
+    Up to +0.3 K warm is nearly free, over +PEAK_FROM_K K it costs a lot (a hot pulse), below
+    the target costs four times more than above it,
     and below the soft floor (target - 0.5 K: a cold draught; ``margin`` K higher for a model
     that predicts only so well) it costs a lot more again.
     """
