@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.13.0-beta.20 — Eftervarmens MPC: ingen dyk under "Aldrig mere end"
+
+- **Modellen lærer trinene rigtigt:** før troede den, at trin 1 giver ca. 2 grader varme. Live giver trin 1 næsten intet (ca. 0,1 grad). Trin 1 bruges kun et minut ad gangen mellem pust på trin 2, og så fik trin 1 æren for varmen, der stadig var på vej fra trin 2. Nu finder Pi'en varmen fra hvert trin ud fra de sidste timers minutter på én gang. Trin 1 lærer ikke længere af korte besøg. En model, der er gemt fra før, starter forfra på trin 1.
+- **Sikkerheden ser selv, hvor hurtigt luften falder:** falder luften så hurtigt, at den kommer under "Aldrig mere end", før mere varme kan nå frem, giver Pi'en varme med det samme, uanset hvad modellen siger. Den regner også med, at det tager et minut mere fra trin 0, fordi trin 1 ikke varmer.
+- **"For mange skift" holder ikke længere et nødvendigt skridt op tilbage.** Live 26/11 holdt den trin 0 ved 22,0–22,2 °C, selv om luften faldt ca. 1 grad i minuttet, og luften kom ned på 20,6 °C.
+- **HAC1 må ikke selv gå ned fra trin 1 til 0**, når luften falder hurtigt, og Pi'en tager ikke længere et skridt ned, der får luften under "Må gerne gå ned til".
+- Simuleret på spolen fra live-målingerne ved 26, 36 og 50 % blæser: luften kommer aldrig under "Aldrig mere end", og der er ingen tid under 21 °C. Spredningen er mindre, men luften ligger lidt varmere i snit (0,1–0,6 grad), og der er lidt flere skift ved lav blæser. Standardstyringen er uændret. Ændret af Claude AI.
+- Se [release notes](docs/releases/1.13.0-beta.20.md).
+
 ## 1.13.0-beta.19 — Eftervarmens MPC: tættere på målet, og dine egne grænser
 
 - **Tre nye indstillinger** under Indstillinger → Eftervarme → Regulering (kun tekniker og administrator, og kun når en anden styring end Standard er valgt):

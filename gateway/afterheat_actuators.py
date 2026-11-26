@@ -377,7 +377,10 @@ class AlgorithmPilot(AfterheatPilot):
         kept = algorithm.dwell_left(view) > 0
 
         def harm(direction: int) -> float:
-            if direction < 0 and self._step_cost(inp, low, -1) >= STEP_COST_FORBIDDEN:
+            if direction < 0 and (self._step_cost(inp, low, -1) >= STEP_COST_FORBIDDEN
+                                  or self.control.safety.lower_blocked(view)):
+                # (Live 2026-11-26 HAC1 took step 1 -> 0 by itself at 23.5 C with the air
+                # falling ~1 K a minute, and the raise back came a tick later: 20.6 C.)
                 return STEP_COST_FORBIDDEN
             extra = algorithm.unasked_cost(view, plan, direction)
             return max(UNASKED_MIN_COST, extra) + (algorithm.MOVE_COST if kept else 0.0)

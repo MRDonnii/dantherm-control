@@ -321,8 +321,13 @@ class MpcAlgorithm(Algorithm):
                 for on in sorted({self.PULSE_TICKS, self.MIN_DWELL_TICKS}):
                     ways.append(((current,) * wait + (upper,) * on + (current,) * ticks))
             for way in ways:
-                candidate = (prefix + way)[:ticks]
-                best = min(best, self.cost(view, candidate, scale, base)[0])
+                candidate = [stepped]
+                for wanted in (prefix + way)[1:ticks]:
+                    # One move a decision from where HAC1 took it: from step 0 the pulse on step 2
+                    # is two ticks away (live 2026-11-26 the hold let HAC1 take step 1 -> 0 at the
+                    # peak as if free, and the next pulse came a tick late: 20.6 C).
+                    candidate.append(spec.limit(wanted, candidate[-1], view.low, view.high))
+                best = min(best, self.cost(view, tuple(candidate), scale, base)[0])
         return max(0.0, best - planned)
 
     def cost(self, view: ControlView, plan: tuple[float, ...], scale: float, base: float) -> tuple[float, float]:

@@ -15,7 +15,7 @@ from afterheat_control import (DIRECT_SPEC, HAC1_SPEC, OVERRIDE_FAULT, OVERRIDE_
                                HARD_FLOOR_DEFAULT_K, OVERRIDE_MOVE, SOFT_FLOOR_DEFAULT_K, CoilModel, ControlView,
                                Decision, SafetyFacts, SafetyLayer)
 from afterheat_pilot import AfterheatPilot  # noqa: E402
-from afterheat_sim import DirectValvePlant, Hac1Plant, RLV2_VALVES, run, run_direct  # noqa: E402
+from afterheat_sim import RLV2_LIFT_AT_36, DirectValvePlant, Hac1Plant, RLV2_VALVES, run, run_direct  # noqa: E402
 from history_analysis import algorithm_performance, row_matches  # noqa: E402
 
 NOW = 1_000_000.0
@@ -171,7 +171,11 @@ class MpcTakesTurnsSlowly(unittest.TestCase):
     def test_duty_cycle_on_the_rlv2_coil_without_per_tick_turns(self):
         # The levels as asked (a direct actuator, no HAC1 hold window): step 1 alone settles
         # below the floor at 36 % fan and step 2 ~6 K over, so it must take turns.
-        rows = run_direct(DirectValveController("mpc", spec=HAC1_SPEC), DirectValvePlant(**RLV2_VALVES, level=1, seed=3),
+        controller = DirectValveController("mpc", spec=HAC1_SPEC)
+        # (The model starts from this coil's own fit: the prior is now the 2026-11-26 coil,
+        # whose step 1 barely heats; this one lifts ~2.4 K on step 1.)
+        controller.control.model.lift = list(RLV2_LIFT_AT_36)
+        rows = run_direct(controller, DirectValvePlant(**RLV2_VALVES, level=1, seed=3),
                           target=22.0, minutes=80, sensors=True)
         kept = [r for r in rows if r["t"] >= 20 * 60]
         ticks, next_at = [], kept[0]["t"]

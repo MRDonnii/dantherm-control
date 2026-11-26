@@ -101,10 +101,11 @@ class LiveCoilTests(unittest.TestCase):
     def test_the_mpc_keeps_the_hard_floor_on_the_live_coil(self):
         rows = live_coil(AlgorithmPilot())
         errors = [r["air"] - 22.0 for r in rows]
-        self.assertGreater(min(errors), -HARD_FLOOR_DEFAULT_K - 0.15)
-        self.assertLess(sum(e < -HARD_FLOOR_DEFAULT_K for e in errors) / len(errors), 0.01)
+        # Never under the hard floor (1.13.0-beta.20: the measured fall raises in time too),
+        # for a slightly warmer mean (beta.19 ~+1.15 K with dips to -1.15 K).
+        self.assertGreater(min(errors), -HARD_FLOOR_DEFAULT_K)
         mean = sum(errors) / len(errors)
-        self.assertLess(mean, 1.3)  # the A/B 2026-11-26 had +1.65 K
+        self.assertLess(mean, 1.45)  # the A/B 2026-11-26 had +1.65 K
 
         # Stricter settings: higher troughs (and a warmer mean).
         strict = AlgorithmPilot()
