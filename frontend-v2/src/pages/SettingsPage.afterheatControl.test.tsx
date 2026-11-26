@@ -36,6 +36,19 @@ describe("afterheat control setting", () => {
     expect(screen.queryByLabelText(/Komfortbånd/)).toBeNull();  // older firmware without the setting
   });
 
+  it("shows the tolerance for the selectable control methods, not for the standard pilot", () => {
+    const controller = { afterheat_control_mode: "pi", afterheat_algorithm: "mpc", afterheat_soft_floor_k: 0.6, afterheat_hard_floor_k: 1, afterheat_warm_bias_k: 0.3 };
+    const set = vi.fn();
+    const { rerender } = render(<AfterheatControlCard lang="da" form={controller} controller={controller} set={set}/>);
+    expect((screen.getByLabelText(/Må gerne gå ned til/) as HTMLInputElement).value).toBe("0.6");
+    fireEvent.change(screen.getByLabelText(/Aldrig mere end/), { target: { value: "0.8" } });
+    expect(set).toHaveBeenCalledWith("afterheat_hard_floor_k", 0.8);
+    fireEvent.change(screen.getByLabelText(/Lige over målet/), { target: { value: "0.2" } });
+    expect(set).toHaveBeenCalledWith("afterheat_warm_bias_k", 0.2);
+    rerender(<AfterheatControlCard lang="da" form={{ ...controller, afterheat_algorithm: "standard" }} controller={controller} set={set}/>);
+    expect(screen.queryByLabelText(/Må gerne gå ned til/)).toBeNull();
+  });
+
   it("shows the comfort band and the minimum time per level when the Pi reports them", () => {
     const controller = { afterheat_control_mode: "pi", afterheat_pi_gain: 1, afterheat_pi_integral_minutes: 2, afterheat_pi_band: 0.5, afterheat_pi_min_dwell_ticks: 3 };
     const set = vi.fn();

@@ -23,8 +23,10 @@ from pathlib import Path
 from afterheat_algorithms import Algorithm, make_algorithm
 from afterheat_data import MpcWatch, Telemetry, build_block, predict
 from afterheat_control import (ALGORITHM_CODES, ALGORITHM_DEFAULT, ALGORITHM_LABELS, ALGORITHMS, DIRECT_SPEC,
-                               FROST_MARGIN_K, HAC1_SPEC, OVERRIDE_FAULT, OVERRIDE_NONE, CoilModel, ControlView,
-                               Decision, OutputSpec, SafetyFacts, SafetyLayer, SafetyResult, clamp, danish, num)
+                               FROST_MARGIN_K, HAC1_SPEC, HARD_FLOOR_DEFAULT_K, HARD_FLOOR_RANGE_K, OVERRIDE_FAULT,
+                               OVERRIDE_NONE, SOFT_FLOOR_DEFAULT_K, SOFT_FLOOR_RANGE_K, WARM_BIAS_K,
+                               WARM_BIAS_RANGE_K, CoilModel, ControlView, Decision, OutputSpec, SafetyFacts,
+                               SafetyLayer, SafetyResult, clamp, danish, num)
 from afterheat_pilot import (HAC1_DOWN_BAND_K, LEVEL_MAX, SETPOINT_MAX, SETPOINT_MIN,
                              STEP_COST_FORBIDDEN, TICK_PERIOD_S, AfterheatPilot, PilotInputs)
 
@@ -72,7 +74,22 @@ class AlgorithmControl:
         self.faults = 0
         self.paused_until: float | None = None
         self.saved_at: float | None = None
+        # The owner's tolerance (settings afterheat_soft/hard_floor_k, afterheat_warm_bias_k).
+        self.tolerance = {"soft_floor_k": SOFT_FLOOR_DEFAULT_K, "hard_floor_k": HARD_FLOOR_DEFAULT_K,
+                          "warm_bias_k": WARM_BIAS_K}
         self.load()
+
+    def set_tolerance(self, soft_floor_k: object = None, hard_floor_k: object = None,
+                      warm_bias_k: object = None) -> None:
+        """The settings' floors and warm bias (K); odd values fall back to the defaults, hard >= soft."""
+        def pick(value: object, default: float, limits: tuple[float, float]) -> float:
+            value = num(value)
+            return default if value is None else clamp(value, *limits)
+
+        soft = pick(soft_floor_k, SOFT_FLOOR_DEFAULT_K, SOFT_FLOOR_RANGE_K)
+        hard = max(soft, pick(hard_floor_k, HARD_FLOOR_DEFAULT_K, HARD_FLOOR_RANGE_K))
+        self.tolerance = {"soft_floor_k": soft, "hard_floor_k": hard,
+                          "warm_bias_k": pick(warm_bias_k, WARM_BIAS_K, WARM_BIAS_RANGE_K)}
 
     # ------------------------------------------------------------- algorithms
     def algorithm(self, name: str | None = None) -> Algorithm | None:
@@ -112,7 +129,7 @@ class AlgorithmControl:
         if num(air) is None or num(output) is None:
             return
         self.model.observe(now, float(air), float(output), fan, water, air_in)
-        self.safety.observe(now, float(output), self.spec.period, air, target)
+        self.safety.observe(now, float(output), self.spec.period, air, target, self.tolerance["warm_bias_k"])
 
     def decide(self, view: ControlView, facts: SafetyFacts) -> tuple[Decision, SafetyResult] | None:
         """The algorithm's choice through the safety layer; None: fall back (fault or paused)."""
@@ -285,7 +302,8 @@ class AlgorithmPilot(AfterheatPilot):
             now=inp.now, target=float(inp.target), air=self._raw(inp), output=float(int(inp.level)),
             low=float(low), high=float(high), spec=self.control.spec, model=self.control.model,
             fan=_fan(inp.fan_supply), water=num(inp.water_flow), air_in=num(inp.before_heater),
-            frost_lock=inp.frost_lock, frost_floor=float(inp.frost_floor), trend=self._trend(inp.now))
+            frost_lock=inp.frost_lock, frost_floor=float(inp.frost_floor), trend=self._trend(inp.now),
+            **self.control.tolerance)
 
     def _plan(self, inp: PilotInputs, wanted: float, low: int, high: int) -> tuple[str, int]:
         self.step_cleared = False
@@ -486,7 +504,7 @@ class DirectValveController:
         view = ControlView(now=now, target=float(target), air=float(air), output=level, low=low,
                            high=float(LEVEL_MAX), spec=control.spec, model=control.model, fan=_fan(fan),
                            water=num(water), air_in=num(air_in), frost_lock=frost_lock,
-                           frost_floor=float(frost_floor), trend=trend)
+                           frost_floor=float(frost_floor), trend=trend, **control.tolerance)
         chosen = control.decide(view, self._facts(view))
         if chosen is None:
             # Fault: hold the opening, still under the safety layer (the frost lock, the soft floor).

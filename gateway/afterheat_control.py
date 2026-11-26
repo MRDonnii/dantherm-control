@@ -54,7 +54,7 @@ OVERRIDE_TEXT = {
     OVERRIDE_MOVE: "højst ét skridt ad gangen",
     OVERRIDE_PINGPONG: "holder et par minutter efter skift frem og tilbage",
     OVERRIDE_RATE: "for mange skift de sidste 10 minutter",
-    OVERRIDE_FLOOR: "luften er på vej under målet − 0,5 °C",
+    OVERRIDE_FLOOR: "luften er på vej for langt under målet",
     OVERRIDE_FROST: "frostsikring",
     OVERRIDE_FAULT: "fejl i styringen; standard bruges",
 }
@@ -110,7 +110,18 @@ REID_PARTIAL_GAIN = 0.02
 REID_PARTIAL_SHARE = 1 / 3
 
 # Safety layer.
+# The comfort statistics' "under" share (afterheat_data, history) counts from this.
 SOFT_FLOOR_K = 0.5
+# The owner's tolerance (settings afterheat_soft_floor_k / afterheat_hard_floor_k /
+# afterheat_warm_bias_k, for every algorithm but the standard pilot, which keeps its own):
+# the air may dip to target - soft floor now and then; between the soft and the hard floor
+# it costs the MPC steeply; the safety layer raises before the predicted air crosses the
+# hard floor. Owner 2026-11-26: "21,8 eller 21,7 gør ikke så meget, men den må ikke dykke
+# flere grader under".
+SOFT_FLOOR_DEFAULT_K = 0.6
+HARD_FLOOR_DEFAULT_K = 1.0
+SOFT_FLOOR_RANGE_K = (0.2, 1.5)
+HARD_FLOOR_RANGE_K = (0.4, 2.5)
 RATE_WINDOW_S = 600.0
 RATE_LIMIT_CHANGES = 6
 # The rate limit still lets a change down through when the air is (or by the model soon is) this warm.
@@ -121,6 +132,7 @@ RATE_AHEAD_TICKS = 2
 PINGPONG_CHANGES = 3
 PINGPONG_HOLD_TICKS = 4
 WARM_BIAS_K = 0.3
+WARM_BIAS_RANGE_K = (0.0, 1.0)
 FROST_MARGIN_K = 0.2
 # The soft floor is judged this far higher for a model that predicts only so well: a share of
 # its minute-ahead error, within limits. (That error is mostly the fast sweeps right after a
@@ -202,6 +214,11 @@ class ControlView:
     frost_floor: float = 18.0
     # Measured slope of the air (K/s), when known.
     trend: float | None = None
+    # The owner's tolerance (see SOFT_FLOOR_DEFAULT_K): K under the target the air may dip
+    # to, K it must never go below, and K over the target that is still nearly free.
+    soft_floor_k: float = SOFT_FLOOR_DEFAULT_K
+    hard_floor_k: float = HARD_FLOOR_DEFAULT_K
+    warm_bias_k: float = WARM_BIAS_K
 
 
 @dataclass
@@ -659,9 +676,10 @@ class SafetyLayer:
     """The last word on every algorithm's output; no algorithm can go around it.
 
     In order (a later rule wins): output limits and the move limit, the ping-pong guard,
-    the rate limit, then the soft floor (air on its way below target - 0.5 K: more heat,
-    never less) and the frost lock (more heat when the air nears the frost floor, never a
-    lower output that settles there).
+    the rate limit, then the floor (air under the soft floor, or by the model on its way
+    under the hard floor: more heat, never less; no lower output that dips under the soft
+    floor) and the frost lock (more heat when the air nears the frost floor, never a lower
+    output that settles there).
     """
     changes: deque = field(default_factory=deque)
     last_output: float | None = None
@@ -677,7 +695,7 @@ class SafetyLayer:
         self.hold_output = self.hold_until = None
 
     def observe(self, now: float, output: float, period: float, air: float | None = None,
-                target: float | None = None) -> None:
+                target: float | None = None, warm_bias: float = WARM_BIAS_K) -> None:
         """The actuator's real output (also changes nobody asked for); starts the ping-pong guard."""
         previous = self.last_output
         self.last_output = output
@@ -695,7 +713,7 @@ class SafetyLayer:
         consecutive = all(b[0] - a[0] <= 1.5 * period for a, b in zip(recent, recent[1:]))
         alternating = all(a[1] == -b[1] for a, b in zip(recent, recent[1:]))
         if consecutive and alternating:
-            warm = air is not None and target is not None and air - target > WARM_BIAS_K
+            warm = air is not None and target is not None and air - target > warm_bias
             self.hold_output = min(output, previous) if warm else max(output, previous)
             self.hold_until = now + PINGPONG_HOLD_TICKS * period
             LOG.info("Afterheat safety: output went back and forth every tick; %s kept for %d ticks",
@@ -732,18 +750,25 @@ class SafetyLayer:
             keep = spec.limit(self.hold_output, current, view.low, view.high)
             if keep != out:
                 out, override = keep, OVERRIDE_PINGPONG
+        soft = view.target - view.soft_floor_k
         if out != current and self.recent_changes(now) >= RATE_LIMIT_CHANGES and not (
-                (out > current and view.air < view.target)
+                (out > current and (view.air < view.target or self._heading_below(view, soft)))
                 or (out < current and self._warm_ahead(view, view.target + RATE_WARM_K))):
-            # Too many changes lately: only a change toward the target (cold: up, clearly warm: down).
+            # Too many changes lately: only a change toward the target (cold, or by the model on
+            # its way under the soft floor a decision later: up; clearly warm: down). Sim on the
+            # live coil 2026-11-26: the staircase 0-1-2-1-0 is ~8 changes in 10 min, and a raise
+            # held back with the air still at 22.7 C (falling ~1 K a minute) dipped to 21.0 C.
             out, override = current, OVERRIDE_RATE
-        # The soft floor: air below (or within a decision of) target - 0.5 K gets more heat,
-        # never less; a raise already on its way is given time to show first.
-        floor = view.target - SOFT_FLOOR_K
+        # The floor: air below the soft floor, or by the model within a decision of the hard
+        # floor, gets more heat, never less; a raise already on its way is given time to show
+        # first. Between the two floors the algorithm decides (the MPC's cost is steep there):
+        # with the raise at the soft floor plus the margin, the A/B 2026-11-26 had its lowest
+        # air at 21.6 C and a mean +1.65 K over the target.
+        hard = min(soft, view.target - view.hard_floor_k)
         model = view.model
-        # The model's predictions are only so good: judged with its recent error as a margin.
+        # The model's predictions are only so good: the hard floor is judged with its recent error as a margin.
         margin = model.floor_margin()
-        cold = view.air < floor or self._heading_below(view, floor + margin)
+        cold = view.air < soft or self._heading_below(view, hard + margin, hard)
         # A raise on its way is given time to show (dead time and half a lag), by the model
         # only when the output now in force settles clearly above the floor: live 2026-11-26
         # the air was still under the floor the tick after step 1 -> 2 (dead time), the floor
@@ -765,7 +790,7 @@ class SafetyLayer:
             if out == current and not raise_pending:
                 out = spec.limit(self._raise(view), current, view.low, view.high)
                 override = OVERRIDE_FLOOR if out != current else override
-        elif out < current and self._lower_dips(view, out, floor + margin):
+        elif out < current and self._lower_dips(view, out, soft):
             out, override = current, OVERRIDE_FLOOR
         if facts.frost_raise and current < view.high and out <= current:
             out, override = spec.limit(current + max(spec.resolution, 1.0), current, view.low, view.high), OVERRIDE_FROST
@@ -781,12 +806,15 @@ class SafetyLayer:
         return result
 
     @staticmethod
-    def _heading_below(view: ControlView, floor: float) -> bool:
+    def _heading_below(view: ControlView, floor: float, trend_floor: float | None = None) -> bool:
         """Waiting one more decision to raise would let the air fall below ``floor``.
 
         By the model: the air with the output kept one decision and raised after it (the
-        dead time and the lag make the air go on falling for a while after any raise).
-        Without a model state, by the measured trend a decision ahead.
+        dead time and the lag make the air go on falling for a while after any raise). Also
+        by the measured fall, whatever the model says: the slope now, slowing down with the
+        cooling lag, for a decision and the dead time. (Sim on the live coil 2026-11-26: the
+        model expected ~0.45 K a minute where the air fell ~0.95, and the troughs came ~0.4 K
+        under the plan.) Without a model state, by the measured trend a decision ahead.
         """
         model = view.model
         if model.x is not None:
@@ -796,7 +824,14 @@ class SafetyLayer:
                 return False
             path = model.simulate(view.now, [view.output, raised, raised, raised], view.spec, scale,
                                   model.base(view.air_in))
-            return min(path) < floor
+            if min(path) < floor:
+                return True
+            if view.trend is None or view.trend >= 0:
+                return False
+            ahead = view.spec.period + view.spec.apply_delay_s + model.dead
+            tau = max(1.0, model.tau_down)
+            return view.air + view.trend * tau * (1.0 - math.exp(-ahead / tau)) < (
+                floor if trend_floor is None else trend_floor)
         if view.trend is not None:
             return view.air + view.trend * view.spec.period < floor
         return False
@@ -857,5 +892,6 @@ class SafetyLayer:
 __all__ = [
     "ALGORITHMS", "ALGORITHM_DEFAULT", "ALGORITHM_CODES", "ALGORITHM_LABELS", "ALGORITHM_HELP",
     "OutputSpec", "HAC1_SPEC", "DIRECT_SPEC", "ControlView", "Decision", "CoilModel", "SafetyLayer",
-    "SafetyFacts", "SafetyResult", "OVERRIDE_TEXT", "interp", "inverse",
+    "SafetyFacts", "SafetyResult", "OVERRIDE_TEXT", "interp", "inverse", "SOFT_FLOOR_DEFAULT_K",
+    "HARD_FLOOR_DEFAULT_K", "SOFT_FLOOR_RANGE_K", "HARD_FLOOR_RANGE_K", "WARM_BIAS_K", "WARM_BIAS_RANGE_K",
 ]

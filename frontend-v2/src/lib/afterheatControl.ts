@@ -13,6 +13,7 @@ export type AfterheatAction = "up" | "hold" | "down";
 export const AFTERHEAT_CONTROL_SETTINGS = [
   "afterheat_control_mode", "afterheat_pi_gain", "afterheat_pi_integral_minutes",
   "afterheat_pi_band", "afterheat_pi_min_dwell_ticks", "afterheat_algorithm",
+  "afterheat_soft_floor_k", "afterheat_hard_floor_k", "afterheat_warm_bias_k",
 ] as const;
 
 /** The selectable afterheat algorithms; the Pi sends the same list, this copy works offline. */

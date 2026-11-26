@@ -12,7 +12,8 @@ sys.path[:0] = [str(ROOT / "gateway"), str(ROOT / "tests")]
 from afterheat_actuators import AlgorithmControl, AlgorithmPilot, DirectValveController  # noqa: E402
 from afterheat_algorithms import ALGORITHM_CLASSES, Algorithm, MpcAlgorithm  # noqa: E402
 from afterheat_control import (DIRECT_SPEC, HAC1_SPEC, OVERRIDE_FAULT, OVERRIDE_FLOOR, OVERRIDE_FROST,  # noqa: E402
-                               OVERRIDE_MOVE, CoilModel, ControlView, Decision, SafetyFacts, SafetyLayer)
+                               HARD_FLOOR_DEFAULT_K, OVERRIDE_MOVE, SOFT_FLOOR_DEFAULT_K, CoilModel, ControlView,
+                               Decision, SafetyFacts, SafetyLayer)
 from afterheat_pilot import AfterheatPilot  # noqa: E402
 from afterheat_sim import DirectValvePlant, Hac1Plant, RLV2_VALVES, run, run_direct  # noqa: E402
 from history_analysis import algorithm_performance, row_matches  # noqa: E402
@@ -195,7 +196,9 @@ class MpcTakesTurnsSlowly(unittest.TestCase):
         errors = [r["air"] - 22.0 for r in kept]
         mean = sum(errors) / len(errors)
         self.assertTrue(0.0 <= mean <= 1.6, mean)
-        self.assertLess(sum(e < -0.5 for e in errors) / len(errors), 0.03)
+        # Down to the soft floor is allowed now and then; the hard floor never.
+        self.assertLess(sum(e < -SOFT_FLOOR_DEFAULT_K for e in errors) / len(errors), 0.03)
+        self.assertGreater(min(errors), -HARD_FLOOR_DEFAULT_K)
 
 
 if __name__ == "__main__":

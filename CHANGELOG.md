@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.13.0-beta.19 — Eftervarmens MPC: tættere på målet, og dine egne grænser
+
+- **Tre nye indstillinger** under Indstillinger → Eftervarme → Regulering (kun tekniker og administrator, og kun når en anden styring end Standard er valgt):
+  - **"Må gerne gå ned til"** (standard 0,6 grader under målet): så langt ned må luften gerne komme en gang imellem.
+  - **"Aldrig mere end"** (standard 1,0 grad under målet): den faste grænse. Ser det ud til, at luften kommer længere ned, giver Pi'en altid mere varme i tide.
+  - **"Lige over målet"** (standard 0,3 grader): så meget varmere end målet tæller næsten ikke.
+- **MPC'en sigter tættere på målet:** et lille dyk ned til "Må gerne gå ned til" koster næsten intet, mellem de to grænser koster det meget, og under "Aldrig mere end" er det udelukket. Varme over "Lige over målet" koster dobbelt så meget som før, og et skift koster lidt mere, så der ikke kommer flere skift.
+- **Sikkerheden ser også selv, hvor hurtigt luften falder:** før gav den kun mere varme, når modellen sagde det. Nu giver den også varme, når luften falder så hurtigt, at den ellers ville komme under "Aldrig mere end", også selv om der lige har været mange skift.
+- Simuleret på spolen fra live-målingerne (36 % blæser): middel +1,21 °C over målet (før +1,31), næsten ingen tid under 21 °C (0,2 %), samme antal skift. Ved lav blæser (17 %) er tiden under 21 °C faldet fra 12 % til 5 %. Standardstyringen er uændret. Ændret af Claude AI.
+- Se [release notes](docs/releases/1.13.0-beta.19.md).
+
 ## 1.13.0-beta.18 — Eftervarmens MPC: roligere end HAC1 og færre kolde dyk
 
 - **Intet ekstra trin oven i et løft på vej:** når luften stadig er under målet − 0,5 °C lige efter et skridt op (varmen er på vej), lægger sikkerheden ikke længere et trin mere ovenpå, så længe trinnet ender over målet. Live 26/11 gav det trin 3 og luft på 26–28,6 °C.

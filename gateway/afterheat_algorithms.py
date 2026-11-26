@@ -14,32 +14,46 @@ from __future__ import annotations
 
 import math
 
-from afterheat_control import (ControlView, Decision, LEVEL_MAX, OutputSpec, SOFT_FLOOR_K, clamp, danish, interp,
-                               inverse, num)
+from afterheat_control import (HARD_FLOOR_DEFAULT_K, LEVEL_MAX, SOFT_FLOOR_DEFAULT_K, WARM_BIAS_K, ControlView,
+                               Decision, OutputSpec, clamp, danish, interp, inverse, num)
 
 
-COLD_COST = 2.0
+# Below the target, down to the soft floor: cheap (the owner: "21,8 eller 21,7 gør ikke så meget").
+COLD_COST = 1.0
+# Between the soft and the hard floor: steep; under the hard floor: prohibitive.
+SOFT_FLOOR_COST = (60.0, 15.0)
+HARD_FLOOR_COST = (600.0, 150.0)
+# The model's margin (CoilModel.floor_margin, 0.1-0.3 K) raises the hard floor in full but the
+# soft floor only by this share, so the planned trough stays near the soft floor.
+SOFT_MARGIN_SHARE = 0.5
+# Over the warm bias: what pulls the mean down toward the target (live 2026-11-26 +1.65 K).
+WARM_COST = 1.0
 # A peak far over the target costs a lot more again (live 2026-11-26: the MPC's pulses went
 # to 26-28.6 C, HAC1 alone stayed under 25.6 C); +2.5 K is about one step-2 pulse from the floor.
 PEAK_COST = 10.0
 PEAK_FROM_K = 2.5
 
 
-def tracking_cost(error: float, margin: float = 0.0) -> float:
-    """Cost per minute (K^2) of air ``error`` K from the target: a dip is much worse than a little warmth.
+def tracking_cost(error: float, margin: float = 0.0, soft: float = SOFT_FLOOR_DEFAULT_K,
+                  hard: float = HARD_FLOOR_DEFAULT_K, warm: float = WARM_BIAS_K) -> float:
+    """Cost per minute (K^2) of air ``error`` K from the target.
 
-    Up to +0.3 K warm is nearly free, over +PEAK_FROM_K K it costs a lot (a hot pulse), below
-    the target costs four times more than above it,
-    and below the soft floor (target - 0.5 K: a cold draught; ``margin`` K higher for a model
-    that predicts only so well) it costs a lot more again.
+    Up to ``warm`` K over the target is nearly free, over it costs WARM_COST and over
+    +PEAK_FROM_K K a lot (a hot pulse). Below the target down to the soft floor (target -
+    ``soft``) is cheap, between the soft and the hard floor (target - ``hard``, ``margin``
+    K higher for a model that predicts only so well, never above the soft floor) steep, and
+    under the hard floor prohibitive (1.13.0-beta.19; the floors and the bias are settings).
     """
     if error >= 0:
-        return (0.1 * error * error + 0.5 * max(0.0, error - 0.3) ** 2
+        return (0.1 * error * error + WARM_COST * max(0.0, error - warm) ** 2
                 + PEAK_COST * max(0.0, error - PEAK_FROM_K) ** 2)
     cost = COLD_COST * error * error
-    below = -(error + SOFT_FLOOR_K - margin)
+    below = -(error + soft - SOFT_MARGIN_SHARE * margin)
     if below > 0:
-        cost += 60.0 * below * below + 15.0 * below
+        cost += SOFT_FLOOR_COST[0] * below * below + SOFT_FLOOR_COST[1] * below
+    below = -(error + max(soft, hard - margin))
+    if below > 0:
+        cost += HARD_FLOOR_COST[0] * below * below + HARD_FLOOR_COST[1] * below
     return cost
 
 
@@ -142,7 +156,9 @@ class MpcAlgorithm(Algorithm):
     REACH = 3.0
     SWITCH_AFTER = (1, 2, 3, 4, 6, 8)
     # Per change: a HAC1 level step is a felt jump; a stepless valve's small move is not.
-    MOVE_COST = 4.0
+    # (6, was 4, with the warm side twice as dear in 1.13.0-beta.19: the mean comes down
+    # without more changes an hour, sim on the live coil.)
+    MOVE_COST = 6.0
     # HAC1 levels: the shortest visit, and the duty-cycle plans (ticks on the start level
     # before the first turn; ticks on the other level; ticks back).
     MIN_DWELL_TICKS = 2
@@ -314,7 +330,8 @@ class MpcAlgorithm(Algorithm):
         path = view.model.simulate(view.now, list(plan), view.spec, scale, base, self.STEP_S)
         minutes = self.STEP_S / 60.0
         margin = view.model.floor_margin()
-        total = sum(tracking_cost(air - view.target, margin) for air in path) * minutes
+        total = sum(tracking_cost(air - view.target, margin, view.soft_floor_k, view.hard_floor_k, view.warm_bias_k)
+                    for air in path) * minutes
         per_move = self.MOVE_COST if view.spec.discrete else self.MOVE_COST_STEPLESS
         for move in _changes(view.output, plan):
             total += per_move + self.MOVE_COST_SQUARED * move * move

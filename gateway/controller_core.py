@@ -35,6 +35,12 @@ from afterheat_pilot import (
 )
 from afterheat_actuators import AlgorithmPilot
 from afterheat_control import ALGORITHM_DEFAULT as AFTERHEAT_ALGORITHM_DEFAULT, ALGORITHMS as AFTERHEAT_ALGORITHMS
+from afterheat_control import (HARD_FLOOR_DEFAULT_K as AFTERHEAT_HARD_FLOOR_DEFAULT_K,
+                               HARD_FLOOR_RANGE_K as AFTERHEAT_HARD_FLOOR_RANGE_K,
+                               SOFT_FLOOR_DEFAULT_K as AFTERHEAT_SOFT_FLOOR_DEFAULT_K,
+                               SOFT_FLOOR_RANGE_K as AFTERHEAT_SOFT_FLOOR_RANGE_K,
+                               WARM_BIAS_K as AFTERHEAT_WARM_BIAS_DEFAULT_K,
+                               WARM_BIAS_RANGE_K as AFTERHEAT_WARM_BIAS_RANGE_K)
 from night_cooling import NightCooling, OutdoorHistory
 from room_cascade import SATURATION_MARGIN_K, RoomCascade
 from advanced_control import (
@@ -452,6 +458,11 @@ class ControllerState:
         # Which algorithm chooses the level while the Pi steers (afterheat_control.ALGORITHMS);
         # "standard" is the pilot above, unchanged.
         "afterheat_algorithm": AFTERHEAT_ALGORITHM_DEFAULT,
+        # How far under the target the air may dip now and then (soft) and never (hard), and
+        # how far over it is still nearly free (K); every algorithm but "standard" (its own).
+        "afterheat_soft_floor_k": AFTERHEAT_SOFT_FLOOR_DEFAULT_K,
+        "afterheat_hard_floor_k": AFTERHEAT_HARD_FLOOR_DEFAULT_K,
+        "afterheat_warm_bias_k": AFTERHEAT_WARM_BIAS_DEFAULT_K,
         # Fireplace mode held by a stove sensor or an external switch.
         "fireplace_auto_enabled": False,
         "fireplace_auto_source": "",
@@ -868,6 +879,9 @@ class ControllerState:
             self.data["afterheat_room_min"], self.data["afterheat_room_max"] = 17, 24
         if self.data["fireplace_auto_off_temp"] >= self.data["fireplace_auto_on_temp"]:
             self.data["fireplace_auto_off_temp"] = self.data["fireplace_auto_on_temp"] - 1.0
+        if self.data["afterheat_soft_floor_k"] >= self.data["afterheat_hard_floor_k"]:
+            self.data["afterheat_soft_floor_k"] = AFTERHEAT_SOFT_FLOOR_DEFAULT_K
+            self.data["afterheat_hard_floor_k"] = AFTERHEAT_HARD_FLOOR_DEFAULT_K
         if self.data["dry_tier1_rh"] >= self.data["dry_tier2_rh"]:
             self.data["dry_tier1_rh"], self.data["dry_tier2_rh"] = 30.0, 35.0
         if self.data["dry_tier1_level"] > self.data["dry_tier2_level"]:
@@ -931,6 +945,9 @@ class ControllerState:
         ("afterheat_pi_gain", *PI_GAIN_RANGE),
         ("afterheat_pi_integral_minutes", *PI_INTEGRAL_MINUTES_RANGE),
         ("afterheat_pi_band", *PI_BAND_RANGE),
+        ("afterheat_soft_floor_k", *AFTERHEAT_SOFT_FLOOR_RANGE_K),
+        ("afterheat_hard_floor_k", *AFTERHEAT_HARD_FLOOR_RANGE_K),
+        ("afterheat_warm_bias_k", *AFTERHEAT_WARM_BIAS_RANGE_K),
     )
     ADVANCED_INTS = (
         ("house_bathrooms", 0, 10), ("house_utility_rooms", 0, 10),
@@ -1546,6 +1563,7 @@ class ControllerState:
         "frost_lock_enabled", "frost_lock_outdoor_c", "frost_lock_coil_c", "frost_lock_min_setpoint_c",
         "afterheat_control_mode", "afterheat_pi_gain", "afterheat_pi_integral_minutes",
         "afterheat_pi_band", "afterheat_pi_min_dwell_ticks", "afterheat_algorithm",
+        "afterheat_soft_floor_k", "afterheat_hard_floor_k", "afterheat_warm_bias_k",
         "afterheat_room_integral_minutes", "afterheat_room_max_step", "afterheat_room_weighted",
         "afterheat_room_band_k", "afterheat_room_offset_k",
         "night_cool_enabled", "top_level_limit_enabled", "night_cool_start", "night_cool_end", "night_cool_forecast_c", "night_cool_today_c",
@@ -1596,6 +1614,9 @@ class ControllerState:
         "afterheat_pi_band": "Eftervarme: komfortbånd",
         "afterheat_pi_min_dwell_ticks": "Eftervarme: mindste tid pr. trin",
         "afterheat_algorithm": "Eftervarme: styring",
+        "afterheat_soft_floor_k": "Eftervarme: må gerne gå ned til (grader under målet)",
+        "afterheat_hard_floor_k": "Eftervarme: aldrig mere end (grader under målet)",
+        "afterheat_warm_bias_k": "Eftervarme: lige over målet (grader)",
     }
 
     def frost_lock_in_force(self) -> bool:
@@ -1712,6 +1733,8 @@ class ControllerState:
             raise ControllerError("Laveste indblæsning skal være under højeste")
         if float(self.data["dry_tier1_rh"]) >= float(self.data["dry_tier2_rh"]):
             raise ControllerError("Grænsen for meget tør luft skal være under grænsen for tør luft")
+        if float(self.data["afterheat_soft_floor_k"]) >= float(self.data["afterheat_hard_floor_k"]):
+            raise ControllerError("Eftervarme: \"Må gerne gå ned til\" skal være mindre end \"Aldrig mere end\"")
         if int(self.data["dry_tier1_level"]) > int(self.data["dry_tier2_level"]):
             raise ControllerError("Trinnet ved meget tør luft må ikke være over trinnet ved tør luft")
         for key, label, _default in self.TIME_KEYS:
@@ -3246,6 +3269,9 @@ class ControllerEngine:
             stamp = values.get(key)
             return now - float(stamp) if isinstance(stamp, (int, float)) and not isinstance(stamp, bool) else None
 
+        # The owner's tolerance for the selectable algorithms (the standard pilot keeps its own).
+        self.afterheat_pilot.control.set_tolerance(d.get("afterheat_soft_floor_k"), d.get("afterheat_hard_floor_k"),
+                                                   d.get("afterheat_warm_bias_k"))
         return self.afterheat_pilot.update(PilotInputs(
             now=now, mode=str(d.get("afterheat_control_mode") or "native"),
             afterheat_on=afterheat_on, target=target,
