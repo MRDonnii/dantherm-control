@@ -113,6 +113,11 @@ REID_PARTIAL_SHARE = 1 / 3
 SOFT_FLOOR_K = 0.5
 RATE_WINDOW_S = 600.0
 RATE_LIMIT_CHANGES = 6
+# The rate limit still lets a change down through when the air is (or by the model soon is) this warm.
+RATE_WARM_K = 1.0
+# The soft floor lets a pulse up end while its heat is on its way when the dip gets at most this much deeper.
+LOWER_DEEPENS_K = 0.05
+RATE_AHEAD_TICKS = 2
 PINGPONG_CHANGES = 3
 PINGPONG_HOLD_TICKS = 4
 WARM_BIAS_K = 0.3
@@ -728,7 +733,8 @@ class SafetyLayer:
             if keep != out:
                 out, override = keep, OVERRIDE_PINGPONG
         if out != current and self.recent_changes(now) >= RATE_LIMIT_CHANGES and not (
-                (out > current and view.air < view.target) or (out < current and view.air > view.target + 1.0)):
+                (out > current and view.air < view.target)
+                or (out < current and self._warm_ahead(view, view.target + RATE_WARM_K))):
             # Too many changes lately: only a change toward the target (cold: up, clearly warm: down).
             out, override = current, OVERRIDE_RATE
         # The soft floor: air below (or within a decision of) target - 0.5 K gets more heat,
@@ -738,11 +744,23 @@ class SafetyLayer:
         # The model's predictions are only so good: judged with its recent error as a margin.
         margin = model.floor_margin()
         cold = view.air < floor or self._heading_below(view, floor + margin)
-        # (By the model a raise on its way is in the prediction; by the trend alone it is given time.)
-        raise_pending = (model.x is None and self.last_raise_at is not None
+        # A raise on its way is given time to show (dead time and half a lag), by the model
+        # only when the output now in force settles clearly above the floor: live 2026-11-26
+        # the air was still under the floor the tick after step 1 -> 2 (dead time), the floor
+        # added step 3 on top and the air went on to 26-28.6 C. A raise that settles too low
+        # (step 0 -> 1 on a coil where step 1 barely heats) gets the next step at once.
+        raise_pending = (self.last_raise_at is not None
                          and now - self.last_raise_at < model.dead + 0.5 * model.tau_up + spec.apply_delay_s)
+        if raise_pending and model.x is not None:
+            scale = model.scale(view.fan, view.water, view.air_in)
+            raise_pending = model.steady(current, scale, model.base(view.air_in)) >= view.target + margin
         if cold and current < view.high:
-            if out < current:
+            # A raise on its way (raise_pending) may already be ended (a pulse) when, by the
+            # model, the lower output (even raised back a decision later) makes the dip no
+            # deeper than keeping it: the trough comes before the change can reach the air.
+            # Live 2026-11-26 step 2 was kept a second tick for an air that was only still
+            # low from the dead time, and went on to 26 C.
+            if out < current and not (raise_pending and self._lower_deepens(view, out) <= LOWER_DEEPENS_K):
                 out, override = current, OVERRIDE_FLOOR
             if out == current and not raise_pending:
                 out = spec.limit(self._raise(view), current, view.low, view.high)
@@ -782,6 +800,37 @@ class SafetyLayer:
         if view.trend is not None:
             return view.air + view.trend * view.spec.period < floor
         return False
+
+    @staticmethod
+    def _warm_ahead(view: ControlView, above: float) -> bool:
+        """The air is, or with the output kept will be within RATE_AHEAD_TICKS decisions, above ``above``.
+
+        By the model, so a pulse up can still be ended while its heat is on its way: live
+        2026-11-26 the rate limit kept step 2 a second tick with the air still at the target
+        (dead time), and the air went on to 26-27 C.
+        """
+        if view.air > above:
+            return True
+        model = view.model
+        if model.x is None:
+            return False
+        scale = model.scale(view.fan, view.water, view.air_in)
+        path = model.simulate(view.now, [view.output] * RATE_AHEAD_TICKS, view.spec, scale, model.base(view.air_in))
+        return bool(path) and max(path) > above
+
+    @staticmethod
+    def _lower_deepens(view: ControlView, lower: float) -> float:
+        """K the lowest air comes lower by lowering to ``lower`` now (raised back a decision later) than by keeping."""
+        model = view.model
+        if model.x is None:
+            return math.inf
+        scale = model.scale(view.fan, view.water, view.air_in)
+        base = model.base(view.air_in)
+        kept = model.simulate(view.now, [view.output] * 5, view.spec, scale, base)
+        lowered = model.simulate(view.now, [lower] + [view.output] * 4, view.spec, scale, base)
+        if not kept or not lowered:
+            return math.inf
+        return min(kept) - min(lowered)
 
     @staticmethod
     def _lower_dips(view: ControlView, lower: float, floor: float) -> bool:

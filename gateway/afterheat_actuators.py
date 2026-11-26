@@ -21,7 +21,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from afterheat_algorithms import Algorithm, make_algorithm
-from afterheat_data import Telemetry, build_block, predict
+from afterheat_data import MpcWatch, Telemetry, build_block, predict
 from afterheat_control import (ALGORITHM_CODES, ALGORITHM_DEFAULT, ALGORITHM_LABELS, ALGORITHMS, DIRECT_SPEC,
                                FROST_MARGIN_K, HAC1_SPEC, OVERRIDE_FAULT, OVERRIDE_NONE, CoilModel, ControlView,
                                Decision, OutputSpec, SafetyFacts, SafetyLayer, SafetyResult, clamp, danish, num)
@@ -233,6 +233,7 @@ class AlgorithmPilot(AfterheatPilot):
         self.prediction: dict[str, object] = {}
         self.hold_bias = {"rise": 0.0, "flat": 0.0, "fall": 0.0}
         self.hold_checks: deque[tuple[float, float, str]] = deque()
+        self.mpc_watch = MpcWatch()
         super().__init__(period)
 
     @property
@@ -250,6 +251,11 @@ class AlgorithmPilot(AfterheatPilot):
         self._feed_model(inp)
         result = super().update(inp)
         self._check_holds(inp.now)
+        if self.active and self._steering() and self.control.name == "mpc" and inp.afterheat_on:
+            self.mpc_watch.sample(inp.now, self._raw(inp) if self._fresh(inp.t2ah, inp.t2ah_age) else None,
+                                  num(inp.target))
+        else:
+            self.mpc_watch.reset()
         self.control.save(inp.now)
         return result
 

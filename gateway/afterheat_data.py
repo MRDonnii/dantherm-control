@@ -9,6 +9,8 @@ Plain numbers only; every value is None when unknown. Nothing here steers the co
 """
 from __future__ import annotations
 
+import logging
+import math
 import time
 from collections import deque
 
@@ -20,6 +22,14 @@ GAP_S = 180.0  # a longer hole in the samples or the heat is not bridged
 WINDOWS = {"1h": 3600.0, "24h": 86400.0}
 STATS_CACHE_S = 30.0
 PREDICT_MINUTES = 10
+LOG = logging.getLogger("afterheat-control")
+# HAC1 alone (afterheat_control_mode native, setpoint 22), live 2026-11-26 07:10-09:30 at 36 % fan:
+# the air's spread (standard deviation) and its share under target - 0.5 K. The MPC's own
+# 2 h are compared with these (MpcWatch); worse is only logged, nothing is switched.
+HAC1_REF_SD_K = 1.27
+HAC1_REF_UNDER_PERCENT = 24.0
+WATCH_SPAN_S = 2 * 3600.0
+WATCH_EVERY_S = 30 * 60.0
 
 
 class Telemetry:
@@ -94,6 +104,64 @@ class Telemetry:
         kwh = num(data.get("kwh"))
         if isinstance(data.get("date"), str) and kwh is not None and 0 <= kwh < 1000:
             self.energy_date, self.energy_kwh = data["date"], kwh
+
+
+class MpcWatch:
+    """The MPC's own last 2 h of steering against HAC1 alone (HAC1_REF_*): a warning in the log when worse.
+
+    Only samples while the MPC steers count; a pause or another algorithm starts it over.
+    Read-only: it never changes the mode or the algorithm.
+    """
+
+    def __init__(self) -> None:
+        self.samples: deque[tuple[float, float, float]] = deque()  # ts, air, target
+        self.checked_at: float | None = None
+        self.last: dict[str, float] | None = None
+
+    def reset(self) -> None:
+        self.samples.clear()
+        self.checked_at = None
+
+    def sample(self, now: float, air: float | None, target: float | None) -> None:
+        if num(air) is None or num(target) is None:
+            return
+        if self.samples and now - self.samples[-1][0] > GAP_S:
+            self.samples.clear()  # a hole: the 2 h must be the MPC's own, unbroken
+        if not self.samples or now - self.samples[-1][0] >= SAMPLE_EVERY_S:
+            self.samples.append((now, float(air), float(target)))
+        while self.samples and self.samples[0][0] < now - WATCH_SPAN_S:
+            self.samples.popleft()
+        self.check(now)
+
+    def stats(self) -> dict[str, float] | None:
+        rows = list(self.samples)
+        if len(rows) < 2 or rows[-1][0] - rows[0][0] < 0.95 * WATCH_SPAN_S:
+            return None
+        errors = [air - target for _t, air, target in rows]
+        mean = sum(errors) / len(errors)
+        sd = math.sqrt(sum((e - mean) ** 2 for e in errors) / len(errors))
+        under = 100.0 * sum(1 for e in errors if e < -SOFT_FLOOR_K) / len(errors)
+        return {"mean_k": round(mean, 2), "sd_k": round(sd, 2), "under_percent": round(under, 1),
+                "air_max_c": round(max(r[1] for r in rows), 1)}
+
+    def check(self, now: float) -> None:
+        if self.checked_at is not None and now - self.checked_at < WATCH_EVERY_S:
+            return
+        stats = self.stats()
+        if stats is None:
+            return
+        self.checked_at, self.last = now, stats
+        worse = [f"spredning {stats['sd_k']:.2f} K > {HAC1_REF_SD_K:.2f} K"] if stats["sd_k"] > HAC1_REF_SD_K else []
+        if stats["under_percent"] > HAC1_REF_UNDER_PERCENT:
+            worse.append(f"under mål − 0,5 °C {stats['under_percent']:.1f} % > {HAC1_REF_UNDER_PERCENT:.1f} %")
+        if worse:
+            LOG.warning("Afterheat MPC-vagt: de sidste 2 timer er MPC dårligere end HAC1 alene (%s); "
+                        "middel %+.2f K, højeste %.1f °C. Intet skiftes automatisk.",
+                        ", ".join(worse), stats["mean_k"], stats["air_max_c"])
+        else:
+            LOG.info("Afterheat MPC-vagt: de sidste 2 timer spredning %.2f K, under %.1f %%, middel %+.2f K "
+                     "(HAC1 alene: %.2f K, %.1f %%)", stats["sd_k"], stats["under_percent"], stats["mean_k"],
+                     HAC1_REF_SD_K, HAC1_REF_UNDER_PERCENT)
 
 
 # ------------------------------------------------------------- predictions

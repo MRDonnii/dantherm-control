@@ -46,8 +46,11 @@ class Hac1Plant:
                  water_mean: float = 44.0, water_amp: float = 6.0, water_period: float = 2400.0,
                  noise: float = 0.03, seed: int = 1, tick_offset: float = 17.3,
                  period: float = TICK_PERIOD_S, level: int = 1, setpoint: float = 21.0,
-                 start: float = 1_000_000.0, tau_down: float | None = None) -> None:
+                 start: float = 1_000_000.0, tau_down: float | None = None,
+                 valve_rate: float | None = None) -> None:
         self.gain, self.curvature, self.base = gain, curvature, base
+        # The valve motor's travel (levels a second; None: at once), live fit 2026-11-26 ~0.05.
+        self.valve_rate = valve_rate
         # Explicit heat of each level relative to level 1's (overrides the curvature).
         self.level_heat = level_heat
         self.dead_time, self.tau, self.fan = dead_time, tau, fan
@@ -69,6 +72,7 @@ class Hac1Plant:
         self.history: deque[tuple[float, float]] = deque()
         self.x = self.steady(level)
         self.raw = self.x
+        self.valve = float(level)
 
     def water(self, t: float | None = None) -> float:
         t = self.now if t is None else t
@@ -86,14 +90,20 @@ class Hac1Plant:
     def curve(self, level: float) -> float:
         if self.level_heat is None:
             return level_curve(level, self.curvature)
-        return self.level_heat[int(max(0, min(10, level)))]
+        level = max(0.0, min(10.0, level))
+        lower = int(min(level, 9))
+        return self.level_heat[lower] + (level - lower) * (self.level_heat[lower + 1] - self.level_heat[lower])
 
     def steady(self, level: float) -> float:
         return self.air_in() + self.rise(level)
 
     def step(self, dt: float = 1.0) -> None:
         self.now += dt
-        self.history.append((self.now, self.steady(self.level)))
+        if self.valve_rate is None:
+            self.valve = float(self.level)
+        else:
+            self.valve += max(-self.valve_rate * dt, min(self.valve_rate * dt, self.level - self.valve))
+        self.history.append((self.now, self.steady(self.valve)))
         while len(self.history) > 1 and self.history[1][0] <= self.now - self.dead_time:
             self.history.popleft()
         delayed = self.history[0][1]
@@ -173,6 +183,16 @@ TRIAL_VALVES = dict(gain=1.0, level_heat=TRIAL_LEVEL_HEAT, base=20.5)
 RLV2_LIFT_AT_36 = [0.0, 2.4, 8.6, 9.6, 10.3, 10.8, 11.2, 11.5, 11.7, 11.9, 12.0]
 RLV2_VALVES = dict(gain=1.0, level_heat=[lift / 0.9 for lift in RLV2_LIFT_AT_36], base=17.89, fan=36.0,
                    tau=110.0, tau_down=240.0)
+
+
+# The same coil fitted to the live A/B day 2026-11-26 (04-10, 36 % fan, RLV 2 turns, water
+# 38-52 C over ~100 min; rmse 0.44 K on the 1-min data): step 1 barely heats at all (the
+# valve's first opening), step 2 lifts ~8.3 K, the valve travels ~20 s a level, then a dead
+# time of ~47 s, ~65 s up and ~270 s down.
+RLV2_LIVE_LIFT_AT_36 = [0.0, 0.1, 8.3, 10.4, 11.2, 11.7, 12.1, 12.4, 12.6, 12.8, 12.9]
+RLV2_LIVE = dict(gain=1.0, level_heat=[lift / 0.9 for lift in RLV2_LIVE_LIFT_AT_36], base=17.95, fan=36.0,
+                 tau=65.0, tau_down=270.0, dead_time=47.0, water_mean=45.0, water_amp=6.0, water_period=6000.0,
+                 valve_rate=0.05)
 
 
 def run(pilot, plant: Hac1Plant, *, target: float, minutes: float, events=None,

@@ -161,7 +161,8 @@ class MpcTakesTurnsSlowly(unittest.TestCase):
         mpc.note_sent(1.0, NOW - 55)  # ... as asked
         here = view(model, air=24.5, output=1.0)
         self.assertEqual(mpc.dwell_left(here), 1)
-        self.assertTrue(all(plan[0] == 1.0 for plan in mpc._discrete_plans(here, mpc.HORIZON_TICKS)))
+        # The dwell holds back a turn back up; going on down (a ramp 2 -> 1 -> 0) is no turn.
+        self.assertTrue(all(plan[0] <= 1.0 for plan in mpc._discrete_plans(here, mpc.HORIZON_TICKS)))
         self.assertEqual(mpc.decide(here).output, 1.0)
         mpc.note_sent(2.0, NOW - 55)  # the Pi asked to hold 2: HAC1 stepped down by itself
         self.assertEqual(mpc.dwell_left(here), 0)
@@ -199,3 +200,55 @@ class MpcTakesTurnsSlowly(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MpcLiveAb20261126(unittest.TestCase):
+    """Live A/B 2026-11-26 (36 % fan, RLV 2 turns): HAC1 alone steadier than the MPC (spread 1.27 against 1.62 K)."""
+
+    def test_level_zero_under_the_frost_lock_only_with_a_warm_coil(self):
+        from types import SimpleNamespace
+        warm = SimpleNamespace(frost_lock=True, before_heater=17.8, frost_sensor=21.0)
+        cold = SimpleNamespace(frost_lock=True, before_heater=10.0, frost_sensor=21.0)
+        self.assertEqual(AfterheatPilot.frost_min_level(warm), 0)
+        self.assertEqual(AfterheatPilot.frost_min_level(cold), 1)
+        model = warm_model(air=23.0, output=1.0)
+        mpc = MpcAlgorithm()
+        for low, lowest in ((0.0, 0.0), (1.0, 1.0)):
+            plans = mpc._discrete_plans(view(model, air=23.0, output=1.0, low=low), mpc.HORIZON_TICKS)
+            self.assertEqual(min(min(plan) for plan in plans), lowest)
+        # HAC1's own staircase (a step a tick up to 2, kept, down to 0, kept) is among the plans
+        stairs = mpc._staircase_plans(view(model, air=23.0, output=1.0), mpc.HORIZON_TICKS)
+        self.assertIn((1.0, 2.0, 2.0, 1.0, 0.0, 0.0, 1.0, 2.0, 2.0, 1.0, 0.0, 0.0), stairs)
+
+    def test_a_pulse_on_its_way_gets_no_step_on_top_and_may_end(self):
+        model = warm_model(air=21.8, output=1.0)
+        model.observe(NOW - 40, 21.4, 2.0, 36.0, 44.0, 17.9)  # 1 -> 2 shown 40 s ago: still in the dead time
+        model.observe(NOW - 5, 21.3, 2.0, 36.0, 44.0, 17.9)
+        pending = SafetyLayer()
+        pending.observe(NOW - 400, 1.0, HAC1_SPEC.period, 21.8, 22.0)
+        pending.observe(NOW - 40, 2.0, HAC1_SPEC.period, 21.4, 22.0)
+        here = view(model, air=21.3, output=2.0)
+        self.assertEqual(pending.apply(here, 2.0).output, 2.0)  # was: the floor added step 3
+        self.assertEqual(pending.apply(here, 1.0).output, 1.0)  # the one-tick pulse may end
+        fresh = SafetyLayer()
+        fresh.observe(NOW - 400, 1.0, HAC1_SPEC.period, 21.8, 22.0)
+        self.assertEqual(fresh.apply(here, 1.0).output, 3.0)  # no raise of its own on its way: the floor raises
+
+    def test_mpc_on_the_live_rlv2_coil_beats_hac1_alone(self):
+        from afterheat_sim import RLV2_LIVE
+        plant = Hac1Plant(**RLV2_LIVE, level=1, seed=3, setpoint=22.0)
+
+        def sensors(inp, _plant, _gateway):
+            inp.before_heater, inp.frost_sensor = _plant.air_in(), 22.0
+        rows = run(AlgorithmPilot(), plant, target=22.0, minutes=150, algorithm="mpc", frost_lock=True,
+                   sensors=True, inputs_hook=sensors)
+        rows = [r for r in rows if r["t"] >= 20 * 60 and int(r["t"]) % 60 < 2]
+        errors = [r["air"] - 22.0 for r in rows]
+        mean = sum(errors) / len(errors)
+        spread = math.sqrt(sum((e - mean) ** 2 for e in errors) / len(errors))
+        under = 100 * sum(e < -0.5 for e in errors) / len(errors)
+        changes = sum(a["level"] != b["level"] for a, b in zip(rows, rows[1:])) / (len(rows) / 60)
+        # HAC1 alone live: spread 1.27 K, 24 % under target - 0.5 K, 36 changes an hour.
+        self.assertLess(spread, 1.27)
+        self.assertLess(under, 10.0)
+        self.assertLessEqual(changes, 36.0)

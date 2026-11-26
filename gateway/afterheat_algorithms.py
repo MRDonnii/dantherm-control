@@ -18,6 +18,11 @@ from afterheat_control import (ControlView, Decision, LEVEL_MAX, OutputSpec, SOF
                                inverse, num)
 
 
+COLD_COST = 2.0
+PEAK_COST = 0.0
+PEAK_FROM_K = 3.0
+
+
 def tracking_cost(error: float, margin: float = 0.0) -> float:
     """Cost per minute (K^2) of air ``error`` K from the target: a dip is much worse than a little warmth.
 
@@ -26,8 +31,9 @@ def tracking_cost(error: float, margin: float = 0.0) -> float:
     that predicts only so well) it costs a lot more again.
     """
     if error >= 0:
-        return 0.1 * error * error + 0.5 * max(0.0, error - 0.3) ** 2
-    cost = 2.0 * error * error
+        return (0.1 * error * error + 0.5 * max(0.0, error - 0.3) ** 2
+                + PEAK_COST * max(0.0, error - PEAK_FROM_K) ** 2)
+    cost = COLD_COST * error * error
     below = -(error + SOFT_FLOOR_K - margin)
     if below > 0:
         cost += 60.0 * below * below + 15.0 * below
@@ -142,6 +148,11 @@ class MpcAlgorithm(Algorithm):
     CYCLE_START = (0, 1, 2, 3, 4, 6)
     CYCLE_OUT = (2, 3, 4, 6)
     CYCLE_BACK = (2, 3, 4, 6, 8)
+    # Staircase plans (see _staircase_plans): ticks before the first step; ticks on the top
+    # and on the bottom level (counting the tick it is reached).
+    STAIR_START = (0, 1, 2, 3)
+    STAIR_TOP = (1, 2, 3)
+    STAIR_BOTTOM = (1, 2, 3, 4)
     MOVE_COST_STEPLESS = 0.3
     MOVE_COST_SQUARED = 0.2
     EFFORT_COST = 0.01
@@ -180,16 +191,33 @@ class MpcAlgorithm(Algorithm):
         shortest = self.PULSE_TICKS if outputs[-1][1] > outputs[-2][1] else self.MIN_DWELL_TICKS
         return max(0, shortest - int(round(in_force)))
 
+    @staticmethod
+    def last_move(view: ControlView) -> int:
+        """Direction (+1/-1, 0: none) of the last change of the output in force."""
+        outputs = view.model.outputs
+        if len(outputs) < 2 or outputs[-1][1] == outputs[-2][1]:
+            return 0
+        return 1 if outputs[-1][1] > outputs[-2][1] else -1
+
+    def wait_for(self, view: ControlView, direction: int) -> int:
+        """Ticks before a move in ``direction``: the dwell only holds back a turn back.
+
+        Going on the same way (a ramp 2 -> 1 -> 0 a step a tick, as HAC1 does by itself) is
+        no per-tick turn: live 2026-11-26 the dwell kept a step down from 3 on step 2 for two
+        ticks, and the air went on to 26-28.6 C.
+        """
+        last = self.last_move(view)
+        return 0 if last != 0 and direction == last else self.dwell_left(view)
+
     def _discrete_plans(self, view: ControlView, ticks: int) -> list[tuple[float, ...]]:
         """HAC1 plans: stay; go to a level (ramping) after the dwell; or a duty cycle between two neighbours."""
         spec, current = view.spec, view.output
-        wait = self.dwell_left(view)
         plans: list[tuple[float, ...]] = [tuple([current] * ticks)]
-        starts = sorted({wait + k for k in (0, *self.SWITCH_AFTER) if wait + k < ticks})
         for goal in self._candidates(view, current, fine=True):
             if goal == current:
                 continue
-            for k in starts:
+            wait = self.wait_for(view, 1 if goal > current else -1)
+            for k in sorted({wait + k for k in (0, *self.SWITCH_AFTER) if wait + k < ticks}):
                 plans.append(_ramp(current, [(0, current), (k, goal)], ticks, spec))
         step = spec.resolution
         for first in (current - step, current + step):
@@ -198,6 +226,7 @@ class MpcAlgorithm(Algorithm):
             for second in (first - step, first + step):
                 if not view.low <= second <= view.high:
                     continue
+                wait = self.wait_for(view, 1 if first > current else -1)
                 for k in self.CYCLE_START:
                     k += wait
                     if k >= ticks:
@@ -209,6 +238,44 @@ class MpcAlgorithm(Algorithm):
                             while len(plan) < ticks:
                                 plan += [first] * out + [second] * back
                             plans.append(tuple(plan[:ticks]))
+        plans.extend(self._staircase_plans(view, ticks))
+        return plans
+
+    def _staircase_plans(self, view: ControlView, ticks: int) -> list[tuple[float, ...]]:
+        """HAC1's own triangle: a step a tick up to ``top``, kept, a step a tick down to ``bottom``, kept, ...
+
+        Live 2026-11-26 HAC1 alone ran 0 -> 1 -> 2 -> 2 -> 1 -> 0 -> 0 (6-7 min) steadier
+        than the MPC's pulses (spread 1.27 against 1.62 K): the ramp spreads a big step's
+        heat over two ticks. The MPC picks where in the cycle to start and how long to keep
+        the top and the bottom from its model, so the trough sits just above the floor.
+        """
+        spec, current = view.spec, view.output
+        step = spec.resolution
+        plans: list[tuple[float, ...]] = []
+        for bottom in (current - 2 * step, current - step, current):
+            if bottom < view.low:
+                continue
+            for top in (bottom + 2 * step, bottom + 3 * step):
+                if top > view.high or top <= current - step:
+                    continue
+                for first in (1, -1):  # up first (from the bottom side) or down first (from the top side)
+                    goal0 = top if first > 0 else bottom
+                    if goal0 == current:
+                        continue
+                    for k in self.STAIR_START:
+                        k += self.wait_for(view, 1 if goal0 > current else -1)
+                        if k >= ticks:
+                            continue
+                        for keep_top in self.STAIR_TOP:
+                            for keep_bottom in self.STAIR_BOTTOM:
+                                plan, value, goal = [current] * k, current, goal0
+                                while len(plan) < ticks:
+                                    if value == goal:
+                                        plan += [value] * ((keep_top if goal == top else keep_bottom) - 1)
+                                        goal = bottom if goal == top else top
+                                    value = spec.snap(value + clamp(goal - value, -step, step))
+                                    plan.append(value)
+                                plans.append(tuple(plan[:ticks]))
         return plans
 
     def unasked_cost(self, view: ControlView, plan: tuple[float, ...], direction: int) -> float:
