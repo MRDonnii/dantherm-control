@@ -8,6 +8,7 @@ and all persistent configuration remain on the Pi.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import math
@@ -124,6 +125,8 @@ class ControllerRuntime:
         self.smart_inputs_received_monotonic: float | None = None
         self.smart_inputs_valid_for = 180
         self._room_rh_history: dict[str, deque[tuple[float, float]]] = defaultdict(deque)
+        # Written from the HA input thread, read by the control tick: guard with a lock.
+        self._room_rh_lock = threading.Lock()
         # Bathroom drying episodes: peak RH and the RH at which the episode ends.
         self._bathroom_episodes: dict[str, dict[str, float]] = {}
         # The level each room/metric band last asked for: a lower band needs the
@@ -1005,6 +1008,12 @@ class ControllerRuntime:
                      if room.get("unit_sensor") and room.get("type") in room_setup.INDOOR_TYPES
                      and room.get("enabled", True)), None)
 
+    def _room_rh_snapshot(self) -> dict[str, list[tuple[float, float]]]:
+        """A copy of the room RH history, safe to iterate while new readings arrive."""
+        lock = getattr(self, "_room_rh_lock", None) or contextlib.nullcontext()
+        with lock:
+            return {name: list(history) for name, history in self._room_rh_history.items()}
+
     def _rooms_with_unit_sensors(self) -> dict[str, dict[str, object]]:
         """Combine HA rooms with the unit's own local indoor sensors."""
         combined = self._fresh_ha_rooms()
@@ -1150,12 +1159,13 @@ class ControllerRuntime:
                     values["temperature_stale"] = True
             if rh is not None:
                 values["humidity"] = round(rh, 2)
-                history = self._room_rh_history[name]
                 clean, _quality = quality_rooms({name: {**values, "humidity": rh}})
-                if clean[name].get("humidity") is not None:
-                    history.append((now, rh))
-                while history and now - history[0][0] > 1800:
-                    history.popleft()
+                with getattr(self, "_room_rh_lock", None) or contextlib.nullcontext():
+                    history = self._room_rh_history[name]
+                    if clean[name].get("humidity") is not None:
+                        history.append((now, rh))
+                    while history and now - history[0][0] > 1800:
+                        history.popleft()
             if co2 is not None:
                 values["co2"] = round(co2, 0)
             if pm25 is not None:
@@ -1396,7 +1406,7 @@ class ControllerRuntime:
 
         rise_percent = float(d.get("bathroom_rise_percent", 7.0))
         rise_window = int(d.get("bathroom_rise_minutes", 10)) * 60
-        for name, history in self._room_rh_history.items():
+        for name, history in self._room_rh_snapshot().items():
             if name not in rooms or name in dry_rooms:
                 continue
             values = rooms[name]
@@ -1467,7 +1477,7 @@ class ControllerRuntime:
         episode = self._bathroom_episodes.get(name)
         if episode is None:
             window = int(d.get("bathroom_rise_minutes", 10)) * 60
-            fresh = [value for ts, value in self._room_rh_history.get(name, ()) if now - ts <= window]
+            fresh = [value for ts, value in self._room_rh_snapshot().get(name, ()) if now - ts <= window]
             rising = len(fresh) >= 2 and fresh[-1] - fresh[0] >= float(d.get("bathroom_rise_percent", 7.0))
             # Dry air (humidity_rise_min_rh): a rise below that RH is moisture the house lacks.
             if humidity < float(d.get("humidity_rise_min_rh") or 0.0):

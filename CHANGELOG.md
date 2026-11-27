@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.13.0-beta.21
+
+Ændret af Claude AI.
+
+## Rettet
+- **Fugtstigning i rummene kunne få styringen til at springe en beregning over.** Historikken over luftfugtighed blev skrevet fra Home Assistant-forbindelsen, mens styringen læste den samtidig. Det gav fejlen "deque mutated during iteration" omkring 8 gange i døgnet, og så blev blæserens behov ikke regnet ud den runde. Historikken er nu beskyttet med en lås, og styringen læser en kopi.
+
 ## 1.13.0-beta.20 — Eftervarmens MPC: ingen dyk under "Aldrig mere end"
 
 - **Modellen lærer trinene rigtigt:** før troede den, at trin 1 giver ca. 2 grader varme. Live giver trin 1 næsten intet (ca. 0,1 grad). Trin 1 bruges kun et minut ad gangen mellem pust på trin 2, og så fik trin 1 æren for varmen, der stadig var på vej fra trin 2. Nu finder Pi'en varmen fra hvert trin ud fra de sidste timers minutter på én gang. Trin 1 lærer ikke længere af korte besøg. En model, der er gemt fra før, starter forfra på trin 1.
