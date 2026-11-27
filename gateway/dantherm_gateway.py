@@ -55,6 +55,19 @@ CONTROLLER_FIRST_CYCLE_GRACE_SECONDS = 300.0
 HARD_EXIT_SECONDS = 20.0
 EXIT_LOCK_TIMEOUT_SECONDS = 2.0
 
+
+def open_serial_port(port: str, *args, **kwargs) -> serial.Serial:
+    """Open a local RS485 device, or a pyserial URL such as socket://host:port.
+
+    A URL lets the gateway read an RS485-to-Ethernet adapter in transparent
+    TCP mode instead of a USB adapter. Line settings (19200 8E1) then live in
+    the adapter, and exclusive locking does not apply to a socket.
+    """
+    if "://" in str(port):
+        kwargs.pop("exclusive", None)
+        return serial.serial_for_url(str(port), *args, **kwargs)
+    return serial.Serial(port, *args, **kwargs)
+
 # High-frequency measurements can change every few seconds. Keep them at
 # DEBUG so journald remains useful for lifecycle events and real faults.
 INFO_STATE_KEYS = {
@@ -612,7 +625,7 @@ class RtuSniffer:
         self.last_seen: dict[bytes, float] = {}
 
     def open(self) -> serial.Serial:
-        ser = serial.Serial(
+        ser = open_serial_port(
             self.port,
             self.baudrate,
             bytesize=serial.EIGHTBITS,
@@ -2942,8 +2955,8 @@ class Gateway:
         if str(unit_cfg.get("transport", "rtu")).lower() == "tcp":
             transport = mk2.ModbusTcp(str(unit_cfg["host"]), int(unit_cfg.get("port", 502)), unit_id)
         else:
-            ser = serial.Serial(
-                port=serial_cfg["port"], baudrate=int(serial_cfg.get("baudrate", 19200)),
+            ser = open_serial_port(
+                serial_cfg["port"], baudrate=int(serial_cfg.get("baudrate", 19200)),
                 bytesize=serial.EIGHTBITS, parity=serial_cfg.get("parity", "E"),
                 stopbits=serial.STOPBITS_ONE, timeout=0.2,
             )
